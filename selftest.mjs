@@ -9,6 +9,11 @@
  *   1. The host half actually mounts and answers. We feed it a stub `ctx` and call the
  *      read-only routes with fake `req`/`res`, then assert status + the fields the panel
  *      consumes. This is the only way to test a Cordis plugin host half without a runtime.
+ *      Covers the workbench passthroughs (`/objects` `/disposition` `/crosscheck`
+ *      `/domain-health` `/brief` `/insights`) plus three "must not be silent" surfaces:
+ *      the feedback ledger's explicit 503, the retired `/focus` GET tombstone (410), and
+ *      the disposition write exit's **source-level validation** (invalid input is rejected
+ *      before any vault CLI is spawned — which is why it is assertable inside a clone).
  *   2. Missing configuration must fail loudly. The plugin resolves the knowledge base from
  *      `DSH_WORKBENCH_KNOWLEDGE`; a silent fallback to somebody's desktop would be worse than
  *      a crash, so we assert the import throws and that the message names the variable.
@@ -62,15 +67,43 @@ async function mountPlugin(knowledgeDir) {
   return { spec, mod };
 }
 
-/** Minimal `req`/`res` doubles: sendJson only uses writeHead + end. */
-function call(spec, url, method = 'GET') {
+/**
+ * Minimal `req`/`res` doubles.
+ * `sendJson` only uses writeHead + end; the host's `readBody` subscribes to
+ * `req.on('data'|'end')`, so the request double is a tiny event emitter that can
+ * also replay a JSON body (needed for the POST routes' source-level validation).
+ */
+function makeReq(url, method, body) {
+  const handlers = {};
+  return {
+    url,
+    method,
+    on(name, cb) { (handlers[name] = handlers[name] || []).push(cb); return this; },
+    destroy() {},
+    /** Replay the body after the handler has subscribed. */
+    replay() {
+      if (body !== null && body !== undefined) {
+        const chunk = Buffer.from(typeof body === 'string' ? body : JSON.stringify(body), 'utf8');
+        for (const cb of handlers.data || []) cb(chunk);
+      }
+      for (const cb of handlers.end || []) cb();
+    },
+  };
+}
+
+function call(spec, url, method = 'GET', body = null) {
   const out = { code: null, headers: null, body: null };
   const res = {
     writeHead(code, headers) { out.code = code; out.headers = headers || {}; },
     end(chunk) { out.body = chunk === undefined ? '' : String(chunk); },
     setHeader() {},
   };
-  return { promise: Promise.resolve(spec.handler({ url, method }, res)).then(() => out), out };
+  const req = makeReq(url, method, body);
+  // `spec.handler` runs synchronously up to its first await, so readBody's
+  // subscriptions exist by the time we replay the body.
+  const promise = Promise.resolve(spec.handler(req, res)).then(() => out);
+  req.replay();
+  return { promise, out };
 }
 
 const { spec } = await mountPlugin(FIXTURES);
@@ -111,6 +144,69 @@ for (const [route, verify, what] of cases) {
   }
 }
 
+// ── 1b. T31 routes: today's decision surface + cross-source insights ─────────────
+// Both are read-only passthroughs of vault products. The fixtures carry only neutral
+// example data, so these asserts describe the *contract*, not any real business fact.
+{
+  const out = await call(spec, ROUTE + '/brief').promise;
+  const d = out.body ? JSON.parse(out.body) : null;
+  chk('L1-3/brief', '/brief → 200 + 今日必办/待定/昨夜动向三块 + 校准标记与口径一致性',
+    out.code === 200 && d !== null && d.calibrated === false
+    && d.todayMustDo.total === 2 && d.todayMustDo.by_kind.trigger === 1 && d.todayMustDo.by_kind.matter === 1
+    && d.waiting.total === 1 && d.waiting.by_group.onMeReply === 1
+    && Array.isArray(d.overnight.items) && d.overnight.items.length === 1 && d.overnight.items[0].plane === 'inbound'
+    && d.consistency.agree === true && Array.isArray(d.rules) && d.rules.length === 3,
+    `code=${out.code} body=${String(out.body).slice(0, 140)}`);
+}
+{
+  const out = await call(spec, ROUTE + '/insights').promise;
+  const d = out.body ? JSON.parse(out.body) : null;
+  const one = d !== null && Array.isArray(d.insights) ? d.insights[0] : null;
+  chk('L1-4/insights', '/insights → 200 + 证据链/支撑强度/可反驳入口齐全（无证据不入面板）',
+    out.code === 200 && one !== null
+    && Array.isArray(one.evidence) && one.evidence.length === 4 && one.evidence_lines === 4
+    && ['multi', 'single'].includes(one.support)
+    && typeof one.confidence === 'number'
+    && typeof (one.rebuttal || {}).entry === 'string' && typeof (one.rebuttal || {}).ledger === 'string'
+    && d.summary.dropped === 1 && Array.isArray(d.dropped) && d.dropped.length === 1,
+    `code=${out.code} body=${String(out.body).slice(0, 140)}`);
+}
+{
+  // A fresh clone has no vault pipeline, so "ledger not generated" is the normal state.
+  // It must be an explicit 503 with a message — never a silent 200 with empty data.
+  const out = await call(spec, ROUTE + '/feedback').promise;
+  const d = out.body ? JSON.parse(out.body) : null;
+  chk('L1-5/feedback', '/feedback（台账未生成）→ 503 + 明确文案，不当成空数据',
+    out.code === 503 && d !== null && /尚未生成/.test(String(d.error || '')),
+    `code=${out.code} body=${String(out.body).slice(0, 140)}`);
+}
+{
+  // GET /focus was retired: focus state has exactly one source of truth (/state.focus).
+  // The tombstone must say so, rather than degrading into a silent 404.
+  const out = await call(spec, ROUTE + '/focus').promise;
+  const d = out.body ? JSON.parse(out.body) : null;
+  chk('L1-6/focus-get', '/focus GET → 410 墓碑并指向 /state.focus（单一真相源）',
+    out.code === 410 && d !== null && /state\.focus/.test(String(d.error || '')),
+    `code=${out.code} body=${String(out.body).slice(0, 140)}`);
+}
+{
+  // The disposition write exit must reject invalid input **before** shelling out to the
+  // vault CLI — which is exactly why these three can be asserted inside a clone.
+  const acts = [
+    [{ action: 'reject', reason: '示例理由' }, '缺 id'],
+    [{ id: 'IN-20250101-001', action: 'nope', reason: '示例理由' }, 'action 只能是'],
+    [{ id: 'IN-20250101-001', action: 'reject', reason: '   ' }, '必须填写理由'],
+  ];
+  for (let i = 0; i < acts.length; i += 1) {
+    const [payload, expect] = acts[i];
+    const out = await call(spec, ROUTE + '/disposition/act', 'POST', payload).promise;
+    const d = out.body ? JSON.parse(out.body) : null;
+    chk(`L1-7/act-${i + 1}`, `/disposition/act 源头拦截：${expect}`,
+      out.code === 200 && d !== null && d.ok === false && String(d.error || '').includes(expect),
+      `code=${out.code} body=${String(out.body).slice(0, 140)}`);
+  }
+}
+
 // ── 2. missing configuration must fail loudly ────────────────────────────────────
 console.log('\n[2] missing DSH_WORKBENCH_KNOWLEDGE fails loudly (no silent fallback)');
 {
@@ -136,8 +232,9 @@ for (const f of ['lib/index.js', 'lib/client.js']) {
   const src = read(path.join(HERE, 'lib', 'client.js'));
   const m = src.match(/const CARD_ORDER\s*=\s*\[([\s\S]*?)\]/);
   const keys = m === null ? [] : [...m[1].matchAll(/'([a-z]+)'/g)].map((x) => x[1]);
-  const EXPECT = ['matters', 'triggers', 'schedule', 'todos', 'focus', 'domains', 'inflow', 'recall', 'objects', 'metrics', 'kb', 'minutes', 'system'];
-  chk('L3-CARD_ORDER', 'CARD_ORDER 存在且 13 张卡顺序可断言',
+  const EXPECT = ['brief', 'matters', 'triggers', 'schedule', 'todos', 'focus', 'domains',
+    'inflow', 'recall', 'objects', 'insights', 'metrics', 'kb', 'minutes', 'system'];
+  chk('L3-CARD_ORDER', `CARD_ORDER 存在且 ${EXPECT.length} 张卡顺序可断言`,
     m !== null && keys.length === EXPECT.length && keys.every((k, i) => k === EXPECT[i]),
     m === null ? '未找到 CARD_ORDER' : keys.join(','));
 }

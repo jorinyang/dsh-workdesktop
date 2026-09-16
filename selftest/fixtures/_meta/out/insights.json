@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "generatedAt": "2025-01-01T09:00:00.000Z",
+  "calibrated": false,
+  "basis": "示例夹具：跨源洞察（全部为中性示例数据，非真实业务数据）",
+  "rules": [
+    "无证据不入面板：缺出处链的条目直接丢弃",
+    "单源且高影响 → 标「待核验」，不直接下结论",
+    "抽掉任一出处 → 该洞察必须降级或消失（不许留着好看）",
+    "宁少勿滥：总上限 3 条，同类上限 2 条"
+  ],
+  "limits": {
+    "maxInsights": 3,
+    "maxPerKind": 2,
+    "staleDays": 1,
+    "note": "示例夹具：staleDays 未校准，只影响 needs_review 标注，不作考核"
+  },
+  "summary": {
+    "generated": 2,
+    "validated": 2,
+    "insights": 1,
+    "dropped": 1,
+    "dropped_unverifiable": 0,
+    "needs_review": 0,
+    "by_kind": { "contradiction": 1 }
+  },
+  "insights": [
+    {
+      "id": "IS-20250101-001",
+      "kind": "contradiction",
+      "kind_label": "矛盾",
+      "subject": "场次:组织甲-0101",
+      "conclusion": "示例结论：该对象上的事务已关闭，但同一对象仍有逾期的未响应触发 —— 是「事办完了但响应没销」还是「关错了」，需人工定夺",
+      "evidence": ["MT-20250101-001", "TR-20250101-001", "IN-20250101-001", "Work/组织甲/Input/example.md"],
+      "evidence_lines": 4,
+      "support": "multi",
+      "confidence": 0.75,
+      "needs_review": false,
+      "review_reason": null,
+      "link_basis": "对象键相同：场次:组织甲-0101（objects.byRecord 给出该对象的 matter_ids/trigger_ids）· 证据来自 crosscheck.contradictions[matter-closed-trigger-open]",
+      "rule_in_play": "矛盾只列不改，处置需人工定夺",
+      "rebuttal": {
+        "entry": "node <vault>/_meta/workbench/cli-feedback.mjs record --type 洞察 --ruling 驳回 --rule-key insight:IS-20250101-001 --reason \"<理由>\"",
+        "ledger": "<vault>/_meta/out/feedback.json",
+        "how": "面板「驳回」入口（不可用时按上面命令记录）"
+      }
+    }
+  ],
+  "dropped": [
+    {
+      "id": "IS-single-source-(unassigned)",
+      "kind": "single_source_overdue",
+      "subject": "(unassigned)",
+      "reason": "超出总上限（3 条，宁少勿滥）",
+      "rule": "宁少勿滥"
+    }
+  ]
+}

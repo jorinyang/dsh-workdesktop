@@ -67,9 +67,11 @@ export DSH_WORKBENCH_KNOWLEDGE="$HOME/my-vault"
 
 ---
 
-## 5. 13 张卡 / 主要路由
+## 5. 15 张卡 / 主要路由
 
-卡片（顺序即面板渲染顺序）：事务 · 待响应触发 · 日程 · 待办 · 专注 · 活跃关注域 · 流入处置 · 唤起·沉淀复利 · **在场对象** · 验收指标 · 知识库 · 近期听记 · 系统状态。
+卡片（顺序即面板渲染顺序）：**今日决策面** · 事务 · 待响应触发 · 日程 · 待办 · 专注 · 活跃关注域 · 流入处置 · 唤起·沉淀复利 · **在场对象** · **跨源洞察** · 验收指标 · 知识库 · 近期听记 · 系统状态。
+
+其中三张是"按**事**而不是按来源"的：今日决策面（热层：昨夜动向 / 今日必办 / 待定等对方）· 在场对象（一个对象上事务线与触发线并置）· 跨源洞察（每条带证据链、支撑强度与**可反驳入口**，无证据不入面板）。
 
 host 路由（均在 `/workbench/api` 下）：
 
@@ -81,14 +83,17 @@ host 路由（均在 `/workbench/api` 下）：
 | `/disposition` | GET | 只读 | 处置台账（判定 → 落点 → 悬置时长） |
 | `/crosscheck` | GET | 只读 | 多源校验（溯源 / 支撑强度 / 计划↔实际 / 矛盾） |
 | `/domain-health` | GET | 只读 | 关注域健康度 |
+| `/brief` | GET | 只读 | 今日决策面（热层） |
+| `/insights` | GET | 只读 | 跨源洞察（含证据链与可反驳入口） |
+| `/feedback` | GET/POST | 读+写 | 判断质量台账（驳回/修正必须带理由；达阈值只出「待裁定」，**绝不自动改判断层**） |
 | `/dashboard` | GET | 只读 | 库内自包含 HTML 快照 |
 | `/sysstatus` `/activity` | GET | 只读 | 系统在线状态 / 实时活动 |
 | `/event` `/open` | GET/POST | 只读/打开 | 事件详情、打开文件 |
 | `/matter` `/matter/record` `/matter/check` `/matter/close` `/matter/reopen` | GET/POST | 读+写 | 事务详情与写通道（写入交给库内 CLI） |
-| `/focus` | GET/POST | 读+写 | 专注块 |
+| `/focus` | POST | 写 | 专注块声明/结束（**GET 已删除 → 410 墓碑**，专注态以 `/state.focus` 为单一真相源） |
 | `/active-domains` | GET | 读+写 | 活跃关注域（`?match=1` 触发一次匹配） |
 | `/rebuild` | POST | 写 | 幂等重建库内快照 |
-| `/disposition/act` | POST | 写 | 待议流入处置（**目前 API-only，无 UI 控件**） |
+| `/disposition/act` | POST | 写 | 待议流入处置（面板「流入处置」卡有控件：拒绝/转出 + **理由必填**；host 只做校验与透传，判定在库内 CLI） |
 
 agent 工具：`workbench_todo` · `workbench_focus` · `workbench_active_domains` · `workbench_matter`。
 
@@ -106,10 +111,9 @@ agent 工具：`workbench_todo` · `workbench_focus` · `workbench_active_domain
 
 - **依赖库内产物与目录约定**（`Work/<客户>/…`、`_meta/out/*.json`）。这些约定不随本仓库发布。
 - **Windows 偏向**：采集脚本是 PowerShell 5.1；`dws` / `lark-cli` 缺失时相关卡片显示不可用。
-- **无测试**：本仓库不含测试套件（原项目的验收套件与真实数据夹具未发布）。
-- **部分路由无 UI 消费方**：`/domain-health`、`/disposition/act`（以及 `/focus` GET）目前只提供 API。
+- **测试只覆盖"结构性契约"**：本仓库自带 `selftest.mjs`（见 §8），但它是**离线、无 vault** 的：不覆盖真实 DSH 运行时、槽位渲染与真实数据链路。
+- **依赖外部授权的能力**：飞书任务/日历/邮箱需在**你自己的** CLI 侧完成授权（缺 scope 时面板会写明缺哪个，而不是假装为空）；短信链路只在 macOS 上可用（本机无 `chat.db` 时不参与采集）。
 - **指标口径**：所有阈值/时限默认标注"未校准"（`calibrated: false`），面板只展示、不做考核。
-- **未发布的开关**：原实现里有若干环境变量（如自测隔离开关）只在特定部署下使用。
 - 本插件为**个人工作台**性质，未做多用户/权限模型；请只在**本机**使用（host 绑定 127.0.0.1）。
 
 ---
@@ -120,13 +124,13 @@ agent 工具：`workbench_todo` · `workbench_focus` · `workbench_active_domain
 node selftest.mjs      # 零依赖、离线；输出 PASS = n / FAIL = m
 ```
 
-它自带一份**中性 fixture**（`selftest/fixtures/_meta/out/*.json`：`objects` / `disposition` / `crosscheck` / `domain-health`，全部是 `示例客户` / `组织甲` / `MT-20250101-001` 这类虚构示例），并在四个层面给出证据：
+它自带一份**中性 fixture**（`selftest/fixtures/_meta/out/*.json`：`objects` / `disposition` / `crosscheck` / `domain-health` / `brief` / `insights`，全部是 `示例客户` / `组织甲` / `MT-20250101-001` 这类虚构示例），并在四个层面给出证据：
 
 | 组 | 证明什么 |
 |----|---------|
-| **1 路由真跑** | 用桩 `ctx`（捕获 `webServer.register`）挂载 host 半体，用假 `req`/`res` 调 `/objects`、`/disposition`、`/crosscheck`、`/domain-health` → 断言 **200 + 面板实际消费的字段**（`objects[].key/state/next_step`、`disposition.summary.{landed,noLanding,landingRate}`、`crosscheck.trace/multiSource/contradictions` 等） |
+| **1 路由真跑** | 用桩 `ctx`（捕获 `webServer.register`）挂载 host 半体，用假 `req`/`res` 调 `/objects`、`/disposition`、`/crosscheck`、`/domain-health`、`/brief`、`/insights` → 断言 **200 + 面板实际消费的字段**（`objects[].key/state/next_step`、`disposition.summary.{landed,noLanding,landingRate}`、`crosscheck.trace/multiSource/contradictions`、`brief.todayMustDo/waiting/overnight`、`insights[].evidence/support/rebuttal` 等）；另有三条**"不许静默"**断言：台账未生成必须 **503 + 明确文案**、`/focus` GET 必须是 **410 墓碑**、`/disposition/act` 的三类非法入参必须在**调用库内 CLI 之前**被拒（这也是它能在克隆体里被断言的原因） |
 | **2 配置缺失必须响** | 不设 `DSH_WORKBENCH_KNOWLEDGE` 时 import **直接抛错**并点名该变量；断言错误信息里**没有**任何硬编码的个人路径（不允许静默回落到某人的桌面） |
-| **3 源码契约** | 两半体语法通过 · `CARD_ORDER` 存在且 **13 张卡顺序可断言**（顺序是产品承诺，不能是执行顺序的副产品）· `package.json` 元数据正确 |
+| **3 源码契约** | 两半体语法通过 · `CARD_ORDER` 存在且 **15 张卡顺序可断言**（顺序是产品承诺，不能是执行顺序的副产品）· `package.json` 元数据正确 |
 | **4 脱敏守卫** | 仓库**扫描自己**：个人绝对路径 / 邮箱 / 手机号 / 凭据形态 / URL 里的令牌 ⇒ **0 命中**；**带负向对照**（人造敏感串必须被抓到，否则"全绿"毫无意义）· 并断言 fixture 里每个 `Work/<目录>/` 都来自中性示例 |
 
 **它不能证明什么**（别过度解读一次全绿）：不覆盖真实 DSH 运行时与槽位渲染 · 不覆盖浏览器半体交互 · 不覆盖依赖真实 vault 的链路（日程/待办/DSH 工具）· 真实业务词表的**权威脱敏扫描在仓库外**留存，这里只做结构性规则与 fixture 中性性。
@@ -153,6 +157,19 @@ node selftest.mjs           # 自证（见 §8）
 
 ---
 
-## 10. 许可
+## 10. 版本与同步来源
+
+本仓库是**从作者私有的知识库工作台里抽取出的插件本体**，经过脱敏后发布。发布不是手改，而是"复制 → 逐条替换（每条断言命中次数）→ 反扫（命中必须为 0）→ 克隆复验"的固定流程；权威脱敏词表留在仓库外，因此仓库内的守卫只做结构性规则（见 §8）。同步时记录的源文件指纹：
+
+| 源（库内插件） | SHA256 前 16 位 |
+|---------------|----------------|
+| `lib/index.js` | `0049b3571e475ce1` |
+| `lib/client.js` | `e110ab19b3b1eec4` |
+
+对应本仓库版本 `0.2.0`（15 张卡 · 六个库内产物只读透传 + 三条"不许静默"出口）。**发布仓与源项目此后会各自演进**：再次同步请重跑上面的固定流程，不要手工编辑本仓库的 `lib/`。
+
+---
+
+## 11. 许可
 
 MIT —— 见 `LICENSE`。
