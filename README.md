@@ -114,11 +114,35 @@ agent 工具：`workbench_todo` · `workbench_focus` · `workbench_active_domain
 
 ---
 
-## 8. 开发
+## 8. Self-test（clone 下来就能自证）
+
+```bash
+node selftest.mjs      # 零依赖、离线；输出 PASS = n / FAIL = m
+```
+
+它自带一份**中性 fixture**（`selftest/fixtures/_meta/out/*.json`：`objects` / `disposition` / `crosscheck` / `domain-health`，全部是 `示例客户` / `组织甲` / `MT-20250101-001` 这类虚构示例），并在四个层面给出证据：
+
+| 组 | 证明什么 |
+|----|---------|
+| **1 路由真跑** | 用桩 `ctx`（捕获 `webServer.register`）挂载 host 半体，用假 `req`/`res` 调 `/objects`、`/disposition`、`/crosscheck`、`/domain-health` → 断言 **200 + 面板实际消费的字段**（`objects[].key/state/next_step`、`disposition.summary.{landed,noLanding,landingRate}`、`crosscheck.trace/multiSource/contradictions` 等） |
+| **2 配置缺失必须响** | 不设 `DSH_WORKBENCH_KNOWLEDGE` 时 import **直接抛错**并点名该变量；断言错误信息里**没有**任何硬编码的个人路径（不允许静默回落到某人的桌面） |
+| **3 源码契约** | 两半体语法通过 · `CARD_ORDER` 存在且 **13 张卡顺序可断言**（顺序是产品承诺，不能是执行顺序的副产品）· `package.json` 元数据正确 |
+| **4 脱敏守卫** | 仓库**扫描自己**：个人绝对路径 / 邮箱 / 手机号 / 凭据形态 / URL 里的令牌 ⇒ **0 命中**；**带负向对照**（人造敏感串必须被抓到，否则"全绿"毫无意义）· 并断言 fixture 里每个 `Work/<目录>/` 都来自中性示例 |
+
+**它不能证明什么**（别过度解读一次全绿）：不覆盖真实 DSH 运行时与槽位渲染 · 不覆盖浏览器半体交互 · 不覆盖依赖真实 vault 的链路（日程/待办/DSH 工具）· 真实业务词表的**权威脱敏扫描在仓库外**留存，这里只做结构性规则与 fixture 中性性。
+
+> 为什么仓库里保留 `cordis.patch.yml`：它是本包的**安装面**（`package.json` 的 `dsh.bundle.patch` 指向它）。只发 `lib/` 的话别人 clone 下来**装不起来**，自证也就无从谈起。
+
+CI：`.github/workflows/selftest.yml` 在 Linux + Windows × Node 22/24 上跑同一条命令。
+
+---
+
+## 9. 开发
 
 ```bash
 node --check lib/index.js   # host 半体语法
 node --check lib/client.js  # 浏览器半体语法
+node selftest.mjs           # 自证（见 §8）
 ```
 
 约定：
@@ -129,6 +153,6 @@ node --check lib/client.js  # 浏览器半体语法
 
 ---
 
-## 9. 许可
+## 10. 许可
 
 MIT —— 见 `LICENSE`。

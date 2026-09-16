@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "generatedAt": "2025-01-01T00:00:00.000Z",
+  "kernel": { "version": 1, "rules": ["R1 session", "R2 client", "R3 domain", "R0 unassigned"], "clientDomains": 2 },
+  "coverage": {
+    "records": 4,
+    "anchored": 3,
+    "unassigned": 1,
+    "byKind": { "session": 1, "client": 1, "domain": 0, "unassigned": 1 },
+    "derivation": { "path": 2, "domain": 0, "counterparty": 0, "none": 1 },
+    "note": "fixture only"
+  },
+  "objects": [
+    {
+      "key": "场次:示例客户-0101",
+      "kind": "session",
+      "parent": "客户:组织甲",
+      "account": "示例客户",
+      "domain_id": "example-client",
+      "evidence": "路径段 场次/示例客户-0101",
+      "counts": { "matters": 2, "triggers": 1, "open_matters": 1, "unresponded_triggers": 1, "overdue": 1 },
+      "state": "overdue",
+      "next_step": { "source": "matter", "id": "MT-20250101-001", "title": "示例客户-0101 · 示例交付物", "due_at": "2025-01-05", "action": "存在示例产出物", "owner": "我", "overdue": true },
+      "owner": "我",
+      "due_at": "2025-01-05",
+      "matter_ids": ["MT-20250101-001"],
+      "trigger_ids": ["TR-R-2-001"],
+      "sources": ["Work/示例客户/Output/场次/示例客户-0101"],
+      "multi_source": { "matter_kinds": ["project-derived"], "trigger_rclasses": ["R-2"], "evidence_lines": 2, "trajectory": "both" },
+      "trace": { "origin_inbound": 2, "source_ref": 1, "records": 3 }
+    },
+    {
+      "key": "客户:组织乙",
+      "kind": "client",
+      "parent": null,
+      "account": "组织乙",
+      "domain_id": "example-org-b",
+      "evidence": "目录 Work/组织乙/ = 注册客户域 组织乙",
+      "counts": { "matters": 0, "triggers": 1, "open_matters": 0, "unresponded_triggers": 1, "overdue": 0 },
+      "state": "open",
+      "next_step": { "source": "trigger", "id": "TR-R-2-002", "title": "待回复：示例事项", "due_at": "2025-01-09T00:00:00.000Z", "action": "回复 或 建事务", "owner": "我", "overdue": false },
+      "owner": "我",
+      "due_at": "2025-01-09T00:00:00.000Z",
+      "matter_ids": [],
+      "trigger_ids": ["TR-R-2-002"],
+      "sources": ["Work/组织乙/Input/示例纪要.md"],
+      "multi_source": { "matter_kinds": [], "trigger_rclasses": ["R-2"], "evidence_lines": 1, "trajectory": "trigger-only" },
+      "trace": { "origin_inbound": 1, "source_ref": 1, "records": 1 }
+    },
+    {
+      "key": "(未归属)",
+      "kind": "unassigned",
+      "parent": null,
+      "account": null,
+      "domain_id": null,
+      "evidence": null,
+      "counts": { "matters": 0, "triggers": 1, "open_matters": 0, "unresponded_triggers": 0, "overdue": 0 },
+      "state": "settled",
+      "next_step": null,
+      "owner": null,
+      "due_at": null,
+      "matter_ids": [],
+      "trigger_ids": ["TR-R-9-001"],
+      "sources": [],
+      "multi_source": { "matter_kinds": [], "trigger_rclasses": ["R-9"], "evidence_lines": 1, "trajectory": "trigger-only" },
+      "trace": { "origin_inbound": 1, "source_ref": 0, "records": 1 }
+    }
+  ],
+  "rollup": {
+    "客户:组织甲": { "key": "客户:组织甲", "matters": 2, "triggers": 1, "children": ["场次:示例客户-0101"], "state": "overdue", "lines": { "matter": 1, "trigger": 1 }, "trajectory": "both" },
+    "客户:组织乙": { "key": "客户:组织乙", "matters": 0, "triggers": 1, "children": [], "state": "open", "lines": { "matter": 0, "trigger": 1 }, "trajectory": "trigger-only" }
+  },
+  "byRecord": {
+    "MT-20250101-001": { "key": "场次:示例客户-0101", "kind": "session", "parent": "客户:组织甲", "account": "示例客户", "domain_id": "example-client", "evidence": "路径段 场次/示例客户-0101" },
+    "TR-R-2-001": { "key": "场次:示例客户-0101", "kind": "session", "parent": "客户:组织甲", "account": "示例客户", "domain_id": "example-client", "evidence": "路径段 场次/示例客户-0101" },
+    "TR-R-2-002": { "key": "客户:组织乙", "kind": "client", "parent": null, "account": "组织乙", "domain_id": "example-org-b", "evidence": "目录 Work/组织乙/ = 注册客户域 组织乙" }
+  },
+  "unassigned": ["TR-R-9-001"]
+}
