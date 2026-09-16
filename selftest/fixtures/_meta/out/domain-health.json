@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "generatedAt": "2025-01-01T00:00:00.000Z",
+  "summary": { "domains": 3, "declared": 0, "suggestions": 1, "quiet_7d": 2, "calibrated": false },
+  "domains": [
+    { "id": "example-client", "name": "组织甲", "kind": "client", "declared": false, "suggestions": 1, "quiet_7d": false, "inflow_7d": 2, "open_matters": 1 },
+    { "id": "example-org-b", "name": "组织乙", "kind": "client", "declared": false, "suggestions": 0, "quiet_7d": true, "inflow_7d": 0, "open_matters": 0 },
+    { "id": "example-topic", "name": "示例主题", "kind": "topic", "declared": false, "suggestions": 0, "quiet_7d": true, "inflow_7d": 0, "open_matters": 0 }
+  ]
+}

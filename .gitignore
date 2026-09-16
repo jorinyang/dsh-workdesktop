@@ -12,6 +12,11 @@ build/
 .env
 .env.*
 
+# ⚠️ 例外：selftest 自带的中性 fixture 也放在 `_meta/out/` 下（模拟真实产物布局），
+#    否则会被上面的 `_meta/` 规则一并忽略 ⇒ 克隆体跑不起来。它们全是虚构示例，不含真实数据。
+!selftest/fixtures/_meta/
+!selftest/fixtures/_meta/**
+
 # 编辑器 / 系统
 .DS_Store
 Thumbs.db

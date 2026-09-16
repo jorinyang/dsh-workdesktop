@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "generatedAt": "2025-01-01T00:00:00.000Z",
+  "basis": "fixture only: judgement/reason/time come from the gate output, landing is resolved by path first",
+  "calibrated": false,
+  "joinHazard": {
+    "idCollisionCount": 1,
+    "collisions": [{ "id": "IN-20250101-001", "sources": ["A", "B"] }],
+    "ambiguousRecords": [],
+    "note": "channels share the IN-YYYYMMDD-NNN space, so never join across channels by id alone"
+  },
+  "summary": {
+    "inbound": 4,
+    "judged": 4,
+    "withReason": 4,
+    "landings": { "matter": 1, "trigger": 1, "both": 1, "none": 1 },
+    "landed": 3,
+    "noLanding": 1,
+    "landingRate": 0.75,
+    "staleMaxDays": 2.5,
+    "dispositions": { "in-scope-assigned": 4 },
+    "matchBy": { "origin": 3, "id": 0, "none": 1 },
+    "bySource": {
+      "A": { "inbound": 2, "inDashboard": 2, "noLanding": 0, "landed": 2 },
+      "B": { "inbound": 2, "inDashboard": 2, "noLanding": 1, "landed": 1 }
+    },
+    "definition": "landingRate = landed / should-be-disposed; a gate disposition only means 'judged', not 'handled'"
+  },
+  "entries": [
+    { "inbound_id": "IN-20250101-001", "source": "A", "origin": "Work/示例客户/Output/场次/示例客户-0101#config", "digest_head": "示例交付物 已产出 1 个", "verdict": "in-scope-assigned", "reason": "命中关注域 1 个", "judged_at": "2025-01-01T00:00:00.000Z", "landing": { "type": "both", "matter_ids": ["MT-20250101-001"], "trigger_ids": ["TR-R-2-001"], "states": ["事务:todo", "触发:pending"], "match_by": "origin" }, "pending_days": null, "settled": false },
+    { "inbound_id": "IN-20250101-002", "source": "B", "origin": "Work/组织乙/Input/示例纪要.md", "digest_head": "示例纪要", "verdict": "in-scope-assigned", "reason": "命中关注域 1 个", "judged_at": "2025-01-01T00:00:00.000Z", "landing": { "type": "none", "matter_ids": [], "trigger_ids": [], "states": [], "match_by": null }, "pending_days": 2.5, "settled": false }
+  ],
+  "noLanding": [
+    { "inbound_id": "IN-20250101-002", "source": "B", "origin": "Work/组织乙/Input/示例纪要.md", "digest_head": "示例纪要", "judged_at": "2025-01-01T00:00:00.000Z", "pending_days": 2.5, "reason": "命中关注域 1 个" }
+  ]
+}

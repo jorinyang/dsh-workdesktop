@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "generatedAt": "2025-01-01T00:00:00.000Z",
+  "definitions": {
+    "traceStrict": "has origin_inbound (traceable to the upstream inbound record)",
+    "traceLoose": "any of origin_inbound / origin / source_ref present",
+    "multiSource": "same object has both a matter line and a trigger line = multi-source; one line only = single source",
+    "contradiction": "contradictions are listed, never auto-resolved"
+  },
+  "trace": {
+    "total": 4,
+    "strict": 3,
+    "loose": 4,
+    "strictRate": 0.75,
+    "looseRate": 1,
+    "bySide": {
+      "matter": { "total": 2, "strict": 2, "loose": 2, "withSourceRef": 2, "strictRate": 1, "looseRate": 1, "sourceRefRate": 1 },
+      "trigger": { "total": 2, "strict": 1, "loose": 2, "withSourceRef": 0, "strictRate": 0.5, "looseRate": 1, "sourceRefRate": 0 }
+    },
+    "noSource": [],
+    "triggerWithoutSourceRef": ["TR-R-2-002", "TR-R-9-001"]
+  },
+  "multiSource": {
+    "objects": 3,
+    "both": 1,
+    "matterOnly": 0,
+    "triggerOnly": 2,
+    "supportRate": 0.333,
+    "singleSourceOverdue": [{ "key": "客户:组织乙", "trajectory": "trigger-only", "overdue": 1 }]
+  },
+  "objects": [
+    { "key": "场次:示例客户-0101", "kind": "session", "matters": 1, "triggers": 1, "lines": 2, "trajectory": "both", "overdue": 1 },
+    { "key": "客户:组织乙", "kind": "client", "matters": 0, "triggers": 1, "lines": 1, "trajectory": "trigger-only", "overdue": 1 }
+  ],
+  "planVsActual": {
+    "samples": [{ "matter_id": "MT-20250101-001", "due_at": "2025-01-05", "closed_at": "2025-01-07", "delta_days": 2 }],
+    "late": 1,
+    "onTime": 0,
+    "avgDeltaDays": 2,
+    "openOverdue": ["MT-20250101-002"],
+    "note": "fixture only"
+  },
+  "promiseVsDelivery": { "total": 1, "executed": 1, "items": [{ "candidate_id": "PC-EX-1", "action": "matter", "expect": "a matter referencing the candidate exists", "ok": true, "found": "MT-20250101-003" }], "notExecuted": [], "executedRate": 1 },
+  "attribution": { "mismatches": [], "count": 0 },
+  "contradictions": [
+    { "rule": "matter-closed-trigger-open", "subject": "客户:组织乙", "detail": "fixture: a closed matter and an overdue unanswered trigger coexist", "evidence": ["MT-20250101-004", "TR-R-2-002"] }
+  ],
+  "duplicates": []
+}

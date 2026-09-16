@@ -1,0 +1,25 @@
+name: selftest
+
+# The suite is zero-dependency and offline on purpose: it must be able to prove the
+# repository works from a bare clone, on any machine, with no vault and no DSH runtime.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ['22.x', '24.x']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Run selftest
+        run: node selftest.mjs
