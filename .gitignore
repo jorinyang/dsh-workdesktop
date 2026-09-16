@@ -1,0 +1,19 @@
+# 依赖与运行时
+node_modules/
+*.log
+*.tmp
+*.pid
+
+# 本地产物 / 数据（本仓库只放插件本体，不含任何数据）
+_meta/
+dist/
+build/
+.dsh/
+.env
+.env.*
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

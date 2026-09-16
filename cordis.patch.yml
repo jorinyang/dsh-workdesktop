@@ -1,0 +1,15 @@
+# dsh-workdesktop bundle patch
+#
+# Mounted by `dsh plugin --profile <name> add <this package>`: the CLI appends
+# `dsh-workbench` to that profile's `dsh.profile.bundles`, and the profile boot
+# merges this file like any other bundle layer.
+#
+# Runtime options are read from the environment by the host half, so no config
+# schema (and no schemastery dependency) is needed:
+#   DSH_WORKBENCH_KNOWLEDGE   local knowledge-base root   (**required** — no default; the host throws if unset)
+#   DSH_WORKBENCH_HERMES_URL  hermes-default web UI       (default http://127.0.0.1:8787)
+#   DSH_WORKBENCH_CACHE_MS    snapshot cache lifetime     (default 120000)
+#   DSH_WORKBENCH_POWERSHELL  powershell.exe path         (default system Windows PowerShell 5.1)
+- insert:
+    - id: workbench
+      name: 'dsh-workbench'

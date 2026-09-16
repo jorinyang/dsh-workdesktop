@@ -1,0 +1,19 @@
+# ⚠️ charset 必须为 utf-8（不带 BOM）。
+# 本仓库的一次真实事故：源码被"UTF-8 字节按 GBK 解读后再存成 UTF-8"，
+# 造成 840 处字符丢失 + 84 处换行被吞 + 语法错误，且表面上仍像正常文件。
+# 因此这里强制 UTF-8，并在提交前建议运行一次编码自检（见 README「开发」一节）。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.{md,markdown}]
+trim_trailing_whitespace = false
+
+[*.{yml,yaml}]
+indent_size = 2
