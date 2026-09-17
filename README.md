@@ -1,6 +1,6 @@
 # dsh-workdesktop
 
-> A local-first **workbench panel** for [DeepSeek Harness](https://github.com/) (DSH) — a Cordis plugin that renders one sidebar tab with 13 live cards: system/device status, calendar & todos pulled from your local CLIs, recent recordings, your local knowledge base, and an **object-centric layer** (disposition ledger + cross-source checks).
+> A local-first **workbench panel** for [DeepSeek Harness](https://github.com/) (DSH) — a Cordis plugin that renders one sidebar tab with 15 live cards: a decision surface, commitments awaiting response, matters, calendar & todos pulled from your local CLIs, recent recordings, your local knowledge base, and an **object-centric layer** (disposition ledger + cross-source checks).
 
 本仓库只包含**插件本体**（host 半体 + 浏览器半体）。它**不含任何数据**：所有内容都来自你本机的知识库目录，路径由环境变量指定。
 
@@ -13,7 +13,7 @@
 | 半体 | 文件 | 运行位置 | 职责 |
 |------|------|---------|------|
 | host | `lib/index.js` | DSH 的 Node 进程 | 挂载 `/workbench/api/*` 只读路由、注册 4 个 agent 工具、跑本机 CLI 采集 |
-| client | `lib/client.js` | 浏览器页面 | 在侧边栏注册「工作台」tab，渲染 13 张卡片，按需轮询 host |
+| client | `lib/client.js` | 浏览器页面 | 在侧边栏注册「工作台」tab，渲染 15 张卡片，按需轮询 host |
 
 设计原则（决定了它的行为）：
 
@@ -31,6 +31,15 @@
   - `dws` —— 钉钉侧日程/待办/听记采集
   - `lark-cli` —— 飞书侧日程/任务采集（需已授权）
 - **Windows**：host 半体用 PowerShell 5.1 跑采集脚本（macOS/Linux 可运行，但采集类卡片需自行替换实现）。
+- ⚠️ **侧边栏插件版本前提（重要）**：本面板注册在 `dsh-better-sidebar` 的 tab 上，**必须用 0.18.x**。
+  该插件 0.19.1 引入了新的 peer 依赖要求（`^0.1.5-rc.1`）；在 `0.1.x-alpha.*` 的宿主上，实测会**整条侧边栏渲染崩溃**（`React error #130`，tab 条直接消失，不只是本面板）。
+  处理办法：把依赖**精确钉住**到可用版本，别用 `@latest`：
+
+  ```jsonc
+  // <profile>/package.json
+  "dsh-better-sidebar": "0.18.1"   // 不要写 ^0.19.1，也不要写 latest
+  ```
+  （关于崩溃机制：peer 不满足是市场日志给出的兼容性告警；0.18.1 同样不满足该 peer 却可用，所以"peer 不满足 ⇒ 必崩"只是推断，尚未证实——如实标注。）
 
 ---
 
@@ -69,7 +78,10 @@ export DSH_WORKBENCH_KNOWLEDGE="$HOME/my-vault"
 
 ## 5. 15 张卡 / 主要路由
 
-卡片（顺序即面板渲染顺序）：**今日决策面** · 事务 · 待响应触发 · 日程 · 待办 · 专注 · 活跃关注域 · 流入处置 · 唤起·沉淀复利 · **在场对象** · **跨源洞察** · 验收指标 · 知识库 · 近期听记 · 系统状态。
+卡片（顺序即面板渲染顺序，三带布局）：
+**决策** · **响应** · **事务** · 日程 · 待办 · 专注 · **对象** · **流入** · **跨源洞察** · **资产** · **活跃** · **验收** · 知识库 · 近期听记 · 系统。
+
+> 顺序由代码里的默认表驱动；用户可**长按任意卡片拖动排序**（长按约 400ms 进入拖动，无手柄、无浮层按钮）。同一张卡上，**短按卡片名 = 场景交互**（当前 15 张卡统一为"折叠/展开本卡内容"，再点一次恢复），**长按整卡 = 拖动排序**，两者不会互相吞掉。拖动的结果落在知识库的 `ui-prefs.json`（覆盖层：只影响渲染、不改默认表；未知卡片名被忽略）；面板顶部有一行「恢复默认顺序」文本链接。未登记的卡片始终追加在末尾，不会消失。
 
 其中三张是"按**事**而不是按来源"的：今日决策面（热层：昨夜动向 / 今日必办 / 待定等对方）· 在场对象（一个对象上事务线与触发线并置）· 跨源洞察（每条带证据链、支撑强度与**可反驳入口**，无证据不入面板）。
 
@@ -91,7 +103,11 @@ host 路由（均在 `/workbench/api` 下）：
 | `/event` `/open` | GET/POST | 只读/打开 | 事件详情、打开文件 |
 | `/matter` `/matter/record` `/matter/check` `/matter/close` `/matter/reopen` | GET/POST | 读+写 | 事务详情与写通道（写入交给库内 CLI） |
 | `/focus` | POST | 写 | 专注块声明/结束（**GET 已删除 → 410 墓碑**，专注态以 `/state.focus` 为单一真相源） |
-| `/active-domains` | GET | 读+写 | 活跃关注域（`?match=1` 触发一次匹配） |
+| `/active-domains` | GET/POST | 读+写 | 活跃关注域（`?match=1` 触发一次匹配；POST 为声明/清除，与 agent 工具共用同一条 CLI） |
+| `/ui-prefs` | GET/POST/DELETE | 读+写 | 卡片顺序覆盖层（未知卡片名忽略并回报；DELETE = 恢复默认）。**注意**：同一文件里的 `briefSeenAt`/`briefRead` 被库内 `build-brief.mjs` 当游标消费，所以它不只是渲染偏好 |
+| `/matter/reschedule` | POST | 写 | 事务改期（走库内 CLI） |
+| `/triggers` | GET | 只读 | 响应清单（触发详情） |
+| `/trigger/respond` `/trigger/act` `/trigger/to-matter` | POST | 写 | 触发的响应 / 处置 / 转事务（判定在库内 CLI，host 只校验与透传） |
 | `/rebuild` | POST | 写 | 幂等重建库内快照 |
 | `/disposition/act` | POST | 写 | 待议流入处置（面板「流入处置」卡有控件：拒绝/转出 + **理由必填**；host 只做校验与透传，判定在库内 CLI） |
 
@@ -163,10 +179,12 @@ node selftest.mjs           # 自证（见 §8）
 
 | 源（库内插件） | SHA256 前 16 位 |
 |---------------|----------------|
-| `lib/index.js` | `0049b3571e475ce1` |
-| `lib/client.js` | `e110ab19b3b1eec4` |
+| `lib/index.js` | `22718127106b5d51` |
+| `lib/client.js` | `aaeed38af4994303` |
 
-对应本仓库版本 `0.2.0`（15 张卡 · 六个库内产物只读透传 + 三条"不许静默"出口）。**发布仓与源项目此后会各自演进**：再次同步请重跑上面的固定流程，不要手工编辑本仓库的 `lib/`。
+（上表是**同步时的源指纹**；对应的脱敏产物指纹为 `index.js 948519755775ad36` · `client.js e83c7d4cc1e6ae89`，写入 `dsh-sync-shas.json` 与脱敏报告，便于判断本发布仓落后库内多少。）
+
+对应本仓库版本 **0.3.0**（15 张卡 · 三带布局 · 长按拖动排序 + `ui-prefs` 覆盖层 · 卡片名=场景交互 · 通用二级/三级详情页 · 六个库内产物只读透传 + 三条"不许静默"出口）。**发布仓与源项目此后会各自演进**：再次同步请重跑上面的固定流程（同步脚本会打印新旧指纹），不要手工编辑本仓库的 `lib/`。
 
 ---
 

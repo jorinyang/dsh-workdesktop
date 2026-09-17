@@ -14,6 +14,9 @@
  *      the feedback ledger's explicit 503, the retired `/focus` GET tombstone (410), and
  *      the disposition write exit's **source-level validation** (invalid input is rejected
  *      before any vault CLI is spawned — which is why it is assertable inside a clone).
+ *      The same round-trip is proven for the card-order overlay (`/ui-prefs`
+ *      GET/POST/DELETE): unknown keys are ignored *and reported*, an empty write is
+ *      rejected rather than half-applied, and DELETE really removes the file.
  *   2. Missing configuration must fail loudly. The plugin resolves the knowledge base from
  *      `DSH_WORKBENCH_KNOWLEDGE`; a silent fallback to somebody's desktop would be worse than
  *      a crash, so we assert the import throws and that the message names the variable.
@@ -106,7 +109,7 @@ function call(spec, url, method = 'GET', body = null) {
   return { promise, out };
 }
 
-const { spec } = await mountPlugin(FIXTURES);
+const { spec, mod } = await mountPlugin(FIXTURES);
 chk('L1-1', 'ctx.webServer.register 被以 prefix 方式调用，路径为 /workbench/api',
   spec !== null && spec.kind === 'prefix' && spec.path === ROUTE,
   spec === null ? '未捕获到 register 调用' : `kind=${spec.kind} path=${spec.path}`);
@@ -207,6 +210,65 @@ for (const [route, verify, what] of cases) {
   }
 }
 
+// ── 1c. /ui-prefs: the card-order overlay (read-back + rejection + reset) ────────
+// The panel's drag-to-reorder writes an overlay **file in the vault**, not localStorage —
+// which is exactly why a clone can prove the contract: unknown card keys / unknown fields
+// are ignored *and reported* (never silently written into the file), the overlay is
+// readable back after a restart-shaped reload, an empty write is rejected outright, and
+// DELETE really removes the file so the compiled-in default order takes over again.
+{
+  const OVERLAY = path.join(FIXTURES, '_meta', 'out', 'ui-prefs.json');
+  const getPrefs = async () => {
+    const o = await call(spec, ROUTE + '/ui-prefs').promise;
+    return { code: o.code, raw: String(o.body), d: o.body ? JSON.parse(o.body) : null };
+  };
+  const order = (x) => JSON.stringify(x === null || x === undefined ? null : x);
+
+  const g0 = await getPrefs();
+  chk('L1-8/uiprefs-get', '/ui-prefs GET → 200 + 15 个已知卡片键 + 无覆盖层时 exists=false（不当成空数据）',
+    g0.code === 200 && g0.d !== null && Array.isArray(g0.d.known) && g0.d.known.length === 15
+    && g0.d.exists === false && g0.d.prefs === null
+    && Array.isArray(g0.d.fields)
+    && ['cardOrder', 'briefSeenAt', 'briefRead'].every((f) => g0.d.fields.includes(f)),
+    `code=${g0.code} body=${g0.raw.slice(0, 160)}`);
+
+  const p1 = await call(spec, ROUTE + '/ui-prefs', 'POST',
+    { cardOrder: ['metrics', 'brief', 'no-such-card', 'metrics'], rogue: 1 }).promise;
+  const d1 = p1.body ? JSON.parse(p1.body) : null;
+  chk('L1-9/uiprefs-post', '/ui-prefs POST → 未知卡片键与未知字段被忽略并回报，重复只取首次',
+    p1.code === 200 && d1 !== null && d1.ok === true
+    && Array.isArray(d1.ignored) && d1.ignored.length === 1 && d1.ignored[0] === 'no-such-card'
+    && Array.isArray(d1.duplicated) && d1.duplicated.length === 1 && d1.duplicated[0] === 'metrics'
+    && Array.isArray(d1.ignoredKeys) && d1.ignoredKeys.length === 1 && d1.ignoredKeys[0] === 'rogue'
+    && order(d1.prefs?.cardOrder) === order(['metrics', 'brief']),
+    `code=${p1.code} body=${String(p1.body).slice(0, 160)}`);
+
+  const g1 = await getPrefs();
+  chk('L1-10/uiprefs-persist', '/ui-prefs 覆盖层落盘后可读回（exists=true · 顺序一致 · 带 updatedAt）',
+    g1.code === 200 && g1.d !== null && g1.d.exists === true
+    && order(g1.d.prefs?.cardOrder) === order(['metrics', 'brief'])
+    && typeof g1.d.prefs?.updatedAt === 'string' && String(g1.d.prefs.updatedAt).length > 0,
+    `code=${g1.code} body=${String(g1.raw).slice(0, 160)}`);
+
+  const p2 = await call(spec, ROUTE + '/ui-prefs', 'POST', { rogue: 1 }).promise;
+  const d2 = p2.body ? JSON.parse(p2.body) : null;
+  const g2 = await getPrefs();
+  chk('L1-11/uiprefs-reject', '/ui-prefs POST 无任何已知字段 → ok=false + 明确文案，且不写坏既有覆盖层',
+    p2.code === 200 && d2 !== null && d2.ok === false && /至少给一个字段/.test(String(d2.error || ''))
+    && g2.d !== null && g2.d.exists === true && order(g2.d.prefs?.cardOrder) === order(['metrics', 'brief']),
+    `code=${p2.code} body=${String(p2.body).slice(0, 160)}`);
+
+  const del = await call(spec, ROUTE + '/ui-prefs', 'DELETE').promise;
+  const dd = del.body ? JSON.parse(del.body) : null;
+  const g3 = await getPrefs();
+  const left = fs.existsSync(OVERLAY);
+  if (left) fs.rmSync(OVERLAY, { force: true });   // 断言失败也不给仓库留脏文件
+  chk('L1-12/uiprefs-reset', '/ui-prefs DELETE → 覆盖层文件被删除，GET 回到 exists=false（默认顺序不受影响）',
+    del.code === 200 && dd !== null && dd.ok === true && dd.prefs === null
+    && g3.d !== null && g3.d.exists === false && g3.d.prefs === null && left === false,
+    `code=${del.code} 断言时残留=${left} 清后残留=${fs.existsSync(OVERLAY)}`);
+}
+
 // ── 2. missing configuration must fail loudly ────────────────────────────────────
 console.log('\n[2] missing DSH_WORKBENCH_KNOWLEDGE fails loudly (no silent fallback)');
 {
@@ -232,11 +294,19 @@ for (const f of ['lib/index.js', 'lib/client.js']) {
   const src = read(path.join(HERE, 'lib', 'client.js'));
   const m = src.match(/const CARD_ORDER\s*=\s*\[([\s\S]*?)\]/);
   const keys = m === null ? [] : [...m[1].matchAll(/'([a-z]+)'/g)].map((x) => x[1]);
-  const EXPECT = ['brief', 'matters', 'triggers', 'schedule', 'todos', 'focus', 'domains',
-    'inflow', 'recall', 'objects', 'insights', 'metrics', 'kb', 'minutes', 'system'];
+  const EXPECT = ['brief', 'triggers', 'matters', 'schedule', 'todos', 'focus', 'objects',
+    'inflow', 'insights', 'recall', 'domains', 'metrics', 'kb', 'minutes', 'system'];
   chk('L3-CARD_ORDER', `CARD_ORDER 存在且 ${EXPECT.length} 张卡顺序可断言`,
     m !== null && keys.length === EXPECT.length && keys.every((k, i) => k === EXPECT[i]),
     m === null ? '未找到 CARD_ORDER' : keys.join(','));
+  // The host keeps a second copy of the key list only to filter the overlay. If the two
+  // ever drift, the failure mode is **silent card loss** (a dragged card is treated as an
+  // unknown key and dropped), so the parity itself has to be asserted — in the same order,
+  // item by item, not just "same length".
+  const host = mod.__test?.KNOWN_CARD_KEYS;
+  chk('L3-KNOWN_CARD_KEYS', 'host 的 KNOWN_CARD_KEYS 与 client 的 CARD_ORDER 逐项一致（防静默丢卡）',
+    Array.isArray(host) && host.length === keys.length && host.every((k, i) => k === keys[i]),
+    `host=${Array.isArray(host) ? host.join(',') : String(host)}`);
 }
 {
   const pkg = JSON.parse(read(path.join(HERE, 'package.json')));
