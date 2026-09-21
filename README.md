@@ -1,6 +1,6 @@
 # dsh-workdesktop
 
-> A local-first **workbench panel** for [DeepSeek Harness](https://github.com/) (DSH) — a Cordis plugin that renders one sidebar tab with 15 live cards: a decision surface, commitments awaiting response, matters, calendar & todos pulled from your local CLIs, recent recordings, your local knowledge base, and an **object-centric layer** (disposition ledger + cross-source checks).
+> A local-first **workbench panel** for [DeepSeek Harness](https://github.com/) (DSH) — a Cordis plugin that renders one sidebar tab with 13 live cards: a decision surface, commitments awaiting response, matters, calendar & todos pulled from your local CLIs, recent recordings, your local knowledge base, and a **cross-source insight layer** (disposition ledger + cross-source checks).
 
 本仓库只包含**插件本体**（host 半体 + 浏览器半体）。它**不含任何数据**：所有内容都来自你本机的知识库目录，路径由环境变量指定。
 
@@ -13,7 +13,7 @@
 | 半体 | 文件 | 运行位置 | 职责 |
 |------|------|---------|------|
 | host | `lib/index.js` | DSH 的 Node 进程 | 挂载 `/workbench/api/*` 只读路由、注册 4 个 agent 工具、跑本机 CLI 采集 |
-| client | `lib/client.js` | 浏览器页面 | 在侧边栏注册「工作台」tab，渲染 15 张卡片，按需轮询 host |
+| client | `lib/client.js` | 浏览器页面 | 在侧边栏注册「工作台」tab，渲染 13 张卡片，按需轮询 host |
 
 设计原则（决定了它的行为）：
 
@@ -32,14 +32,15 @@
   - `lark-cli` —— 飞书侧日程/任务采集（需已授权）
 - **Windows**：host 半体用 PowerShell 5.1 跑采集脚本（macOS/Linux 可运行，但采集类卡片需自行替换实现）。
 - ⚠️ **侧边栏插件版本前提（重要）**：本面板注册在 `dsh-better-sidebar` 的 tab 上，**必须用 0.18.x**。
-  该插件 0.19.1 引入了新的 peer 依赖要求（`^0.1.5-rc.1`）；在 `0.1.x-alpha.*` 的宿主上，实测会**整条侧边栏渲染崩溃**（`React error #130`，tab 条直接消失，不只是本面板）。
+  该插件 0.19.1 引入了新的 peer 依赖要求 `^0.1.5-rc.1`，而**任何 `0.1.x-alpha.*` 宿主都不满足它**（`0.1.x-alpha.N` 低于 `0.1.5-rc.1`）——这是可以按 semver 直接判定的**事实**。
+  在一次把 0.18.1 自动升到 0.19.1 之后，页面出现过**整条侧边栏渲染崩溃**（`React error #130`，tab 条直接消失，不只是本面板）；市场自己的 `update-compat` 日志也给出了同一处 peer 告警。
+  ⚠️ 但 **"peer 不满足 ⇒ 必然 React #130" 只是推断，不是已证实的因果**：回退到的 0.18.1 **同样不满足**该 peer 却可用。这里只把它当作"别升上去"的充分理由，不当作根因定论。
   处理办法：把依赖**精确钉住**到可用版本，别用 `@latest`：
 
   ```jsonc
   // <profile>/package.json
   "dsh-better-sidebar": "0.18.1"   // 不要写 ^0.19.1，也不要写 latest
   ```
-  （关于崩溃机制：peer 不满足是市场日志给出的兼容性告警；0.18.1 同样不满足该 peer 却可用，所以"peer 不满足 ⇒ 必崩"只是推断，尚未证实——如实标注。）
 
 ---
 
@@ -76,14 +77,23 @@ export DSH_WORKBENCH_KNOWLEDGE="$HOME/my-vault"
 
 ---
 
-## 5. 15 张卡 / 主要路由
+## 5. 13 张卡 / 主要路由
 
-卡片（顺序即面板渲染顺序，三带布局）：
-**决策** · **响应** · **事务** · 日程 · 待办 · 专注 · **对象** · **流入** · **跨源洞察** · **资产** · **活跃** · **验收** · 知识库 · 近期听记 · 系统。
+卡片（顺序即面板渲染顺序，三带布局 · 唯一真相源是 `lib/client.js` 的 `CARD_ORDER`）：
 
-> 顺序由代码里的默认表驱动；用户可**长按任意卡片拖动排序**（长按约 400ms 进入拖动，无手柄、无浮层按钮）。同一张卡上，**短按卡片名 = 场景交互**（当前 15 张卡统一为"折叠/展开本卡内容"，再点一次恢复），**长按整卡 = 拖动排序**，两者不会互相吞掉。拖动的结果落在知识库的 `ui-prefs.json`（覆盖层：只影响渲染、不改默认表；未知卡片名被忽略）；面板顶部有一行「恢复默认顺序」文本链接。未登记的卡片始终追加在末尾，不会消失。
+| 带 | 卡片（key） |
+|----|------------|
+| 热层（今天动手） | **决策**(`brief`) · **响应**(`triggers`) · **事务**(`matters`) · 日程(`schedule`) · 待办(`todos`) |
+| 在办层（这件事到哪了） | 专注 · 活跃(`focus`) · **流入**(`inflow`) · **跨源洞察**(`insights`) · **资产**(`recall`) |
+| 参考层（查阅与诊断） | **验收**(`metrics`) · 文件(`kb`) · 听记(`minutes`) · 系统(`system`) |
 
-其中三张是"按**事**而不是按来源"的：今日决策面（热层：昨夜动向 / 今日必办 / 待定等对方）· 在场对象（一个对象上事务线与触发线并置）· 跨源洞察（每条带证据链、支撑强度与**可反驳入口**，无证据不入面板）。
+> **13 张卡不含独立的「对象」卡**（`objects`，2026-09-21 撤除）。对象**没有消失**：它是**属性**，被并入其它卡片——`objects.json` 照旧由库内管线生成，只是不再单独占一张卡。落点是：
+> ① 事务卡**行内**的归属对象标签（带 `data-object-key`）· ② 事务详情的「**归属对象 · 对象下一步 · 对象出处**」段 · ③ 流入卡的「**未归属 N 条**」提示 · ④ 跨源洞察证据段的「**支撑强度 · 证据线**」 · ⑤ 「专注 · 活跃」卡的**域 → 对象 → 事务**三级下钻。
+> 兼容性：旧 `ui-prefs.json` 覆盖层里残留的 `objects` 现在是**未知键**——被 `mergeCardOrder()` / `mergeUiPrefs()` 静默忽略（不报错、其余键照旧生效、顺序**不会整体回默认**），`selftest.mjs` 的 `L1-13` 就守着这条。
+
+> 顺序由代码里的默认表驱动；用户可**长按任意卡片拖动排序**（长按约 400ms 进入拖动，无手柄、无浮层按钮）。同一张卡上，**短按卡片名 = 场景交互**（当前 13 张卡统一为"折叠/展开本卡内容"，再点一次恢复），**长按整卡 = 拖动排序**，两者不会互相吞掉。拖动的结果落在知识库的 `ui-prefs.json`（覆盖层：只影响渲染、不改默认表；未知卡片名被忽略）；面板顶部有一行「恢复默认顺序」文本链接。未登记的卡片始终追加在末尾，不会消失。
+
+其中三张是"按**事**而不是按来源"的：今日决策面（热层：昨夜动向 / 今日必办 / 待定等对方）· 跨源洞察（每条带证据链、支撑强度与**可反驳入口**，无证据不入面板）· 事务（行内直接带归属对象，详情页把对象下一步与出处并置）。
 
 host 路由（均在 `/workbench/api` 下）：
 
@@ -91,7 +101,7 @@ host 路由（均在 `/workbench/api` 下）：
 |------|------|-------|------|
 | `/snapshot` | GET | 只读 | 日程 / 待办 / 知识库 / 听记（跑本机 CLI） |
 | `/state` | GET | 只读 | 面板主数据（多产物聚合） |
-| `/objects` | GET | 只读 | 业务对象索引（按"事"聚合） |
+| `/objects` | GET | 只读 | 业务对象索引（按"事"聚合）。**独立「对象」卡已撤除，但这条路由此仍是对象属性的来源**：事务卡行内标签 / 事务详情「归属对象·对象下一步·对象出处」/ 流入卡「未归属 N 条」/ 专注·活跃卡三级下钻都消费它 |
 | `/disposition` | GET | 只读 | 处置台账（判定 → 落点 → 悬置时长） |
 | `/crosscheck` | GET | 只读 | 多源校验（溯源 / 支撑强度 / 计划↔实际 / 矛盾） |
 | `/domain-health` | GET | 只读 | 关注域健康度 |
@@ -106,6 +116,7 @@ host 路由（均在 `/workbench/api` 下）：
 | `/active-domains` | GET/POST | 读+写 | 活跃关注域（`?match=1` 触发一次匹配；POST 为声明/清除，与 agent 工具共用同一条 CLI） |
 | `/ui-prefs` | GET/POST/DELETE | 读+写 | 卡片顺序覆盖层（未知卡片名忽略并回报；DELETE = 恢复默认）。**注意**：同一文件里的 `briefSeenAt`/`briefRead` 被库内 `build-brief.mjs` 当游标消费，所以它不只是渲染偏好 |
 | `/matter/reschedule` | POST | 写 | 事务改期（走库内 CLI） |
+| `/todo/act` | POST | 写 | 待办动作（host 只校验与透传，判定在库内 CLI） |
 | `/triggers` | GET | 只读 | 响应清单（触发详情） |
 | `/trigger/respond` `/trigger/act` `/trigger/to-matter` | POST | 写 | 触发的响应 / 处置 / 转事务（判定在库内 CLI，host 只校验与透传） |
 | `/rebuild` | POST | 写 | 幂等重建库内快照 |
@@ -140,14 +151,16 @@ agent 工具：`workbench_todo` · `workbench_focus` · `workbench_active_domain
 node selftest.mjs      # 零依赖、离线；输出 PASS = n / FAIL = m
 ```
 
-它自带一份**中性 fixture**（`selftest/fixtures/_meta/out/*.json`：`objects` / `disposition` / `crosscheck` / `domain-health` / `brief` / `insights`，全部是 `示例客户` / `组织甲` / `MT-20250101-001` 这类虚构示例），并在四个层面给出证据：
+它自带一份**中性 fixture**（`selftest/fixtures/_meta/out/*.json`：`objects` / `disposition` / `crosscheck` / `domain-health` / `brief` / `insights`，全部是 `示例客户` / `组织甲` / `MT-20250101-001` 这类虚构示例；`ui-prefs.json` **不预置**——"覆盖层不存在"本身就是一条被测契约），并在四个层面给出证据：
 
 | 组 | 证明什么 |
 |----|---------|
 | **1 路由真跑** | 用桩 `ctx`（捕获 `webServer.register`）挂载 host 半体，用假 `req`/`res` 调 `/objects`、`/disposition`、`/crosscheck`、`/domain-health`、`/brief`、`/insights` → 断言 **200 + 面板实际消费的字段**（`objects[].key/state/next_step`、`disposition.summary.{landed,noLanding,landingRate}`、`crosscheck.trace/multiSource/contradictions`、`brief.todayMustDo/waiting/overnight`、`insights[].evidence/support/rebuttal` 等）；另有三条**"不许静默"**断言：台账未生成必须 **503 + 明确文案**、`/focus` GET 必须是 **410 墓碑**、`/disposition/act` 的三类非法入参必须在**调用库内 CLI 之前**被拒（这也是它能在克隆体里被断言的原因） |
 | **2 配置缺失必须响** | 不设 `DSH_WORKBENCH_KNOWLEDGE` 时 import **直接抛错**并点名该变量；断言错误信息里**没有**任何硬编码的个人路径（不允许静默回落到某人的桌面） |
-| **3 源码契约** | 两半体语法通过 · `CARD_ORDER` 存在且 **15 张卡顺序可断言**（顺序是产品承诺，不能是执行顺序的副产品）· `package.json` 元数据正确 |
+| **3 源码契约** | 两半体语法通过 · `CARD_ORDER` 存在且 **13 张卡顺序可断言**（顺序是产品承诺，不能是执行顺序的副产品）· host 的 `KNOWN_CARD_KEYS` 与之**逐项一致**（漂移的失败形态是**静默丢卡**）· `package.json` 元数据正确 |
 | **4 脱敏守卫** | 仓库**扫描自己**：个人绝对路径 / 邮箱 / 手机号 / 凭据形态 / URL 里的令牌 ⇒ **0 命中**；**带负向对照**（人造敏感串必须被抓到，否则"全绿"毫无意义）· 并断言 fixture 里每个 `Work/<目录>/` 都来自中性示例 |
+
+其中 `/ui-prefs` 一组（`L1-8` ~ `L1-13`）覆盖覆盖层契约：GET 报 **13 个已知键**且无覆盖层时 `exists=false`（不当成空数据）· POST 忽略并回报未知卡片键/未知字段、重复只取首次 · 落盘可读回 · 空写被拒且不写坏既有覆盖层 · **已撤卡键（`objects`）被忽略但其余键照旧生效、顺序不整体回默认** · DELETE 真删文件并回到 `exists=false`。
 
 **它不能证明什么**（别过度解读一次全绿）：不覆盖真实 DSH 运行时与槽位渲染 · 不覆盖浏览器半体交互 · 不覆盖依赖真实 vault 的链路（日程/待办/DSH 工具）· 真实业务词表的**权威脱敏扫描在仓库外**留存，这里只做结构性规则与 fixture 中性性。
 
@@ -169,22 +182,21 @@ node selftest.mjs           # 自证（见 §8）
 
 - **编码必须是 UTF-8（无 BOM）**。本仓库发生过一次真实事故：源码被"UTF-8 字节按 GBK 解读后再存成 UTF-8"，导致 840 处字符丢失、84 处换行被吞、语法错误 —— 表面却仍像正常文件。见 `.editorconfig`。
 - 改 host 半体需**重启 DSH** 才生效；改 client 半体**刷新页面**即可。
-- 卡片新增/改序必须同时改三处声明：`CARD_ORDER`（客户端）、源码级顺序断言、真机级顺序断言；否则顺序会静默漂移。
+- 卡片新增/改序必须同时改**四处**声明：`CARD_ORDER`（客户端装配段）、`CARD_TITLES` / `CARD_TITLE_ORDER`（显示名契约）、host 的 `KNOWN_CARD_KEYS`（覆盖层过滤表）与顺序断言；漏改 host 那份的失败形态是**静默丢卡**（用户拖过的卡被当成未知键丢弃），所以 `selftest.mjs` 直接断言两份逐项一致。
 
 ---
 
-## 10. 更新概览 · v0.3.0
+## 10. 更新概览 · v0.4.0
 
-本轮是**交互层的一次统一**：把 15 张卡的呈现与操作收敛成同一套契约，并给"顺序"和"详情"补上可断言的落点。
+本轮是**卡片表的一次减法**：撤掉独立的「对象」卡，把对象降级为**属性**并入其它卡片；同时把"顺序覆盖层的旧键兼容"变成可断言的事实。
 
-- **卡片统一为两行结构**：第一行左=卡片名（**可点击**，触发场景交互）/ 中=关键指标（原样取自产物）/ 右=动作按钮；第二行起=同域折叠 + 列表。初版曾按"三行结构"实现（多一行分类说明），已按反馈移除该行，断言同步翻转为"该行不得存在"。
-- **两类交互职责分开**：点卡片名只改变"这张卡此刻怎么呈现"（如专注态折叠/展开），**不写数据、不跳转**；右上按钮才做与数据/状态有关的操作。两者必须共存——长按卡名 ≥400ms 进拖动、短按 <400ms 折叠，靠"真拖过之后在捕获阶段抑制那一次 click"实现，并各有负向对照守着。
-- **长按整卡拖动排序**：顺序落盘为 `ui-prefs.json` **覆盖层**（`GET/POST/DELETE /ui-prefs`）。默认顺序在 client 的 `CARD_ORDER`（契约、被断言），覆盖层只影响渲染：未知 key 忽略、未覆盖的按默认补末尾、「恢复默认」一键清空。
-- **通用详情页 + 穿透规则**：标题 / 关键洞察 / 详细情况 / 关联域 / 业务关系（信息·日程·待办·对象·知识库·听记）/ 前序环节 / 后续环节 / 操作按钮；**不适用就整块不出现**（不留空区块）；只有路径与 URL 可点，打不开必须给原因。
-- **新增路由**：`GET /triggers`、`POST /trigger/respond`、`POST /trigger/act`、`POST /trigger/to-matter`、`POST /todo/act`、`POST /matter/reschedule`、`POST /active-domains`、`GET|POST|DELETE /ui-prefs`。写入口仍显式列出，其余只读透传。
-- **selftest 加厚**：补 `/ui-prefs` 五条断言，并断言 **host 键表 ↔ client `CARD_ORDER` 逐项一致**（防"拖到新位置的卡被静默丢弃"这类问题）。
+- **卡表 14 → 13，撤掉独立的「对象」卡**（key `objects`）。对象**没有消失、数据也没有删**：`objects.json` 照旧由库内管线生成，它从"一张卡"变成"若干处的属性"。三带顺序（`CARD_ORDER`）：热层 `brief`(决策) · `triggers`(响应) · `matters`(事务) · `schedule`(日程) · `todos`(待办) → 在办层 `focus`(专注 · 活跃) · `inflow`(流入) · `insights`(跨源洞察) · `recall`(资产) → 参考层 `metrics`(验收) · `kb`(文件) · `minutes`(听记) · `system`(系统)。
+- **对象属性的五个落点**：① 事务卡**行内**归属对象标签（带 `data-object-key`，便于断言）· ② 事务详情的「**归属对象 · 对象下一步 · 对象出处**」段 · ③ 流入卡的「**未归属 N 条**」提示 · ④ 跨源洞察证据段的「**支撑强度 · 证据线**」 · ⑤ 「专注 · 活跃」卡的**域 → 对象 → 事务**三级下钻。
+- **旧覆盖层旧键的兼容口径（与 09-20 并掉 `domains` 同一条纪律）**：`ui-prefs.json` 里残留的 `objects` 从此是**未知键**，被 `mergeCardOrder()` / `mergeUiPrefs()` 静默忽略——**不报错、其余键照旧生效、顺序不整体回默认**。这条以前只有人写下来的说法，现在有断言（`L1-13`）。
+- **host 键表同步**：`lib/index.js` 的 `KNOWN_CARD_KEYS` 也是 13 键；两份声明一旦漂移，失败形态是**静默丢卡**（拖过的卡被当未知键丢弃），`selftest.mjs` 的 `L3-KNOWN_CARD_KEYS` 守着逐项一致。
+- **文档与自身断言同步更新**：README 卡数/顺序/路由表/交互说明/兼容性告示 · `selftest.mjs` 的 `EXPECT` 与 `/ui-prefs` 已知键数（15 → 13）· `package.json` 版本 0.3.0 → 0.4.0。
 
-完整说明见 [Release v0.3.0](https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.3.0)。
+上一版（v0.3.0）的内容：15→（历史版本）卡的呈现与操作收敛为同一套契约——两行结构 · 卡片名=场景交互 / 长按整卡=拖动排序 · 通用二级/三级详情页 · `GET/POST/DELETE /ui-prefs` 覆盖层 · [`Release v0.3.0`](https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.3.0)。
 
 ---
 
@@ -194,12 +206,12 @@ node selftest.mjs           # 自证（见 §8）
 
 | 源（库内插件） | SHA256 前 16 位 |
 |---------------|----------------|
-| `lib/index.js` | `22718127106b5d51` |
-| `lib/client.js` | `aaeed38af4994303` |
+| `lib/index.js` | `FCF280CAB64DEF05` |
+| `lib/client.js` | `7FCE793B0CCD2B77` |
 
-（上表是**同步时的源指纹**；对应的脱敏产物指纹为 `index.js 948519755775ad36` · `client.js e83c7d4cc1e6ae89`，写入 `dsh-sync-shas.json` 与脱敏报告，便于判断本发布仓落后库内多少。）
+（上表是**同步时的源指纹**——2026-09-21 采样，隔 60 秒两次 `mtime`+SHA256 一致才复制；对应的脱敏产物指纹为 `index.js f69adf16bc2d8b51` · `client.js 19ff83b05e955c03`，写入 `dsh-sync-shas.json` 与脱敏报告，便于判断本发布仓落后库内多少。）
 
-对应本仓库版本 **0.3.0**（15 张卡 · 三带布局 · 长按拖动排序 + `ui-prefs` 覆盖层 · 卡片名=场景交互 · 通用二级/三级详情页 · 六个库内产物只读透传 + 三条"不许静默"出口）。**发布仓与源项目此后会各自演进**：再次同步请重跑上面的固定流程（同步脚本会打印新旧指纹），不要手工编辑本仓库的 `lib/`。
+对应本仓库版本 **0.4.0**（**13 张卡** · 三带布局 · 对象作为属性并入五处 · 长按拖动排序 + `ui-prefs` 覆盖层（旧 `objects` 键被静默忽略且不整体回默认）· 卡片名=场景交互 · 通用二级/三级详情页 · 库内产物只读透传 + 三条"不许静默"出口）。**README 里的卡片数与顺序对应当前同步进来的这份源码**（`CARD_ORDER` 13 键，与上表源指纹同一次采样）；**发布仓与源项目此后会各自演进**：再次同步请重跑上面的固定流程（同步脚本会打印新旧指纹），不要手工编辑本仓库的 `lib/`。
 
 ---
 

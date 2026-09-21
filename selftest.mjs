@@ -15,8 +15,10 @@
  *      the disposition write exit's **source-level validation** (invalid input is rejected
  *      before any vault CLI is spawned — which is why it is assertable inside a clone).
  *      The same round-trip is proven for the card-order overlay (`/ui-prefs`
- *      GET/POST/DELETE): unknown keys are ignored *and reported*, an empty write is
- *      rejected rather than half-applied, and DELETE really removes the file.
+ *      GET/POST/DELETE): unknown keys are ignored *and reported*, a **retired** card key
+ *      (`objects` — the standalone object card became an attribute of other cards) is
+ *      ignored without collapsing the order back to the compiled-in default, an empty
+ *      write is rejected rather than half-applied, and DELETE really removes the file.
  *   2. Missing configuration must fail loudly. The plugin resolves the knowledge base from
  *      `DSH_WORKBENCH_KNOWLEDGE`; a silent fallback to somebody's desktop would be worse than
  *      a crash, so we assert the import throws and that the message names the variable.
@@ -225,8 +227,8 @@ for (const [route, verify, what] of cases) {
   const order = (x) => JSON.stringify(x === null || x === undefined ? null : x);
 
   const g0 = await getPrefs();
-  chk('L1-8/uiprefs-get', '/ui-prefs GET → 200 + 15 个已知卡片键 + 无覆盖层时 exists=false（不当成空数据）',
-    g0.code === 200 && g0.d !== null && Array.isArray(g0.d.known) && g0.d.known.length === 15
+  chk('L1-8/uiprefs-get', '/ui-prefs GET → 200 + 13 个已知卡片键 + 无覆盖层时 exists=false（不当成空数据）',
+    g0.code === 200 && g0.d !== null && Array.isArray(g0.d.known) && g0.d.known.length === 13
     && g0.d.exists === false && g0.d.prefs === null
     && Array.isArray(g0.d.fields)
     && ['cardOrder', 'briefSeenAt', 'briefRead'].every((f) => g0.d.fields.includes(f)),
@@ -257,6 +259,19 @@ for (const [route, verify, what] of cases) {
     p2.code === 200 && d2 !== null && d2.ok === false && /至少给一个字段/.test(String(d2.error || ''))
     && g2.d !== null && g2.d.exists === true && order(g2.d.prefs?.cardOrder) === order(['metrics', 'brief']),
     `code=${p2.code} body=${String(p2.body).slice(0, 160)}`);
+
+  // Retired card keys (`objects` — the standalone object card was folded into the other cards
+  // as an *attribute*; `domains` — merged into `focus`) may still sit in an old overlay file.
+  // The contract is: ignored **and reported**, the remaining known keys still apply, and the
+  // order must NOT collapse back to the compiled-in default.
+  const p3 = await call(spec, ROUTE + '/ui-prefs', 'POST',
+    { cardOrder: ['objects', 'metrics', 'brief'] }).promise;
+  const d3 = p3.body ? JSON.parse(p3.body) : null;
+  chk('L1-13/uiprefs-retired-key', '/ui-prefs POST 覆盖层里的已撤卡键（objects）被忽略并回报，其余键照旧生效、顺序不整体回默认',
+    p3.code === 200 && d3 !== null && d3.ok === true
+    && Array.isArray(d3.ignored) && d3.ignored.length === 1 && d3.ignored[0] === 'objects'
+    && order(d3.prefs?.cardOrder) === order(['metrics', 'brief']),
+    `code=${p3.code} body=${String(p3.body).slice(0, 160)}`);
 
   const del = await call(spec, ROUTE + '/ui-prefs', 'DELETE').promise;
   const dd = del.body ? JSON.parse(del.body) : null;
@@ -294,9 +309,9 @@ for (const f of ['lib/index.js', 'lib/client.js']) {
   const src = read(path.join(HERE, 'lib', 'client.js'));
   const m = src.match(/const CARD_ORDER\s*=\s*\[([\s\S]*?)\]/);
   const keys = m === null ? [] : [...m[1].matchAll(/'([a-z]+)'/g)].map((x) => x[1]);
-  const EXPECT = ['brief', 'triggers', 'matters', 'schedule', 'todos', 'focus', 'objects',
-    'inflow', 'insights', 'recall', 'domains', 'metrics', 'kb', 'minutes', 'system'];
-  chk('L3-CARD_ORDER', `CARD_ORDER 存在且 ${EXPECT.length} 张卡顺序可断言`,
+  const EXPECT = ['brief', 'triggers', 'matters', 'schedule', 'todos', 'focus',
+    'inflow', 'insights', 'recall', 'metrics', 'kb', 'minutes', 'system'];
+  chk('L3-CARD_ORDER', `CARD_ORDER 存在且 ${EXPECT.length} 张卡顺序可断言（三带：热层 5 · 在办层 4 · 参考层 4）`,
     m !== null && keys.length === EXPECT.length && keys.every((k, i) => k === EXPECT[i]),
     m === null ? '未找到 CARD_ORDER' : keys.join(','));
   // The host keeps a second copy of the key list only to filter the overlay. If the two
