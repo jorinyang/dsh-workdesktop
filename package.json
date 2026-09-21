@@ -1,8 +1,8 @@
 {
   "name": "dsh-workdesktop",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": false,
-  "description": "A local-first workbench panel for DeepSeek Harness (DSH): system/device status, calendar & todos from your local CLIs, recent recordings, local knowledge base, and an object-centric layer (today's decision surface, business-object index, disposition ledger, cross-source consistency checks, cross-source insights, judgement-quality ledger).",
+  "description": "A local-first workbench panel for DeepSeek Harness (DSH): system/device status, calendar & todos from your local CLIs, recent recordings, local knowledge base, and a cross-source layer (today's decision surface, business objects as an attribute of matters/inflow/insights, disposition ledger, cross-source consistency checks, judgement-quality ledger).",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
