@@ -36,6 +36,7 @@
  * Usage: node selftest.mjs        (exit 0 = all green)
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -284,19 +285,49 @@ for (const [route, verify, what] of cases) {
     `code=${del.code} 断言时残留=${left} 清后残留=${fs.existsSync(OVERLAY)}`);
 }
 
-// ── 2. missing configuration must fail loudly ────────────────────────────────────
-console.log('\n[2] missing DSH_WORKBENCH_KNOWLEDGE fails loudly (no silent fallback)');
+// ── 2. knowledge-dir resolution contract ────────────────────────────────────────
+//   ★ 2026-09-24（0.5.0）契约变更，四项**确定性**断言（都是"造一个目录再跑一次子进程"，与跑它的机器无关）：
+//     ① 缺环境变量 + 派生出的缺省目录**存在** ⇒ 允许导入（本机能开箱即用，不必先设变量）；
+//     ② 缺环境变量 + 缺省目录**不存在** ⇒ 必须报错并**点名 DSH_WORKBENCH_KNOWLEDGE**（换机器/换用户时说清该设哪个）；
+//     ③ 设了环境变量 ⇒ 必须**只用它**（哪怕缺省目录不可用，也不许回落到缺省）；
+//     ④ 错误信息里**不许出现任何写死的个人路径**（脱敏契约 L2-2 原样保留）。
+//   ⚠️ 与 0.4.0 的差别：那一版**没有缺省值**（缺变量即抛错）⇒ 本机每次都得先设变量；现在"能用 + 缺省不可用即报错"。
+console.log('\n[2] knowledge-dir resolution: env first, derived default only if it exists, loud error otherwise');
 {
-  const env = { ...process.env };
-  delete env.DSH_WORKBENCH_KNOWLEDGE;
-  const script = "import('./lib/index.js').then(()=>console.log('IMPORT_OK')).catch((e)=>{console.log('IMPORT_ERR:'+e.message);})";
-  const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: HERE, env, encoding: 'utf8' });
-  const text = String(r.stdout || '') + String(r.stderr || '');
-  chk('L2-1', 'import 失败并指出缺哪个环境变量', !/IMPORT_OK/.test(text) && /DSH_WORKBENCH_KNOWLEDGE/.test(text),
-    text.slice(0, 160));
-  chk('L2-2', '错误信息里没有硬编码的个人路径（不静默回落桌面）',
-    !/[A-Za-z]:\\Users\\/i.test(text) && !/\/(Users|home)\//.test(text),
-    text.slice(0, 160));
+  const IMP = "import('./lib/index.js').then(()=>console.log('IMPORT_OK')).catch((e)=>{console.log('IMPORT_ERR:'+e.message);})";
+  const runImport = (envPatch) => {
+    const env = { ...process.env, ...envPatch };
+    if (envPatch.DSH_WORKBENCH_KNOWLEDGE === null) delete env.DSH_WORKBENCH_KNOWLEDGE;
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', IMP], { cwd: HERE, env, encoding: 'utf8' });
+    return String(r.stdout || '') + String(r.stderr || '');
+  };
+  // 造两个目录：一个"像用户桌面那样"有 Desktop/Knowledge，一个没有
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-workbench-knowledge-'));
+  const goodRoot = path.join(tmp, 'good');
+  const badRoot = path.join(tmp, 'bad');
+  fs.mkdirSync(path.join(goodRoot, 'Desktop', 'Knowledge'), { recursive: true });
+  fs.mkdirSync(badRoot, { recursive: true });
+
+  const t1 = runImport({ DSH_WORKBENCH_KNOWLEDGE: null, USERPROFILE: goodRoot, HOME: goodRoot });
+  chk('L2-1', '缺环境变量、但派生出的缺省目录**存在** ⇒ 允许导入（开箱即用，不必先设变量）',
+    /IMPORT_OK/.test(t1), t1.slice(0, 160));
+
+  const t2 = runImport({ DSH_WORKBENCH_KNOWLEDGE: null, USERPROFILE: badRoot, HOME: badRoot });
+  chk('L2-2', '★ 缺省目录**不存在** ⇒ 必须报错并点名 `DSH_WORKBENCH_KNOWLEDGE`（不静默指到不存在的目录）',
+    !/IMPORT_OK/.test(t2) && /DSH_WORKBENCH_KNOWLEDGE/.test(t2), t2.slice(0, 200));
+
+  const t3 = runImport({ DSH_WORKBENCH_KNOWLEDGE: path.join(goodRoot, 'Desktop', 'Knowledge'), USERPROFILE: badRoot, HOME: badRoot });
+  chk('L2-3', '设了环境变量 ⇒ **只用它**（缺省不可用也不回落）', /IMPORT_OK/.test(t3), t3.slice(0, 160));
+
+  // L2-4 改成**源码级**：错误信息里出现运行时的临时目录名是正常的（它就是 USERPROFILE 推出来的），
+  // 真正要守的是"路径不是写死在源码里的" —— 直接扫 lib/index.js 有没有硬编码的个人目录字面量。
+  const libSrc = fs.readFileSync(path.join(HERE, 'lib', 'index.js'), 'utf8');
+  chk('L2-4', '知识库路径**不是写死的**：源码里没有硬编码的个人目录字面量（`C:\\Users\\<名>` / `/Users/<名>/`），缺省值是运行时从 USERPROFILE 推出来的',
+    !/[A-Za-z]:\\Users\\[A-Za-z0-9_.-]+/.test(libSrc) && !/\/Users\/[A-Za-z0-9_.-]+\//.test(libSrc)
+    && /join\(HOME, 'Desktop', 'Knowledge'\)/.test(libSrc),
+    `硬编码 C:\\Users\\名=${/[A-Za-z]:\\Users\\[A-Za-z0-9_.-]+/.test(libSrc)} · 硬编码 /Users/名/=${/\/Users\/[A-Za-z0-9_.-]+\//.test(libSrc)} · 缺省值由 HOME 推=${/join\(HOME, 'Desktop', 'Knowledge'\)/.test(libSrc)}`);
+
+  fs.rmSync(tmp, { recursive: true, force: true });
 }
 
 // ── 3. source contracts ─────────────────────────────────────────────────────────
