@@ -222,7 +222,7 @@ node selftest.mjs           # 自证（见 §8）
 
 - 0.4.0：缺这个变量就抛错。0.5.0：**环境变量优先**；没设就用推导出的默认值 `%USERPROFILE%\Desktop\Knowledge`，**但该目录必须真实存在**，否则抛错并点名这个变量。⇒ 本机开箱即用，换机器仍然当场说清该设什么（自测 `L2-1..L2-4`）。
 
-上一版（v0.4.0）：撤掉独立的「对象」卡，对象降级为属性并入五处；旧覆盖层里的 `objects` 键被静默忽略且不整体回默认。
+上一版（v0.4.0）：撤掉独立的「对象」卡，对象降级为属性并入五处；旧覆盖层里的 `objects` 键被静默忽略且不整体回默认 —— [`Release v0.4.0`](https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.4.0) · 更早的 [`Release v0.3.0`](https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.3.0)。
 
 ---
 
@@ -238,6 +238,25 @@ node selftest.mjs           # 自证（见 §8）
 （对应的脱敏产物指纹：`index.js 7C994EA777C55A9E` · `client.js 57093B18D38CCE38`。两侧都按"隔 60 秒两次 `mtime`+SHA256 一致"采样。）
 
 对应本仓库版本 **0.5.0**（13 张卡 · 三带布局 · 系统卡三张能力小卡片 + 手动开关 · 响应卡按会话聚合 · 长按拖动排序 + `ui-prefs` 覆盖层 · 卡内只读透传 + 三条"不许静默"出口）。**README 里的卡片数与顺序对应当前同步进来的这份源码**（`CARD_ORDER` 13 键，与上表源指纹同一次采样）；**发布仓与源项目此后会各自演进**：再次同步请重跑上面的固定流程（同步脚本会打印新旧指纹），不要手工编辑本仓库的 `lib/`。
+
+### 发布清单（照这个顺序做，**只打 tag 不算发布**）
+
+1. 复制 `lib/index.js` · `lib/client.js` 进本仓库（按上面的固定流程脱敏：逐条替换 → 反扫，命中必须为 0）。
+2. `node selftest.mjs` ⇒ 必须全绿（CI 也会跑一遍）。
+3. 改 `package.json` 版本号 + 更新本节的两处指纹 + §10 的更新概览。
+4. 提交 → **打 tag** → push（分支与 tag 都要推）。
+5. **建 GitHub Release**（`gh release create <tag> --notes-file <说明>`），正文写清新增 / 修正 / 契约变更 / 升级 / 验证 / 已知限制。
+6. 核对 `gh release list`：每一版都该有 Release，最新一版标 `Latest`；README 里引用的链接必须真的能打开。
+
+> 教训（2026-09-24）：**v0.4.0 当时只打了 tag、没建 Release** —— README 里写着这一版的更新概览，GitHub 上却没有对应 Release，是发布流程第 5 步漏了。已补建，并把这一步写进清单。
+
+### 发布记录
+
+| 版本 | Release |
+|---|---|
+| v0.5.0 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.5.0> |
+| v0.4.0 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.4.0>（补建） |
+| v0.3.0 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.3.0> |
 
 ---
 
