@@ -363,6 +363,39 @@ for (const f of ['lib/index.js', 'lib/client.js']) {
     `${pkg.name} / ${pkg.license} / ${pkg.author}`);
 }
 
+// ── 3b. 这一版新增的三处对外契约（0.6.0）：席位 / 卡片缩放 / 听记起草路由 ──────────
+//   Why source-level: 这些契约的**失败形态**都不报错 —— 席位没注册就是"点不到"、
+//   栅格列数写错就是"卡片互相压"、路由方法写错就是"点了没反应"。真机上各有断言
+//   （SBT-WS* / RZ-* / SBT-MN10..13），公开仓这里只钉"契约还在、两侧指向同一处"。
+{
+  const client = read(path.join(HERE, 'lib', 'client.js'));
+  const host = read(path.join(HERE, 'lib', 'index.js'));
+
+  // ① 四个工作台席位：右栏 tab + 键控席位 + 左侧栏入口
+  const seats = /sidebarRightTabs/.test(client) && /sidebar\.right\.pane\.tab/.test(client)
+    && /sidebar\.footer\.action/.test(client) && /workbench:console/.test(client);
+  chk('L3-seats', '席位接线在位：右栏 tab 类型 + `sidebar.right.pane.tab` 键控席位 + 左侧栏 `sidebar.footer.action` 入口（三处齐备才不会"点不到"）',
+    seats, `sidebarRightTabs=${/sidebarRightTabs/.test(client)} · pane.tab=${/sidebar\.right\.pane\.tab/.test(client)} · footer.action=${/sidebar\.footer\.action/.test(client)}`);
+
+  // ② 卡片缩放：两档 + 固定 20 列栅格 + 两处页面级只读出口（真机套件按它们算期望值）
+  const sizing = /dshw\.cardSize/.test(client) && /grid-template-columns:\s*repeat\(20,minmax\(0,1fr\)\)/.test(client)
+    && /data-sizemode/.test(client) && /__DSHW_CARD_SIZING__/.test(client) && /__DSHW_CANVAS_BOX__/.test(client)
+    && /data-rszsnap/.test(client);   // 松手吸附的过渡（0.6.0 新增）
+  chk('L3-card-sizing', '卡片缩放契约在位：`dshw.cardSize` 两档 + 固定 20 列栅格 + 松手吸附过渡 + 两个页面级只读出口',
+    sizing, `两档=${/dshw\.cardSize/.test(client)} · 20 列=${/repeat\(20,minmax\(0,1fr\)\)/.test(client)} · 尺寸出口=${/__DSHW_CARD_SIZING__/.test(client)} · 画布出口=${/__DSHW_CANVAS_BOX__/.test(client)} · 吸附过渡=${/data-rszsnap/.test(client)}`);
+
+  // ③ 听记 → 事务草稿：路由在 host 侧（POST），客户端指向**同一处**，且 host 不重写判定
+  const route = '/matter/draft-from-minutes';
+  const draft = host.includes(`path === '${route}'`) && host.includes("req.method === 'POST'")
+    && client.includes(`MINUTES_DRAFT_ROUTE = '${route}'`);
+  chk('L3-draft-route', `听记起草路由 ${route}（POST）在 host 侧，客户端 `+'`MINUTES_DRAFT_ROUTE`'+` 指向同一路径`,
+    draft, `host 有该路由=${host.includes("path === '" + route + "'")} · client 指向同一处=${client.includes("MINUTES_DRAFT_ROUTE = '" + route + "'")}`);
+  //    host 只采集不判定：判定词表（域/标题/关闭条件/锚点）不许出现在 host 半体里
+  const noJudge = !/inferDomain|inferDoneWhen|validateIntake|isEvaluableDoneWhen/.test(host);
+  chk('L3-draft-no-judge', '听记起草：host 半体**不重写任何判定**（域建议 / 标题 / 关闭条件 / 锚点全来自库内引擎）',
+    noJudge, `host 出现引擎判定名=${!noJudge}`);
+}
+
 // ── 4. desensitization guard (this repo is public) ──────────────────────────────
 console.log('\n[4] desensitization guard (scans this repository, with a negative control)');
 
