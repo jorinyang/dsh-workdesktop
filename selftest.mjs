@@ -396,6 +396,45 @@ for (const f of ['lib/index.js', 'lib/client.js']) {
     noJudge, `host 出现引擎判定名=${!noJudge}`);
 }
 
+// ── 3c. 0.7.0 这批的新契约：首屏载入画面 / 名称图 / 详情页"人话在前" / 画布量法 ──────────
+//   同样 source-level：这四处的**失败形态都不报错** —— 载入画面没了是"直接闪出半张面板"、
+//   名称图没了是"标题左边空一块"、折叠没了是"机器字段糊脸"、画布量法退回去是
+//   "卡片挤成一行四张"。真机各有断言（SBT-* / RZ-*），公开仓这里钉"契约还在"。
+{
+  const client = read(path.join(HERE, 'lib', 'client.js'));
+
+  // ① 首屏载入画面：门 + 13 条路由清单 + 最短露面 + 遮罩上的四处版式钩子
+  const splash = /data-boot-mask/.test(client) && /data-booting/.test(client)
+    && /const BOOT_ROUTES = \[/.test(client) && /BOOT_SPLASH_MIN_MS = 900/.test(client)
+    && /function splashWaitMs\(/.test(client) && /dshw-boot-sweep/.test(client)
+    && client.includes("'先查看已有信息'");
+  chk('L3-splash', '首屏载入画面契约在位：门（`data-boot-mask` / `data-booting`）+ 13 条路由清单 + 最短露面 900ms（`splashWaitMs`）+ 从左到右的扫光 + 手动跳过按钮',
+    splash, `门=${/data-boot-mask/.test(client)} · 路由清单=${/const BOOT_ROUTES = \[/.test(client)} · 最短露面=${/BOOT_SPLASH_MIN_MS = 900/.test(client)} · 扫光=${/dshw-boot-sweep/.test(client)} · 跳过按钮=${client.includes("'先查看已有信息'")}`);
+
+  // ② 名称图：data URI 只写一份（自定义属性）+ 两处落点 + 两张留档文件
+  const logo = /--dshw-yishu:url\(data:image\/png;base64,/.test(client)
+    && (client.split('--dshw-yishu:url(').length - 1) === 1          // 只写一份，别复制成两份白体积
+    && /\.dshw-logo-boot\{/.test(client) && /dshw-h1::before/.test(client);
+  chk('L3-nameplate', '名称图契约在位：遮罩 data URI 只写一份（挂 `--dshw-yishu`）+ 启动页 `.dshw-logo-boot` + 卡头 `.dshw-h1::before` 两处落点',
+    logo, `URI 份数=${client.split('--dshw-yishu:url(').length - 1} · 启动页=${/\.dshw-logo-boot\{/.test(client)} · 卡头=${/dshw-h1::before/.test(client)}`);
+
+  // ③ 详情页"人话在前"：折叠容器 + 各卡的锚点（锚点词是套件按字面量定位的，别改）
+  //   ⚠️ 2026-09-27：`缺口字段` 那一处原来是按**裸串字面量** `'缺口字段'` 找的，后来产品把该小节标题
+  //   改成了「没达成的话，卡在哪、怎么解锁（缺口字段）」（用户裁定：标题先说人话，词留在括号里），
+  //   于是这条断言变陈旧、在真机套件明明通过的情况下自测报红。改成与**真机套件同一种找法**：
+  //   子串出现即算在位（SBT-84 用的就是 `text.indexOf('缺口字段') >= 0`）。
+  const human = /dshw-techfold/.test(client) && /techFold\(/.test(client)
+    && client.includes('缺口字段') && client.includes('桶') && client.includes('① 概要') && client.includes('⑦ 响应');
+  chk('L3-detail-human-first', '详情页契约在位：「技术细节」折叠（`dshw-techfold`）+ 套件按字面量定位的锚点仍在（`① 概要` … `⑦ 响应` · `缺口字段` · `桶`）',
+    human, `折叠=${/dshw-techfold/.test(client)} · 七段名=${client.includes('① 概要') && client.includes('⑦ 响应')} · 缺口字段=${client.includes('缺口字段')}`);
+
+  // ④ 画布量法：layout effect（绘制前量）+ 量到 0 补量 —— 少任何一半就会有一帧"卡片挤成一行四张"
+  const measure = /useMeasureEffect/.test(client) && /useLayoutEffect/.test(client)
+    && /retryTimer = setTimeout\(read/.test(client) && /__DSHW_CANVAS_BOX__/.test(client);
+  chk('L3-canvas-measure', '画布量法契约在位：绘制前量（layout effect）+ 量到 0 宽就补量（否则首帧按"未知画布"兜底成 25% 宽）',
+    measure, `layout effect=${/useLayoutEffect/.test(client)} · 补量=${/retryTimer = setTimeout\(read/.test(client)}`);
+}
+
 // ── 4. desensitization guard (this repo is public) ──────────────────────────────
 console.log('\n[4] desensitization guard (scans this repository, with a negative control)');
 
