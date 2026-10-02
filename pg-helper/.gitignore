@@ -1,0 +1,4 @@
+# 编译产物：`ProjectGraphOwnershipHelper.cs` 用系统自带的 csc.exe 现编出来，
+# 属于**这台机器的运行目录**，不入库（仓库里源码是唯一真相）。
+project-graph-ownership-helper.exe
+*.exe

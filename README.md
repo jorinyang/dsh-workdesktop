@@ -31,10 +31,11 @@
   - `dws` —— 钉钉侧日程/待办/听记采集
   - `lark-cli` —— 飞书侧日程/任务采集（需已授权）
 - **Windows**：host 半体用 PowerShell 5.1 跑采集脚本（macOS/Linux 可运行，但采集类卡片需自行替换实现）。
-- ⚠️ **本版不再依赖第三方侧边栏插件**（0.6.0 起的席位变更）：面板与入口挂在 **DSH 自带**的两条栏上 ——
-  ① 「工作台」卡片面板 = 自带**右侧栏的 tab 类型**（`ctx.sidebarRightTabs`）+ 键控席位 `sidebar.right.pane.tab`（key = tab id）；
-  ② 「驾驶舱 / 建模中心 / 坐标系」= **主面板**（`main` 键控席位，与对话页平级）；
-  ③ 左侧栏底部（设置按钮上方）的三枚工作台图标 = `sidebar.footer.action`（由本插件统一画三枚，侧边栏折叠成 56px 竖栏时自动切竖排，不溢出）。
+- ⚠️ **本版不再依赖第三方侧边栏插件**（0.6.0 起的席位变更）：五个工作台与入口**全部**挂在 **DSH 自带**的两条栏上 ——
+  ① 「工作台 / 驾驶舱 / **工程图**」的正文 = 自带**右侧栏的 tab 类型**（`ctx.sidebarRightTabs`）+ 键控席位 `sidebar.right.pane.tab`（key = tab id）；
+  ② 「坐标系 / 建模中心」同一席位，类型由 `dsh-coords` / `dsh-modeling` 各自注册；
+  ③ 左侧栏底部（设置按钮上方）的**五行**工作台图标 = `sidebar.footer.action`（由本插件统一画五行：
+     工作台 · 驾驶舱 · 坐标系 · **工程图** · 建模中心；侧边栏折叠成 56px 竖栏时自动切竖排，不溢出）。
   0.5.0 及以前需要 `dsh-better-sidebar` 0.18.x 的那条前提**随之作废**（旧版是挂在那条第三方栏的 tab 上）；
   那条"0.19.1 会 React #130"的教训保留在更早的版本说明里，仅作历史。
 
@@ -142,9 +143,74 @@ host 路由（均在 `/workdesktop/api` 下）：
 | `/rebuild` | POST | 写 | 幂等重建库内快照 |
 | `/disposition/act` | POST | 写 | 待议流入处置（面板「流入处置」卡有控件：拒绝/转出 + **理由必填**；host 只做校验与透传，判定在库内 CLI） |
 
-agent 工具：`workbench_todo` · `workbench_focus` · `workbench_active_domains` · `workbench_matter`。
+agent 工具：`workbench_todo` · `workbench_focus` · `workbench_active_domains` · `workbench_matter` · **`project_graph`**。
 
----
+### 5.1 工程图（Project Graph）· 2026-10-03 新增
+
+第五个工作台：把本机的 [Project Graph](https://github.com/graphif/project-graph) 接进 DSH。
+面板是一栏（官方右侧栏的 tab 类型 `dsh-workdesktop:project-graph`，入口排在左侧栏
+「坐标系」下方、「建模中心」上方），**内容是上游自己的 CLI 跑出来的** ——
+本插件不复制它的图模型、不重写它任何一条判定，只做三件事：拉起 CLI、把结果透传给浏览器半段、
+把同一批动作开成 agent 工具 `project_graph`。
+
+三层各自是什么：
+
+| 层 | 位置（环境变量可覆盖） | 说明 |
+| --- | --- | --- |
+| ① 上游检出 | `DSH_WORKDESKTOP_PROJECT_GRAPH_REPO`，默认 `%USERPROFILE%\Desktop\DSH\project-graph` | clone 下来的 project-graph，**必须 `pnpm install` 过**；CLI 入口 `packages/project-graph-cli/src/cli.mjs` |
+| ② 工程图工作区 | `DSH_WORKDESKTOP_PROJECT_GRAPH_DIR`，默认 `$DSH_HOME/.dsh-project-graph` | 本插件的数据根：`projects/` 放 `.prg` 工程 · `bin/` 放编译出来的所有权 helper 与空工程模板。**与知识库解耦**（不往 `_meta/out/` 写任何东西） |
+| ③ 本插件 | `lib/index.js` + `lib/client.js` | 路由 `/workdesktop/api/pg/*` · 面板 · agent 工具 `project_graph` |
+
+**为什么要自己编一个「所有权 helper」**：上游 CLI 在动手前必须先**独占**目标 `.prg` ——
+它 spawn 一个**原生产物**（`app/src-tauri/src/bin/project-graph-ownership-helper.rs`）并核对一行
+JSON 协议；它还要读写「项目级引用」存储（`n1` / `e1` 这套稳定句柄，落在
+`%APPDATA%\liren.project-graph\ai-project-references.json`）。本机没有那个目标原生产物
+（要整条 Tauri / CEF 工具链），所以本仓库带一份**同协议的 C# 等价实现**：
+
+    pg-helper/ProjectGraphOwnershipHelper.cs          ← 唯一真相（源码入库）
+    <工程图工作区>/bin/project-graph-ownership-helper.exe ← 运行前用系统自带 csc.exe 现编（**仓库不放二进制**）
+
+协议（五条命令：`try-hold-project` · `hold-project` · `load/save-project-references`）
+与**与上游 Rust 版的已知差异**都逐条写在那个 `.cs` 的头部注释里。
+
+**上游的 29 个内置工具 = 工程图的全部动作。** agent 工具 `project_graph` 把它们原样开给会话：
+
+| 动作 | 干什么 |
+| --- | --- |
+| `status` | 可用性自检（上游检出 / CLI / 依赖 / helper 四样逐条报状态，不说"不可用"了事） |
+| `projects` · `create` · `rename` · `delete` | 工程清单与工程文件的增删改名 |
+| `tools` · `describe` | 上游工具目录（29 条）与某条的完整入参 schema |
+| `invoke` | **执行任意一条上游工具**（`tool` / `input` 原样透传，不改写） |
+| `graph` · `open` | 取一张图的全部对象 / 把「工程图」那一栏弹到眼前 |
+
+⚠️ **关闭态 19 条 / 打开态 10 条（上游的边界，本插件原样透传）**：上游按
+`BuiltInToolRuntimeProfiles.ts` 把 29 条分两档。**关闭态可跑 19 条**（读 / 改 / 删 / 连线 /
+树扩展 / 布局 / 上色，不需要桌面端）；**需要打开态 10 条**声明了 `viewport` 或 `selection`
+（`create_text_node` `generate_node_tree_by_text` `search_and_add_image_node` `select_objects`
+`get_selected_nodes` `get_selected_refs` `get_nodes_in_viewport` `delete_selected_nodes`
+`sort_selected_nodes_by_x/by_y`），只有桌面端开着才有，关闭态调用回 `PROJECT_MUST_BE_OPEN` ——
+本插件**原样透传这个错误码**，不假装成功、也不把这个能力说成"我们也支持"。
+⇒ 所以关闭态下"新建节点"的正路是**树扩展**：空工程模板里预置了**一个根节点**，
+`expand_node_tree_from_node` / `breadth_expand_node` / `depth_expand_node` 都能长出整棵树，
+而这三条都不需要 viewport。
+
+新增路由（`/workdesktop/api` 下）：`/pg/status` · `/pg/projects` · `/pg/project`（POST：
+create/rename/delete，**本插件唯一自己写盘的地方**，只碰 `.prg` 文件本身）· `/pg/tools` ·
+`/pg/tool` · `/pg/invoke`（POST）· `/pg/graph` · `/pg/events` · `/pg/open`。
+
+第一次用：
+
+    node pg-helper/setup-workspace.mjs     # 建工作区 + 编 helper + 造一个起始工程
+
+四套离线自测（都不需要 DSH 起来）：
+
+    node selftest-project-graph-client.mjs                                        # 17 条：席位/顺序契约（**进 CI**）
+    node selftest-project-graph.mjs <上游检出>                                     # 28 条：路由真跑（真 spawn CLI）+ agent 工具真建/读/删
+    node pg-helper/verify-ownership-helper.mjs <helper.exe>                        # 15 条：helper 的行协议
+    node pg-helper/verify-project-graph-cli.mjs <上游检出> <helper.exe> <模板> <工作目录>  # 31 条：上游 CLI 的读/建/改/连/删
+
+后三套**故意不进 CI**：它们要 clone 上游、`pnpm install`、Windows + `csc.exe` ——
+放进 CI 会让"裸 clone 就能自证"这条承诺失效（见 §8）。
 
 ## 6. 数据从哪来（重要）
 
@@ -206,7 +272,43 @@ node selftest.mjs           # 自证（见 §8）
 
 ---
 
-## 10. 更新概览 · v0.7.0
+## 10. 更新概览 · v0.8.0
+
+本轮一件事：**加入第五个工作台「工程图」**（Project Graph）。
+
+**新增**
+
+- **「工程图」席位**：官方右侧栏的 tab 类型 `dsh-workdesktop:project-graph`；左侧栏底部那行图标
+  从四行变**五行**，工程图排在「坐标系」下方、「建模中心」上方（用户 2026-10-03 裁定的**顺序契约**，
+  由 `selftest-project-graph-client.mjs` 的 `PGC-1/PGC-2/PGC-2b` 守着）。图标是"左二右一"的汇
+  （两个圆点汇入一个方框），与「建模中心」的树形分得开；指南页入口卡的底板取青色 `rgb(32,148,143)`。
+- **面板**：选工程 / 新建 / 删除 / 刷新；SVG 画布（拖拽平移、滚轮缩放，自动适配外接框）把
+  `get_all_nodes` 的对象画成节点与连线（`LineEdge` 按 `sourceRef`→`targetRef` 连）；点对象进检视器，
+  可改文字 / 删除 / 在它下面长一棵子树；所有动作都经 `/workdesktop/api/pg/invoke` 调**上游 CLI**。
+- **agent 工具 `project_graph`**：把上游那 29 条内置工具原样开给会话（`tools` 看清单 →
+  `describe` 看 schema → `invoke` 执行），外加 `projects` / `create` / `rename` / `delete` / `graph` / `open` / `status`。
+- **`pg-helper/`**：上游 CLI 需要一份原生「所有权 helper」（独占 `.prg` + 读写 `n1`/`e1` 引用存储），
+  本仓库带**同协议的 C# 等价实现**（源码入库、运行前用系统自带 `csc.exe` 现编，**不放二进制**），
+  外加空工程模板与四个离线自测脚本。
+
+**边界（写清楚，不假装）**：上游把 29 条工具分成"关闭态 19 条 / 打开态 10 条"。
+`create_text_node` 等 10 条声明了 `viewport` 或 `selection`，只有桌面端开着才有，关闭态回
+`PROJECT_MUST_BE_OPEN` —— 本插件**原样透传**这个错误码。关闭态下"新建节点"的正路是**树扩展**
+（空工程模板预置了一个根节点，`expand_node_tree_from_node` / `breadth_expand_node` /
+`depth_expand_node` 都不需要 viewport）。详见 §5.1。
+
+**验证**：发布仓自测 `node selftest.mjs` **39/0**（在 v0.7.0 那四组之外新增 `L5-1`：
+工程图席位契约 17 条断言；脱敏扫描的扩展名集合加入 `.cs` ⇒ 扫 16 个文件、零命中）。
+另有四套**不进 CI** 的离线套件（要上游检出 / Windows / csc）：路由真跑 28/0 ·
+上游 CLI 的读建改连删 31/0 · helper 行协议 15/0 · 席位契约 17/0 —— 命令见 §5.1。
+
+**升级注意**：① 要先把上游 project-graph clone 下来并 `pnpm install`（`DSH_WORKDESKTOP_PROJECT_GRAPH_REPO` 指过去）；
+② 首次用跑一次 `node pg-helper/setup-workspace.mjs`；③ host 半体改动**要重启 DSH**，client 半体刷新页面即可；
+④ 没装上游时其余卡片与面板**不受影响** —— 工程图那一栏会逐条写出缺的是哪一样。
+
+---
+
+## 10.1 上一版 · v0.7.0
 
 本轮三件事：**开工前先看进度**（首屏载入画面）· **给面板起了名字「弈枢」并配了一张名称图** · **详情页按"人话在前、机器字段收进折叠"重排**；另外修掉四个真机抓到的缺陷，其中一个是**一打开详情页就把整块面板带走**的崩溃。
 
@@ -243,7 +345,7 @@ node selftest.mjs           # 自证（见 §8）
 
 （对应的脱敏产物指纹：`index.js D6CB90193D2EF5BE` · `client.js CC013B79B1701DDE`。两侧都按"隔 60 秒两次 `mtime`+SHA256 一致"采样。）
 
-对应本仓库版本 **0.7.0**（13 张卡 · 三带布局 · 面板在 DSH **自带右侧栏**的席位 + 左侧栏入口 · **首屏载入画面** · 名称「弈枢」+ 水墨名称图（CSS 遮罩，随主题令牌变色）· **详情页"人话在前"**（机器字段收进「技术细节」折叠）· 卡片尺寸两档 + 拖动跟手/松手吸附动画 + 卡内小卡片按宽度 1/2/3/4 自适应 · 听记 → 事务草稿 · 纸墨外观 · 长按拖动排序 + `ui-prefs` 覆盖层 · 卡内只读透传 + 三条"不许静默"出口）。**README 里的卡片数与顺序对应当前同步进来的这份源码**（`CARD_ORDER` 13 键，与上表源指纹同一次采样）；**发布仓与源项目此后会各自演进**：再次同步请重跑上面的固定流程（同步脚本会打印新旧指纹），不要手工编辑本仓库的 `lib/`。
+对应本仓库版本 **0.8.0**（**五个工作台** · 13 张卡 · 三带布局 · 面板在 DSH **自带右侧栏**的席位 + 左侧栏入口 · **首屏载入画面** · 名称「弈枢」+ 水墨名称图（CSS 遮罩，随主题令牌变色）· **详情页"人话在前"**（机器字段收进「技术细节」折叠）· 卡片尺寸两档 + 拖动跟手/松手吸附动画 + 卡内小卡片按宽度 1/2/3/4 自适应 · 听记 → 事务草稿 · 纸墨外观 · 长按拖动排序 + `ui-prefs` 覆盖层 · 卡内只读透传 + 三条"不许静默"出口）。**README 里的卡片数与顺序对应当前同步进来的这份源码**（`CARD_ORDER` 13 键，与上表源指纹同一次采样）；**发布仓与源项目此后会各自演进**：再次同步请重跑上面的固定流程（同步脚本会打印新旧指纹），不要手工编辑本仓库的 `lib/`。
 
 ### 发布清单（照这个顺序做，**只打 tag 不算发布**）
 
@@ -262,6 +364,7 @@ node selftest.mjs           # 自证（见 §8）
 
 | 版本 | Release |
 |---|---|
+| v0.8.0 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.8.0> |
 | v0.7.0 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.7.0> |
 | v0.6.0 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.6.0> |
 | v0.5.0 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.5.0> |

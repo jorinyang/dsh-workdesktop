@@ -448,7 +448,10 @@ const RULES = [
   { id: 'bearer', why: '明文令牌', re: /[Bb]earer\s+[A-Za-z0-9._-]{16,}/ },
   { id: 'token-query', why: 'URL 里的令牌', re: /[?&](?:token|access_token)=[A-Za-z0-9._-]{16,}/i },
 ];
-const SCAN_EXT = new Set(['.js', '.mjs', '.json', '.md', '.yml', '.yaml', '.txt', '.editorconfig', '']);
+// 2026-10-03：加入 `.cs` —— 「工程图」的所有权 helper 是 C# 源码入库的
+// （`pg-helper/ProjectGraphOwnershipHelper.cs`），它同样是"我们自己写的源码"，
+// 必须在同一条脱敏规则下受检。`.prg` 不入列：那是 zip 二进制，按文本扫只会出噪声。
+const SCAN_EXT = new Set(['.js', '.mjs', '.json', '.md', '.yml', '.yaml', '.txt', '.editorconfig', '.cs', '']);
 const SKIP_DIRS = new Set(['node_modules', '.git', 'fixtures']);
 const SKIP_FILES = new Set(['selftest.mjs', 'LICENSE', '.gitignore']);
 
@@ -507,6 +510,24 @@ function scanText(text) {
     }
   }
   chk('L4-2', `fixture 里的目录名全部是中性示例（${[...seen].join(' · ') || '无'}）`, bad.length === 0, bad.join(', '));
+}
+
+// ── 5. 工程图（Project Graph）的源码级契约 ──────────────────────────────────────
+// 这一组只跑**不需要上游检出、不需要 Windows、不需要 DSH** 的那部分：
+// 「工程图」在左侧栏五行的位置、「坐标系 ↓ 工程图 ↑ 建模中心」这条顺序契约、
+// 官方右侧栏的 tab 类型注册、以及"面板只调上游真实存在的工具"。
+// 需要真 CLI 的那两套（`selftest-project-graph.mjs` / `pg-helper/verify-*.mjs`）
+// **故意不进 CI**：它们要 clone graphif/project-graph、`pnpm install`、Windows + csc，
+// 放进这里会让"裸 clone 就能自证"这条承诺失效。要跑请照 README §工程图 的命令。
+{
+  const r = spawnSync(process.execPath, [path.join(HERE, 'selftest-project-graph-client.mjs')], {
+    encoding: 'utf8', windowsHide: true, cwd: HERE,
+  });
+  const out = String(r.stdout || '');
+  const m = /PASS=(\d+) FAIL=(\d+)/.exec(out);
+  const ok = r.status === 0 && m !== null && Number(m[2]) === 0;
+  chk('L5-1', `★ 工程图席位契约（顺序 / 官方右栏注册 / 图标 / 生命周期）${m === null ? '' : `：${m[1]} 条断言`}`,
+    ok, ok ? '' : out.split('\n').filter((l) => l.includes('[FAIL]')).slice(0, 4).join(' | ') || String(r.stderr || '').slice(0, 200));
 }
 
 // ── summary ────────────────────────────────────────────────────────────────────
