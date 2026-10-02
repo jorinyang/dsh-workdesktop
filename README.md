@@ -198,12 +198,19 @@ JSON 协议；它还要读写「项目级引用」存储（`n1` / `e1` 这套稳
 create/rename/delete，**本插件唯一自己写盘的地方**，只碰 `.prg` 文件本身）· `/pg/tools` ·
 `/pg/tool` · `/pg/invoke`（POST）· `/pg/graph` · `/pg/events` · `/pg/open`。
 
-#### 5.1.1 对外 MCP server（2026-10-03 新增）
+#### 5.1.1 对外 MCP server（2026-10-03 新增 · v0.8.1 起）
 
 工程图**对外也提供一个 MCP server**，DSH 的 MCP 客户端可以直接连上，用标准 MCP 工具调用
-建 / 改 / 删工程图内容 —— 不必经过本插件。
+建 / 改 / 删工程图内容 —— 不必经过本插件。**共 42 条工具，分三层**：
 
-- **server 本体**：`pg-helper/project-graph-mcp.mjs`，**零依赖**手写 JSON-RPC 子集（只用 `node:` 内置）。
+| 层 | 条数 | 是什么 |
+| --- | --- | --- |
+| ① **上游 29 条内置工具** | 29 | `create_text_node` · `edit_text_node` · `delete_node` · `create_edges` · `auto_layout_dag` · `expand_node_tree_from_node` … —— **名字、说明、`inputSchema` 全部取自上游 `tool list`，一个字都不改写**，只加一个必需的 `project` 与可选的 `allowUpgrade`。所以"上游能做的"与"客户端能做的"是同一集合 |
+| ② **文档容器层** | 4 | `pg_document`（读整份 `.prg`：元数据 / 全部条目 / 附件 / **全部舞台对象**，不只节点与连线）· `pg_locate`（引用 `n1` ↔ 文档 `uuid` 的**精确**对照）· `pg_move_node`（**移动 / 缩放**实体 —— 上游 29 条里没有"移动"，但规范里实体必有位置且必须可手动移动）· `pg_set_details`（写**详细信息** —— 规范说"任何实体上都可以写"，上游同样没有这条） |
+| ③ **元工具** | 9 | `pg_status` · `pg_projects` · `pg_create` · `pg_rename` · `pg_delete` · `pg_tools` · `pg_describe` · `pg_graph` · `pg_invoke`（任意上游工具的兜底通道） |
+
+- **server 本体**：`pg-helper/project-graph-mcp.mjs`（**零依赖**手写 JSON-RPC 子集，只用 `node:` 内置）+
+  `pg-helper/project-graph-prg.mjs`（`.prg` 容器编解码：ZIP + MessagePack，同样零依赖）。
   为什么手写：它要被 DSH 以 `command: <node.exe> args: [<这个文件>]` 直接 spawn，
   而官方 MCP SDK 装在 DSH 自己的检出里，从这个文件的位置**解析不到**；
   本项目的插件纪律也是"只用 `node:` 内置"。
@@ -211,20 +218,28 @@ create/rename/delete，**本插件唯一自己写盘的地方**，只碰 `.prg` 
   （`@modelcontextprotocol/client` v2.0.0，DSH 自己用的就是它）连上来跑完整流程 ——
   握手 / 版本协商 / `tools/list` / `tools/call` 全走它的实现。
   **自己写个客户端只能证明"我按自己的理解说、按自己的理解听"，两边一起错的时候照样全绿。**
-- **工具面（9 条，前缀 `mcp__project_graph__`）**：
-  `pg_status` · `pg_projects` · `pg_create` · `pg_rename` · `pg_delete` ·
-  `pg_tools` · `pg_describe` · `pg_graph` · `pg_invoke`。
-  底下走的是**同一条上游 CLI**，所以 MCP 面、agent 工具 `project_graph`、面板按钮三者是同一批动作。
+- **两层用两套标识，别混**：上游那层用**项目级引用**（`n1` / `e1`），文档层用**舞台对象的 `uuid`**。
+  `pg_locate` 给出的对照是**精确双射**（实体按 类型+文本+坐标、连线按 两端uuid+文本，两边都唯一才配对），
+  **不是模糊匹配**；配不成双射就回 `ok=false`，`pg_move_node` / `pg_set_details` 会**拒绝改动**而不是猜。
 - **协议**：stdio，一行一个 JSON-RPC 消息；版本 `2025-11-25`（支持集
   `2025-11-25 / 2025-06-18 / 2025-03-26 / 2024-11-05 / 2024-10-07`）。
   ⚠️ stdout **只允许出现 JSON-RPC 消息**，日志一律走 stderr —— 往 stdout 写一行人类可读的字，
   客户端当场解析失败。
+- **上游目录落盘缓存**：`tool list` 是 tsx 冷启动 + Vite SSR，单次 10~20 秒，而 `tools/list`
+  是客户端每次连接都会发的请求 ⇒ 目录缓存到 `<工作区>/cache/tool-catalog.json`，
+  有缓存立刻用、过期了在后台刷新（不阻塞本次回执）。
 - **怎么挂**：在 profile 的 `cordis.patch.yml` 里加一条 `@deepseek-ai/dsh-mcp-client`
   （本机的实例见 `$DSH_HOME/profiles/web/cordis.patch.yml` 的 `mcp-project-graph` 段）。
   ⚠️ 沿用了本机既有的 Windows spawn 规避：用 `process.execPath` 直指当前 node
   （不依赖 PATH 上的 `.cmd` / `.ps1` shim），并把 server 脚本当**绝对路径参数**传进去。
   ⚠️ MCP 客户端给子进程的环境是**清洗过再合并**的，所以工作区与上游检出路径要在 `env` 里**写全**，
   不要指望 `USERPROFILE` / `DSH_HOME` 还在。
+- **它没有做的**（诚实清单）：只实现 `tools/*`；`resources/*`、`prompts/*`、`logging` 没实现
+  （`list_mcp_resources` 回空数组是**上游 SDK 的宽容**，不是我们实现了资源）；只有 stdio 传输；
+  工具集是静态的（`listChanged:false` 如实声明）。
+  文档层**不做**序列化器的类还原（解出来是纯对象树），所以只改字段、不改形状的操作是安全的；
+  "从零造一个新类型对象"没做（那要拼出与序列化器完全一致的形状）。
+  `.prg` 规范里还是"未来考虑"的那几节（`sub/` 子舞台、`versions/`、`settings.msgpack`）也没做。
 
 第一次用：
 
@@ -233,10 +248,10 @@ create/rename/delete，**本插件唯一自己写盘的地方**，只碰 `.prg` 
 五套离线自测（都不需要 DSH 起来）：
 
     node selftest-project-graph-client.mjs                                        # 17 条：席位/顺序契约（**进 CI**）
-    node selftest-project-graph.mjs <上游检出>                                     # 28 条：路由真跑（真 spawn CLI）+ agent 工具真建/读/删
+    node selftest-project-graph.mjs <上游检出>                                     # 30 条：路由真跑（真 spawn CLI）+ agent 工具真建/读/删
     node pg-helper/verify-ownership-helper.mjs <helper.exe>                        # 15 条：helper 的行协议
     node pg-helper/verify-project-graph-cli.mjs <上游检出> <helper.exe> <模板> <工作目录>  # 31 条：上游 CLI 的读/建/改/连/删
-    node pg-helper/verify-project-graph-mcp.mjs                                    # 19 条：MCP 合规（拿**官方 SDK 客户端**当对手）
+    node pg-helper/verify-project-graph-mcp.mjs                                    # 32 条：MCP 合规（拿**官方 SDK 客户端**当对手）
 
 后四套**故意不进 CI**：它们要 clone 上游、`pnpm install`、Windows + `csc.exe`、
 或 DSH 检出里的官方 MCP SDK —— 放进 CI 会让"裸 clone 就能自证"这条承诺失效（见 §8）。

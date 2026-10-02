@@ -113,14 +113,26 @@ const again = await call('POST', `${ROUTE}/pg/project`, { action: 'create', name
 chk('PG-3c', '重名新建被拒（不覆盖既有工程）', again.json && again.json.ok === false, String(again.json && again.json.error))
 
 // ── PG-4 上游工具目录 ────────────────────────────────────────────────────
+// ⚠️ 顺序是有意的：**先冷后热**。`/pg/tool` 曾经在"缓存没命中"与"缓存命中"两种状态下
+// 回两种形状（`{value}` / `{tool}`），先调 `/pg/tools`（把缓存填上）就把这个缺陷盖住了。
+// 所以这里必须先单独调 `/pg/tool`（冷），再调 `/pg/tools`，最后再调一次 `/pg/tool`（热），
+// 断言**两次形状完全一样**。
+const cold = await call('GET', `${ROUTE}/pg/tool?name=expand_node_tree_from_node`)
+chk('PG-4c', '★ 缓存冷时 /pg/tool 也回 `{ok,tool}`（与热时同一形状）',
+  cold.json && cold.json.ok === true && cold.json.tool && cold.json.tool.inputSchema,
+  JSON.stringify(Object.keys(cold.json || {})).slice(0, 120))
 const tools = await call('GET', `${ROUTE}/pg/tools`)
 chk('PG-4', '★ /pg/tools 透传上游 tool list（29 条，带 inputSchema）',
   tools.code === 200 && tools.json && tools.json.ok === true && tools.json.tools.length === 29
   && tools.json.tools.every((t) => t && t.name && t.inputSchema),
   `count=${tools.json && tools.json.tools && tools.json.tools.length}`)
 const one = await call('GET', `${ROUTE}/pg/tool?name=expand_node_tree_from_node`)
-chk('PG-4b', '/pg/tool?name=… 给出那一条的 schema',
+chk('PG-4b', '/pg/tool?name=… 给出那一条的 schema（热时同形状）',
   one.json && one.json.ok === true && one.json.tool && one.json.tool.inputSchema, '')
+chk('PG-4d', '★ 冷 / 热两次回执的**键集与内容**一致（缓存不该改变形状）',
+  JSON.stringify(Object.keys(cold.json).sort()) === JSON.stringify(Object.keys(one.json).sort())
+  && cold.json.tool.name === one.json.tool.name,
+  `cold=${JSON.stringify(Object.keys(cold.json).sort())} warm=${JSON.stringify(Object.keys(one.json).sort())}`)
 
 // ── PG-5 读图（真的起一次 CLI）───────────────────────────────────────────
 const graph = await call('GET', `${ROUTE}/pg/graph?project=${encodeURIComponent('自测工程.prg')}`)
