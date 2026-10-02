@@ -198,19 +198,48 @@ JSON 协议；它还要读写「项目级引用」存储（`n1` / `e1` 这套稳
 create/rename/delete，**本插件唯一自己写盘的地方**，只碰 `.prg` 文件本身）· `/pg/tools` ·
 `/pg/tool` · `/pg/invoke`（POST）· `/pg/graph` · `/pg/events` · `/pg/open`。
 
+#### 5.1.1 对外 MCP server（2026-10-03 新增）
+
+工程图**对外也提供一个 MCP server**，DSH 的 MCP 客户端可以直接连上，用标准 MCP 工具调用
+建 / 改 / 删工程图内容 —— 不必经过本插件。
+
+- **server 本体**：`pg-helper/project-graph-mcp.mjs`，**零依赖**手写 JSON-RPC 子集（只用 `node:` 内置）。
+  为什么手写：它要被 DSH 以 `command: <node.exe> args: [<这个文件>]` 直接 spawn，
+  而官方 MCP SDK 装在 DSH 自己的检出里，从这个文件的位置**解析不到**；
+  本项目的插件纪律也是"只用 `node:` 内置"。
+- **合规怎么保证**：`pg-helper/verify-project-graph-mcp.mjs` 让**官方 SDK 的客户端**
+  （`@modelcontextprotocol/client` v2.0.0，DSH 自己用的就是它）连上来跑完整流程 ——
+  握手 / 版本协商 / `tools/list` / `tools/call` 全走它的实现。
+  **自己写个客户端只能证明"我按自己的理解说、按自己的理解听"，两边一起错的时候照样全绿。**
+- **工具面（9 条，前缀 `mcp__project_graph__`）**：
+  `pg_status` · `pg_projects` · `pg_create` · `pg_rename` · `pg_delete` ·
+  `pg_tools` · `pg_describe` · `pg_graph` · `pg_invoke`。
+  底下走的是**同一条上游 CLI**，所以 MCP 面、agent 工具 `project_graph`、面板按钮三者是同一批动作。
+- **协议**：stdio，一行一个 JSON-RPC 消息；版本 `2025-11-25`（支持集
+  `2025-11-25 / 2025-06-18 / 2025-03-26 / 2024-11-05 / 2024-10-07`）。
+  ⚠️ stdout **只允许出现 JSON-RPC 消息**，日志一律走 stderr —— 往 stdout 写一行人类可读的字，
+  客户端当场解析失败。
+- **怎么挂**：在 profile 的 `cordis.patch.yml` 里加一条 `@deepseek-ai/dsh-mcp-client`
+  （本机的实例见 `$DSH_HOME/profiles/web/cordis.patch.yml` 的 `mcp-project-graph` 段）。
+  ⚠️ 沿用了本机既有的 Windows spawn 规避：用 `process.execPath` 直指当前 node
+  （不依赖 PATH 上的 `.cmd` / `.ps1` shim），并把 server 脚本当**绝对路径参数**传进去。
+  ⚠️ MCP 客户端给子进程的环境是**清洗过再合并**的，所以工作区与上游检出路径要在 `env` 里**写全**，
+  不要指望 `USERPROFILE` / `DSH_HOME` 还在。
+
 第一次用：
 
     node pg-helper/setup-workspace.mjs     # 建工作区 + 编 helper + 造一个起始工程
 
-四套离线自测（都不需要 DSH 起来）：
+五套离线自测（都不需要 DSH 起来）：
 
     node selftest-project-graph-client.mjs                                        # 17 条：席位/顺序契约（**进 CI**）
     node selftest-project-graph.mjs <上游检出>                                     # 28 条：路由真跑（真 spawn CLI）+ agent 工具真建/读/删
     node pg-helper/verify-ownership-helper.mjs <helper.exe>                        # 15 条：helper 的行协议
     node pg-helper/verify-project-graph-cli.mjs <上游检出> <helper.exe> <模板> <工作目录>  # 31 条：上游 CLI 的读/建/改/连/删
+    node pg-helper/verify-project-graph-mcp.mjs                                    # 19 条：MCP 合规（拿**官方 SDK 客户端**当对手）
 
-后三套**故意不进 CI**：它们要 clone 上游、`pnpm install`、Windows + `csc.exe` ——
-放进 CI 会让"裸 clone 就能自证"这条承诺失效（见 §8）。
+后四套**故意不进 CI**：它们要 clone 上游、`pnpm install`、Windows + `csc.exe`、
+或 DSH 检出里的官方 MCP SDK —— 放进 CI 会让"裸 clone 就能自证"这条承诺失效（见 §8）。
 
 ## 6. 数据从哪来（重要）
 
@@ -272,7 +301,51 @@ node selftest.mjs           # 自证（见 §8）
 
 ---
 
-## 10. 更新概览 · v0.8.0
+## 10. 更新概览 · v0.8.1（当前）
+
+补上 v0.8.0 里缺的那半边：**工程图现在也对外提供一个 MCP server**，DSH 的 MCP 客户端
+可以直接连上，用标准 MCP 工具调用建 / 改 / 删工程图内容。
+
+**新增**
+
+- `pg-helper/project-graph-mcp.mjs` —— **零依赖**手写的 stdio MCP server，9 条工具：
+  `pg_status` · `pg_projects` · `pg_create` · `pg_rename` · `pg_delete` ·
+  `pg_tools` · `pg_describe` · `pg_graph` · `pg_invoke`。前缀 `mcp__project_graph__`。
+  底下走**同一条上游 CLI** —— MCP 面、agent 工具 `project_graph`、面板按钮三者是同一批动作。
+- `pg-helper/verify-project-graph-mcp.mjs` —— **拿官方 SDK 客户端当对手**的一致性套件（19 条）：
+  握手 / 版本协商 / `tools/list` / `tools/call` 全走 `@modelcontextprotocol/client` v2.0.0
+  （DSH 自己用的就是它）。自己写客户端只能证明自说自话，这条不算数。
+
+**为什么手写而不是用官方 SDK**：它要被 DSH 以 `command: <node.exe> args: [<绝对路径>]` 直接 spawn，
+而官方 SDK 装在 DSH 自己的检出里，从这个文件的位置**解析不到**；本项目的插件纪律也是"只用 `node:` 内置"。
+
+**怎么挂**（profile 层，进程级挂载一次 ⇒ 所有会话都能用）：
+
+```yaml
+- insert:
+    - id: mcp-project-graph
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: project_graph
+        transport: stdio
+        command: !!js process.execPath
+        args: ['<绝对路径>/pg-helper/project-graph-mcp.mjs']
+        env:
+          DSH_WORKDESKTOP_PROJECT_GRAPH_REPO: '<上游检出>'
+          DSH_WORKDESKTOP_PROJECT_GRAPH_DIR: '<工作区>'
+        toolCallTimeoutMs: 180000
+```
+
+（`command` 用 `process.execPath` 是沿用本机 firecrawl / kb 两条已经踩过的坑：
+`npx` → ENOENT、`npx.cmd` → EINVAL，只有"node + 脚本绝对路径"这条路通。
+`env` 要给全，因为 MCP 客户端传给子进程的环境是**清洗过再合并**的。）
+
+**验证**：MCP 一致性 **19/0**（官方 SDK 客户端）；仓库自测 `node selftest.mjs` **39/0**
+（脱敏扫描现在是 18 个文件，两个新文件都在扫的范围内）。
+
+---
+
+## 10.1 v0.8.0 · 第五个工作台「工程图」
 
 本轮一件事：**加入第五个工作台「工程图」**（Project Graph）。
 
@@ -305,10 +378,7 @@ node selftest.mjs           # 自证（见 §8）
 **升级注意**：① 要先把上游 project-graph clone 下来并 `pnpm install`（`DSH_WORKDESKTOP_PROJECT_GRAPH_REPO` 指过去）；
 ② 首次用跑一次 `node pg-helper/setup-workspace.mjs`；③ host 半体改动**要重启 DSH**，client 半体刷新页面即可；
 ④ 没装上游时其余卡片与面板**不受影响** —— 工程图那一栏会逐条写出缺的是哪一样。
-
----
-
-## 10.1 上一版 · v0.7.0
+## 10.2 上一版 · v0.7.0
 
 本轮三件事：**开工前先看进度**（首屏载入画面）· **给面板起了名字「弈枢」并配了一张名称图** · **详情页按"人话在前、机器字段收进折叠"重排**；另外修掉四个真机抓到的缺陷，其中一个是**一打开详情页就把整块面板带走**的崩溃。
 
@@ -345,7 +415,7 @@ node selftest.mjs           # 自证（见 §8）
 
 （对应的脱敏产物指纹：`index.js D6CB90193D2EF5BE` · `client.js CC013B79B1701DDE`。两侧都按"隔 60 秒两次 `mtime`+SHA256 一致"采样。）
 
-对应本仓库版本 **0.8.0**（**五个工作台** · 13 张卡 · 三带布局 · 面板在 DSH **自带右侧栏**的席位 + 左侧栏入口 · **首屏载入画面** · 名称「弈枢」+ 水墨名称图（CSS 遮罩，随主题令牌变色）· **详情页"人话在前"**（机器字段收进「技术细节」折叠）· 卡片尺寸两档 + 拖动跟手/松手吸附动画 + 卡内小卡片按宽度 1/2/3/4 自适应 · 听记 → 事务草稿 · 纸墨外观 · 长按拖动排序 + `ui-prefs` 覆盖层 · 卡内只读透传 + 三条"不许静默"出口）。**README 里的卡片数与顺序对应当前同步进来的这份源码**（`CARD_ORDER` 13 键，与上表源指纹同一次采样）；**发布仓与源项目此后会各自演进**：再次同步请重跑上面的固定流程（同步脚本会打印新旧指纹），不要手工编辑本仓库的 `lib/`。
+对应本仓库版本 **0.8.1**（**五个工作台** · 对外 MCP server · 13 张卡 · 三带布局 · 面板在 DSH **自带右侧栏**的席位 + 左侧栏入口 · **首屏载入画面** · 名称「弈枢」+ 水墨名称图（CSS 遮罩，随主题令牌变色）· **详情页"人话在前"**（机器字段收进「技术细节」折叠）· 卡片尺寸两档 + 拖动跟手/松手吸附动画 + 卡内小卡片按宽度 1/2/3/4 自适应 · 听记 → 事务草稿 · 纸墨外观 · 长按拖动排序 + `ui-prefs` 覆盖层 · 卡内只读透传 + 三条"不许静默"出口）。**README 里的卡片数与顺序对应当前同步进来的这份源码**（`CARD_ORDER` 13 键，与上表源指纹同一次采样）；**发布仓与源项目此后会各自演进**：再次同步请重跑上面的固定流程（同步脚本会打印新旧指纹），不要手工编辑本仓库的 `lib/`。
 
 ### 发布清单（照这个顺序做，**只打 tag 不算发布**）
 
@@ -364,6 +434,7 @@ node selftest.mjs           # 自证（见 §8）
 
 | 版本 | Release |
 |---|---|
+| v0.8.1 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.8.1> |
 | v0.8.0 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.8.0> |
 | v0.7.0 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.7.0> |
 | v0.6.0 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.6.0> |
