@@ -107,6 +107,12 @@ export function summarize(object, index, stage = null) {
     attachmentId: typeof object.attachmentId === 'string' ? object.attachmentId : undefined,
     scale: typeof object.scale === 'number' ? object.scale : undefined,
     isBackground: typeof object.isBackground === 'boolean' ? object.isBackground : undefined,
+    // 涂鸦：点列（面板画折线要用）。注意它**没有**一般的 location/size ——
+    // 几何是从 segments 现算的，所以拖动要走 movePenStroke（逐个点平移）。
+    points: Array.isArray(object.segments)
+      ? object.segments.map((seg) => (seg && seg.location
+        ? { x: Number(seg.location.x), y: Number(seg.location.y) } : null)).filter((p) => p !== null)
+      : undefined,
     collapsed: typeof object.isCollapsed === 'boolean' ? object.isCollapsed : undefined,
     locked: typeof object.locked === 'boolean' ? object.locked : undefined,
     borderStyle: typeof object.borderStyle === 'string' ? object.borderStyle : undefined,
@@ -768,6 +774,60 @@ export function makeImageNode(spec = {}) {
       isBackground: spec.isBackground === true,
     },
   }
+}
+
+/* ── 涂鸦（PenStroke）────────────────────────────────────────────────── */
+
+/**
+ * 造一条涂鸦。`points` 是 `[{ x, y, pressure? }]`。
+ * 字段只有三个：uuid / segments / color（PenStroke.tsx 第 33-64 行）——
+ * collisionBox **不落盘**，它是从 segments 现算的，所以这里也不写它。
+ */
+export function makePenStroke(points, spec = {}) {
+  const list = Array.isArray(points) ? points : []
+  if (list.length < 2) return { ok: false, error: '涂鸦至少要两个点' }
+  const segments = []
+  for (const point of list) {
+    const x = Number(point && point.x)
+    const y = Number(point && point.y)
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return { ok: false, error: '有点的坐标不是数' }
+    const pressure = Number(point && point.pressure)
+    segments.push({
+      location: { _: 'Vector', x, y },
+      pressure: Number.isFinite(pressure) ? pressure : 1,
+    })
+  }
+  return {
+    ok: true,
+    stroke: {
+      _: 'PenStroke',
+      uuid: spec.uuid === undefined ? randomUUID() : String(spec.uuid),
+      segments,
+      color: spec.color === undefined
+        ? { _: 'Color', r: 0, g: 0, b: 0, a: 255 }
+        : spec.color,
+    },
+  }
+}
+
+/**
+ * 平移一条涂鸦 —— **逐个 segment 加偏移**（不能只改 collisionBox：它不是落盘字段）。
+ */
+export function movePenStroke(stage, uuid, dx, dy) {
+  const index = stage.findIndex((object) => object && object.uuid === String(uuid))
+  if (index < 0) return { ok: false, error: `没有这个对象：${uuid}` }
+  const stroke = stage[index]
+  if (String(stroke._) !== 'PenStroke') return { ok: false, error: `${uuid} 不是涂鸦（是 ${stroke._}）` }
+  if (!Array.isArray(stroke.segments) || stroke.segments.length === 0) {
+    return { ok: false, error: '这条涂鸦没有 segments' }
+  }
+  const next = structuredClone(stage)
+  for (const segment of next[index].segments) {
+    if (!segment || !segment.location) continue
+    segment.location.x = Number(segment.location.x) + Number(dx)
+    segment.location.y = Number(segment.location.y) + Number(dy)
+  }
+  return { ok: true, stage: next, points: next[index].segments.length }
 }
 
 /* ── 层级（z-order）────────────────────────────────────────────────────── */
