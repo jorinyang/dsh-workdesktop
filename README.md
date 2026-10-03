@@ -55,8 +55,9 @@ dsh plugin --profile web add <path-to-this-repo>
 > `cordis.patch.yml` 的 `insert[].name`、浏览器半段注册用的 `id`、以及侧边栏那几个 tab 类型的**前缀**，全都是它。
 > 「工作台」（英文 workbench）是它**里面的一个功能模块名**，不是一个包名 —— 别把两者当成两个包。
 >
-> ⚠️ 这次统一把侧边栏 tab id 从 `dsh-workdesktop:*` 改成了 `dsh-workdesktop:*`（`console` / `dashboard` /
-> `project-graph` / `workspaces` 四类），所以**已存的席位偏好会失配一次**（重新选一遍即可）。
+> ⚠️ 这次统一**换掉了侧边栏那几个 tab 类型的前缀**（四类：`console` / `dashboard` / `project-graph` /
+> `workspaces`，前缀现在与包名一致），所以**已存的席位偏好会失配一次**（重新选一遍即可）。
+> 旧名与新名的完整对照写在 [v0.9.6 的 Release 说明](https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.9.6) 里，仓库里只留新名。
 > 而 `DSH_WORKDESKTOP_*` 环境变量（§4）与 `/workdesktop/api` 路由前缀**故意没改名** ——
 > 它们是运行期契约，改了等于让每台已配置好的机器重配一遍，不属于"身份串"。
 
@@ -422,9 +423,9 @@ node selftest.mjs           # 自证（见 §8）
 **契约变更（会咬到老用户的两条，写清楚）**
 
 - **包身份统一成 `dsh-workdesktop`**：`cordis.patch.yml` 的 `insert[].name`、浏览器半段注册的 `id`、
-  以及侧边栏 tab 类型前缀（`dsh-workdesktop:*` → `dsh-workdesktop:*`，`console` / `dashboard` /
-  `project-graph` / `workspaces` 四类）全部跟包名对齐。
-  ⇒ **已存的席位偏好会失配一次**；profile 的 `dsh.profile.bundles` 里若写的是旧名，要改。
+  以及侧边栏 tab 类型前缀（`console` / `dashboard` / `project-graph` / `workspaces` 四类）全部跟包名对齐。
+  ⇒ **已存的席位偏好会失配一次**；profile 的 `dsh.profile.bundles` 里若写的还是旧名，按
+  [v0.9.6 的 Release 说明](https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.9.6) 里的对照改。
 - **故意没改的两处**：`DSH_WORKDESKTOP_*` 环境变量（26 个，§4 整张表）与 `/workdesktop/api` 路由前缀。
   它们是运行期契约 —— 改名等于让每台已配置好的机器重配一遍，不属于"身份串"。
 
