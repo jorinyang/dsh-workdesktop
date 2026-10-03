@@ -9,6 +9,7 @@
   ④ HTTP 删掉临时工程
 """
 import json
+import re
 import sys
 import time
 import urllib.request
@@ -430,6 +431,85 @@ try:
                 and abs(undone["height"] - before_size["height"]) < 1,
                 f"{after_size} -> {undone}")
             page.screenshot(path=SHOT + r"\ui-15-undone.png")
+
+        # ── P4 剪断连线（剪刀模式）──────────────────────────────────────
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(400)
+        page.locator(".dshw-pg-bar button", has_text="刷新").first.click()
+        page.wait_for_timeout(4000)
+
+        edges_now = [o for o in doc_objects() if o.get("type") == "LineEdge"]
+        chk("UI-19a", "画布上有一条连线可供剪断", len(edges_now) >= 1, f"连线 {len(edges_now)} 条")
+
+        shear = page.locator(".dshw-pg-bar button", has_text="剪刀")
+        chk("UI-19", "★ 工具条上有剪刀开关", shear.count() >= 1, f"按钮 {shear.count()}")
+        if shear.count() >= 1 and len(edges_now) >= 1:
+            shear.first.click()
+            page.wait_for_timeout(500)
+            chk("UI-19b", "★ 打开后画布进入剪刀模式",
+                page.locator('.dshw-pg-canvas[data-cut="1"]').count() == 1, "")
+
+            # ⚠️ 必须按**这条连线真正的两端**算中点，不能"取屏幕上最远的一对节点" ——
+            #    第一版就是这么写的，垂线画在了另一对节点中间，剪了个空（1 -> 1 不是产品的问题）。
+            #    节点的 <title> 里有 uuid 前 8 位，靠它把文档里的 uuid 对回屏幕上的框。
+            def rect_of_uuid(u):
+                groups = page.locator("svg .dshw-pg-nodewrap")
+                for i in range(groups.count()):
+                    t = groups.nth(i).locator("title").first.text_content() or ""
+                    if u in t:
+                        return groups.nth(i).locator("rect").first.bounding_box()
+                return None
+
+            fresh = doc_objects()
+            by_index = {o["index"]: o["uuid"] for o in fresh}
+            edge = next(o for o in fresh if o.get("type") == "LineEdge")
+            ends = []
+            for link in (edge.get("links") or []):
+                m = re.match(r"^/(\d+)", str(link))
+                if m:
+                    ends.append(by_index.get(int(m.group(1))))
+            chk("UI-19c", "从文档里解析出这条连线真正的两端",
+                len(ends) == 2 and all(ends), f"ends={[str(e)[:8] for e in ends]}")
+
+            mid = None
+            if len(ends) == 2 and all(ends):
+                bb1 = rect_of_uuid(str(ends[0])[:8])
+                bb2 = rect_of_uuid(str(ends[1])[:8])
+                if bb1 and bb2:
+                    x1 = bb1["x"] + bb1["width"] / 2
+                    y1 = bb1["y"] + bb1["height"] / 2
+                    x2 = bb2["x"] + bb2["width"] / 2
+                    y2 = bb2["y"] + bb2["height"] / 2
+                    mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+                    dx, dy = x2 - x1, y2 - y1
+                    ln = max(1.0, (dx * dx + dy * dy) ** 0.5)
+                    # 垂直方向划过去才会真的穿过它（顺着划是剪不断的）
+                    mid = (mx, my, -dy / ln, dx / ln)
+            chk("UI-19c2", "算出那条连线的中点与垂直方向", mid is not None, f"mid={mid}")
+
+            if mid is not None:
+                mx, my, px, py = mid
+                a = (mx - px * 70, my - py * 70)
+                b = (mx + px * 70, my + py * 70)
+                page.mouse.move(a[0], a[1])
+                page.mouse.down()
+                for s in range(1, 11):
+                    page.mouse.move(a[0] + (b[0] - a[0]) * s / 10, a[1] + (b[1] - a[1]) * s / 10)
+                    page.wait_for_timeout(30)
+                drawing = page.locator(".dshw-pg-cutline").count()
+                page.mouse.up()
+                page.wait_for_timeout(4000)
+                chk("UI-19d", "★ 划的过程中**剪断线画出来了**", drawing == 1, f"cutline={drawing}")
+                left = [o for o in doc_objects() if o.get("type") == "LineEdge"]
+                chk("UI-19e", "★★ 划完之后**盘上那条连线真的没了**",
+                    len(left) == len(edges_now) - 1, f"{len(edges_now)} -> {len(left)}")
+                page.screenshot(path=SHOT + r"\ui-16-cut.png")
+
+                u2 = api("/workdesktop/api/pg/undo", {"project": PROJECT})
+                back = [o for o in doc_objects() if o.get("type") == "LineEdge"]
+                chk("UI-19f", "★★ 剪断也能撤销（走的是同一套快照）",
+                    u2.get("ok") is True and len(back) == len(edges_now),
+                    f"{len(left)} -> {len(back)}")
 
         browser.close()
 finally:
