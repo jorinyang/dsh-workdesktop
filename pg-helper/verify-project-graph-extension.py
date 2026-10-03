@@ -20,9 +20,9 @@ import urllib.request
 
 BASE = "http://127.0.0.1:3080"
 PROJECT = "扩展实体自测临时工程"
-NODE = r"<本机检出>\AppData\Local\nvm\v24.20.0\node.exe"
+NODE = os.path.join(os.path.expanduser("~"), "AppData\\Local\\nvm\\v24.20.0\\node.exe")
 PLUGIN = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SHOT = r"<本机检出>\Desktop\DSH"
+SHOT = os.path.join(os.path.expanduser("~"), "Desktop\\DSH")
 passed = 0
 failed = 0
 
@@ -49,7 +49,7 @@ def api(path, body=None):
 
 
 def read_token():
-    with open(r"<本机检出>\.dsh\daemon\dsh.log", encoding="utf-8", errors="ignore") as fh:
+    with open(os.path.join(os.path.expanduser("~"), ".dsh\\daemon\\dsh.log"), encoding="utf-8", errors="ignore") as fh:
         hits = [ln for ln in fh if "dsh web: http" in ln]
     return hits[-1].split("token=")[1].strip() if hits else ""
 
@@ -82,7 +82,7 @@ api("/workdesktop/api/pg/project", {"action": "delete", "name": PROJECT})
 made = api("/workdesktop/api/pg/project", {"action": "create", "name": PROJECT})
 chk("EXT-1", "建临时工程", made.get("ok") is True, str(made)[:120])
 
-target = os.path.join(r"<本机检出>\.dsh\.dsh-project-graph\projects", PROJECT + ".prg")
+target = os.path.join(os.path.join(os.path.expanduser("~"), ".dsh\\.dsh-project-graph\\projects"), PROJECT + ".prg")
 try:
     r = subprocess.run([NODE, "--input-type=module", "-e", setup, target],
                        cwd=PLUGIN, capture_output=True, text=True, encoding="utf-8", timeout=180)

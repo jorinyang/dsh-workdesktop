@@ -9,6 +9,7 @@
   ④ HTTP 删掉临时工程
 """
 import json
+import os
 import re
 import sys
 import time
@@ -22,7 +23,7 @@ BASE = "http://127.0.0.1:3080"
 def read_token():
     """每次跑都现读 —— 宿主每重启一次就换一个 token，写死会得到 401
     （实测踩到：界面上只显示 'dsh web authentication required'）。"""
-    with open(r"<本机检出>\.dsh\daemon\dsh.log", encoding="utf-8", errors="ignore") as fh:
+    with open(os.path.join(os.path.expanduser("~"), ".dsh\\daemon\\dsh.log"), encoding="utf-8", errors="ignore") as fh:
         hits = [ln for ln in fh if "dsh web: http" in ln]
     if not hits:
         raise SystemExit("dsh.log 里找不到 dsh web 的启动 URL（宿主起来了吗？）")
@@ -31,7 +32,7 @@ def read_token():
 
 TOKEN = read_token()
 PROJECT = "交互自测临时工程"
-SHOT = r"<本机检出>\Desktop\DSH"
+SHOT = os.path.join(os.path.expanduser("~"), "Desktop\\DSH")
 
 passed = 0
 failed = 0
