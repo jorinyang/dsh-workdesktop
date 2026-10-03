@@ -1,0 +1,14 @@
+# dsh-coords bundle patch
+#
+# 由 profile 启动时合并（与 dsh-modeling / dsh-workdesktop 同款通道）：
+#   · host 半段注册 `/coords/api/*` 路由，并注册 6 个 DSH 工具（coords_*）；
+#   · 浏览器半段把「坐标系」注册成 **DSH 自带右侧栏的一个 tab**（类型 `dsh-coords:center`；
+#     入口在左侧栏底部那四行里，由 dsh-workdesktop 渲染）。
+#
+# 运行期选项全部读环境变量，不需要 config schema：
+#   DSH_COORDS_DIR            坐标系落盘根目录（默认 $DSH_HOME/.dsh-coords）
+#   DSH_COORDS_MAX_POINTS     单套坐标系的点数上限（默认 2000）
+#   DSH_COORDS_MAX_BYTES      导入文件体积上限（默认 8MB）
+- insert:
+    - id: coords
+      name: 'dsh-coords'

@@ -113,6 +113,10 @@ export function summarize(object, index, stage = null) {
       ? object.segments.map((seg) => (seg && seg.location
         ? { x: Number(seg.location.x), y: Number(seg.location.y) } : null)).filter((p) => p !== null)
       : undefined,
+    // 扩展实体（ExtensionEntity.tsx）：哪个扩展、哪个类型、扩展自己的数据
+    extensionId: typeof object.extensionId === 'string' ? object.extensionId : undefined,
+    typeName: typeof object.typeName === 'string' ? object.typeName : undefined,
+    customData: object.customData === undefined ? undefined : object.customData,
     collapsed: typeof object.isCollapsed === 'boolean' ? object.isCollapsed : undefined,
     locked: typeof object.locked === 'boolean' ? object.locked : undefined,
     borderStyle: typeof object.borderStyle === 'string' ? object.borderStyle : undefined,

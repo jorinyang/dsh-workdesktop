@@ -1,0 +1,46 @@
+{
+  "name": "dsh-coords",
+  "version": "0.1.0",
+  "private": true,
+  "description": "坐标系：把一份内容（文件/粘贴/会话识别）落成 2D/3D 坐标系图，作为 dsh-better-sidebar 的独立卡片（图标 + 名字，折叠态只显示图标）挂进右侧栏。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "scripts",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:check": "node scripts/build.mjs --check",
+    "selftest": "node selftest.mjs",
+    "selftest:client": "node selftest-client.mjs",
+    "trial-boot": "node scripts/trial-boot.mjs",
+    "verify:gui": "node scripts/verify-gui.mjs",
+    "test": "node scripts/build.mjs --check && node selftest.mjs && node selftest-client.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  }
+}
