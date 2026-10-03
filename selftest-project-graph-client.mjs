@@ -100,18 +100,36 @@ chk('PGC-5b', '图标：与「建模中心」不是同一枚图形（两处分�
   '')
 
 // ── PGC-6 面板与 host 的接口面 ────────────────────────────────────────────
+// 2026-10-03：面板改成**画布交互**之后，数据源从"上游 CLI 视角"（get_all_nodes / invoke）
+// 换成**文档层**（直接读 .prg，标识是 uuid）。所以这里断言的是**新的**那条接口面 ——
+// 不是把旧断言删掉了事：status / projects 照旧，另外必须真的接了那五条文档层路由。
 const viewStart = src.indexOf('function ProjectGraphView()')
 const viewEnd = src.indexOf('// ── 席位接线', viewStart)
-const view = viewStart < 0 ? '' : src.slice(viewStart, viewEnd < 0 ? viewStart + 20000 : viewEnd)
-chk('PGC-6', '★ 面板读的是 host 的 `/workdesktop/api/pg/*`（四个口：status / projects / graph / invoke）',
-  ["'/pg/status'", "'/pg/projects'", "'/pg/graph?project='", "'/pg/invoke'"].every((p) => view.includes(p)),
+// ⚠️ 上限要**够大**：画布交互那一版比原来的查看器长一倍多，20000 字符会把函数尾巴切掉，
+//    于是"面板调了哪些东西"这类断言会假红（实测踩到）。
+const view = viewStart < 0 ? '' : src.slice(viewStart, viewEnd < 0 ? viewStart + 80000 : viewEnd)
+chk('PGC-6', '★ 面板接的是 host 的 `/workdesktop/api/pg/*`：status / projects + **五条文档层路由**',
+  ["'/pg/status'", "'/pg/projects'", "'/pg/document?project='", "'/pg/move'", "'/pg/insert'", "'/pg/delete'", "'/pg/text'"]
+    .every((p) => view.includes(p)),
+  ["'/pg/document?project='", "'/pg/move'", "'/pg/insert'", "'/pg/delete'", "'/pg/text'"]
+    .filter((p) => !view.includes(p)).join(', ') || 'ok')
+chk('PGC-6b', '★ 面板仍然只调**上游真实存在**的工具（画布交互走文档层，不再自己编工具名）',
+  ['expand_node_tree_from_node'].every((t) => view.includes(`'${t}'`) || view.includes(`"${t}"`)),
   '')
-chk('PGC-6b', '★ 面板调用的工具名都是上游真实存在的（不自己编工具）',
-  ['expand_node_tree_from_node', 'edit_text_node', 'delete_node', 'select_objects', 'get_object_details']
-    .every((t) => view.includes(`'${t}'`) || view.includes(`"${t}"`)),
+chk('PGC-6c', '面板写盘失败时**如实显示原因**，不吞成"成功"',
+  /r\.ok !== true/.test(view) && /say\('bad'/.test(view) && /String\(r\.error \|\|/.test(view),
   '')
-chk('PGC-6c', '面板对"需要打开态"的工具**如实显示上游错误码**，不吞成"成功"',
-  view.includes('PROJECT_UPGRADE_REQUIRED') && /r\.code \? r\.code \+ '：'/.test(view),
+chk('PGC-6e', '★ 画布交互的五个件都在（选中集合 / 拖动 / 框选 / 右键菜单 / 键盘）',
+  view.includes('setSelected') && view.includes("kind: 'move'") && view.includes("kind: 'marquee'")
+  && view.includes('onContextMenu') && view.includes('onKeyDown'),
+  '')
+chk('PGC-6f', '★ 屏幕↔世界坐标只有一套换算（`(x - tx) / k`）—— 框选命中要靠它，写两套就会偏',
+  view.includes('(event.clientX - rect.left - v.tx) / v.k')
+  && view.includes("transform: 'translate(' + view.tx + ' ' + view.ty + ') scale(' + view.k + ')'"),
+  '')
+chk('PGC-6d', '面板把不可用的原因逐条写出来（缺检出 / 缺依赖 / 缺 helper 三态分开）',
+  view.includes('status.repoReady !== true') && view.includes('status.dependenciesReady !== true')
+  && view.includes('status.helperReady !== true'),
   '')
 chk('PGC-6d', '面板把不可用的原因逐条写出来（缺检出 / 缺依赖 / 缺 helper 三态分开）',
   view.includes('status.repoReady !== true') && view.includes('status.dependenciesReady !== true')
