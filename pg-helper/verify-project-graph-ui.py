@@ -175,9 +175,24 @@ try:
         page.mouse.move(cb["x"] + cb["width"] - 12, cb["y"] + cb["height"] - 12, steps=14)
         page.wait_for_timeout(300)
         shot_marquee = page.locator(".dshw-pg-marquee").count()
+        # ⚠️ 光"框画出来了"不够：还要**框的位置与鼠标一致**。
+        #    这里曾经整体偏一个"画布左上角" —— 因为那个 div 是画布内的绝对定位元素（left/top 相对画布），
+        #    而拖动记的是 clientX/clientY（视口坐标），没减画布原点。看着偏、判定却是对的，很难察觉。
+        box_drawn = page.locator(".dshw-pg-marquee").first.bounding_box() if shot_marquee == 1 else None
         page.mouse.up()
         page.wait_for_timeout(800)
         chk("UI-8", "★ 拖出框选时**框真的画出来了**", shot_marquee == 1, f"marquee={shot_marquee}")
+        want_x = cb["x"] + 12
+        want_y = cb["y"] + 12
+        want_w = cb["width"] - 24
+        chk("UI-8c", "★★ 框的位置**与鼠标一致**（不是整体偏移一个画布原点）",
+            box_drawn is not None
+            and abs(box_drawn["x"] - want_x) <= 3 and abs(box_drawn["y"] - want_y) <= 3
+            and abs(box_drawn["width"] - want_w) <= 5,
+            f"画出 left={None if box_drawn is None else round(box_drawn['x'])} "
+            f"top={None if box_drawn is None else round(box_drawn['y'])} "
+            f"w={None if box_drawn is None else round(box_drawn['width'])}"
+            f" ｜ 期望 left={round(want_x)} top={round(want_y)} w={round(want_w)}")
         chk("UI-8b", "★★ 框完之后**所有在框里的对象都被选中**", picked_count() == EXPECT_NODES, f"选中 {picked_count()} 期望={EXPECT_NODES}")
         page.screenshot(path=SHOT + r"\ui-4-marquee.png")
 
