@@ -451,7 +451,9 @@ const RULES = [
 // 2026-10-03：加入 `.cs` —— 「工程图」的所有权 helper 是 C# 源码入库的
 // （`pg-helper/ProjectGraphOwnershipHelper.cs`），它同样是"我们自己写的源码"，
 // 必须在同一条脱敏规则下受检。`.prg` 不入列：那是 zip 二进制，按文本扫只会出噪声。
-const SCAN_EXT = new Set(['.js', '.mjs', '.json', '.md', '.yml', '.yaml', '.txt', '.editorconfig', '.cs', '']);
+// .py 也扫：2026-10-03 发现几个 Playwright 验收脚本里带着本机路径，而这里没扫 .py，
+// 所以一直没报警 —— 扫描范围漏了扩展名，等于那类文件没有防护。
+const SCAN_EXT = new Set(['.js', '.mjs', '.json', '.md', '.yml', '.yaml', '.txt', '.editorconfig', '.cs', '.py', '']);
 const SKIP_DIRS = new Set(['node_modules', '.git', 'fixtures']);
 const SKIP_FILES = new Set(['selftest.mjs', 'LICENSE', '.gitignore']);
 

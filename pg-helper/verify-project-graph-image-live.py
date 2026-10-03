@@ -16,11 +16,11 @@ import urllib.parse
 import urllib.request
 
 BASE = "http://127.0.0.1:3080"
-PROJECTS = r"C:\Users\<you>\.dsh\.dsh-project-graph\projects"
+PROJECTS = r"<本机检出>\.dsh\.dsh-project-graph\projects"
 PROJECT = "图片自测临时工程"
-NODE = r"C:\Users\<you>\AppData\Local\nvm\v24.20.0\node.exe"
+NODE = r"<本机检出>\AppData\Local\nvm\v24.20.0\node.exe"
 PLUGIN = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SHOT = r"C:\Users\<you>\Desktop\DSH"
+SHOT = r"<本机检出>\Desktop\DSH"
 
 passed = 0
 failed = 0
@@ -48,7 +48,7 @@ def plain(path, body=None):
 
 
 def read_token():
-    with open(r"C:\Users\<you>\.dsh\daemon\dsh.log", encoding="utf-8", errors="ignore") as fh:
+    with open(r"<本机检出>\.dsh\daemon\dsh.log", encoding="utf-8", errors="ignore") as fh:
         hits = [ln for ln in fh if "dsh web: http" in ln]
     return hits[-1].split("token=")[1].strip() if hits else ""
 
@@ -57,7 +57,7 @@ PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
 
 target = os.path.join(PROJECTS, PROJECT + ".prg")
-seed = r"C:\Users\<you>\.dsh\.dsh-project-graph\bin\empty-project.prg"
+seed = r"<本机检出>\.dsh\.dsh-project-graph\bin\empty-project.prg"
 
 # ── 用文档层离线造一个带图片的工程（面板没有"上传图片"的入口，这步只能在 Node 侧做）
 setup = """

@@ -16,10 +16,10 @@ import urllib.request
 
 BASE = "http://127.0.0.1:3080"
 PROJECT = "右键剪断自测临时工程"
-PROJECTS = r"C:\Users\<you>\.dsh\.dsh-project-graph\projects"
-NODE = r"C:\Users\<you>\AppData\Local\nvm\v24.20.0\node.exe"
+PROJECTS = r"<本机检出>\.dsh\.dsh-project-graph\projects"
+NODE = r"<本机检出>\AppData\Local\nvm\v24.20.0\node.exe"
 PLUGIN = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SHOT = r"C:\Users\<you>\Desktop\DSH"
+SHOT = r"<本机检出>\Desktop\DSH"
 passed = 0
 failed = 0
 
@@ -46,7 +46,7 @@ def api(path, body=None):
 
 
 def read_token():
-    with open(r"C:\Users\<you>\.dsh\daemon\dsh.log", encoding="utf-8", errors="ignore") as fh:
+    with open(r"<本机检出>\.dsh\daemon\dsh.log", encoding="utf-8", errors="ignore") as fh:
         hits = [ln for ln in fh if "dsh web: http" in ln]
     return hits[-1].split("token=")[1].strip() if hits else ""
 
