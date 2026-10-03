@@ -51,7 +51,14 @@ dsh plugin --profile web add <path-to-this-repo>
 
 挂载后重启 DSH 进程（host 半体随进程加载），刷新页面即可看到侧边栏的「工作台」tab。
 
-> 本插件内部的 id 仍是 `dsh-workdesktop`（出现在 `cordis.patch.yml` 与侧边栏 tab id 中），仓库名 `dsh-workdesktop` 只是发布名。
+> **本包就叫 `dsh-workdesktop`，没有第二个名字**（0.9.6 起统一）：`package.json` 的 `name`、
+> `cordis.patch.yml` 的 `insert[].name`、浏览器半段注册用的 `id`、以及侧边栏那几个 tab 类型的**前缀**，全都是它。
+> 「工作台」（英文 workbench）是它**里面的一个功能模块名**，不是一个包名 —— 别把两者当成两个包。
+>
+> ⚠️ 这次统一把侧边栏 tab id 从 `dsh-workdesktop:*` 改成了 `dsh-workdesktop:*`（`console` / `dashboard` /
+> `project-graph` / `workspaces` 四类），所以**已存的席位偏好会失配一次**（重新选一遍即可）。
+> 而 `DSH_WORKDESKTOP_*` 环境变量（§4）与 `/workdesktop/api` 路由前缀**故意没改名** ——
+> 它们是运行期契约，改了等于让每台已配置好的机器重配一遍，不属于"身份串"。
 
 ---
 
@@ -246,16 +253,23 @@ create/rename/delete，**本插件唯一自己写盘的地方**，只碰 `.prg` 
 
     node pg-helper/setup-workspace.mjs     # 建工作区 + 编 helper + 造一个起始工程
 
-五套离线自测（都不需要 DSH 起来）：
+六套离线自测（都不需要 DSH 起来）：
 
-    node selftest-project-graph-client.mjs                                        # 17 条：席位/顺序契约（**进 CI**）
+    node selftest-project-graph-client.mjs                                        # 20 条：席位/顺序契约（源码级，**进 CI**）
+    node pg-helper/verify-project-graph-doc.mjs                                   # 22 条 + 3 SKIP：`.prg` 文档容器编解码（零依赖，**进 CI**）
     node selftest-project-graph.mjs <上游检出>                                     # 30 条：路由真跑（真 spawn CLI）+ agent 工具真建/读/删
     node pg-helper/verify-ownership-helper.mjs <helper.exe>                        # 15 条：helper 的行协议
     node pg-helper/verify-project-graph-cli.mjs <上游检出> <helper.exe> <模板> <工作目录>  # 31 条：上游 CLI 的读/建/改/连/删
     node pg-helper/verify-project-graph-mcp.mjs                                    # 32 条：MCP 合规（拿**官方 SDK 客户端**当对手）
 
-后四套**故意不进 CI**：它们要 clone 上游、`pnpm install`、Windows + `csc.exe`、
-或 DSH 检出里的官方 MCP SDK —— 放进 CI 会让"裸 clone 就能自证"这条承诺失效（见 §8）。
+**前两套进 CI**（零依赖、离线就能跑，见 §8）。**后四套故意不进**：它们要 clone 上游、`pnpm install`、
+Windows + `csc.exe`、或 DSH 检出里的官方 MCP SDK —— 放进 CI 会让"裸 clone 就能自证"这条承诺失效。
+其中 `selftest-project-graph.mjs` 尤其进不了：它 import host 半段，而 host 半段在模块加载期就要求
+**一份真实存在的知识库根目录**（`DSH_WORKDESKTOP_KNOWLEDGE`，见 §4 的报错契约），且每条断言都真的
+spawn 上游 CLI —— CI 上只会整片红，红了也证明不了任何事。
+
+（另有一套零依赖的离线套件没进 CI：`node pg-helper/verify-project-graph-image.mjs`，6 条 + 2 SKIP，
+附件节点的读法。）
 
 ### 5.2 坐标系（Coords）· 2026-10-03 并入本仓
 
@@ -349,7 +363,21 @@ node selftest.mjs      # 零依赖、离线；输出 PASS = n / FAIL = m
 
 > 为什么仓库里保留 `cordis.patch.yml`：它是本包的**安装面**（`package.json` 的 `dsh.bundle.patch` 指向它）。只发 `lib/` 的话别人 clone 下来**装不起来**，自证也就无从谈起。
 
-CI：`.github/workflows/selftest.yml` 在 Linux + Windows × Node 22/24 上跑同一条命令。
+CI：`.github/workflows/selftest.yml` 在 **Linux + Windows × Node 22/24** 上跑**六条命令**，每条一个 step
+（哪一条红了当场看得见，不用从一整坨输出里猜）：
+
+| # | 命令 | 读什么 |
+|---|------|--------|
+| ① | `node selftest.mjs` | 上面那四组：路由真跑 / 配置缺失必须响 / 源码契约 / 脱敏守卫（**39 条**） |
+| ② | `node selftest-project-graph-client.mjs` | 工程图的席位与顺序契约，源码级（**20 条**） |
+| ③ | `node pg-helper/verify-project-graph-doc.mjs` | `.prg` 文档容器编解码（**22 条**，要上游 CLI 的 3 条自己 SKIP） |
+| ④ | `node coords/scripts/build.mjs --check` | `coords/lib/` 与 `coords/src/` 一致 |
+| ⑤ | `node coords/selftest.mjs` | 坐标系 host 半段（**26 条**） |
+| ⑥ | `node coords/selftest-client.mjs` | 坐标系浏览器半段（**30 条**） |
+
+六条都是**零依赖、离线**的：不装包、不联网、不需要 vault、不需要 DSH 起来。
+④ 尤其要留着 —— 本仓两个包的 `lib/` **来历不同**（根目录是"复制 + 脱敏"，`coords/` 是构建产物），
+改名或改注释时很容易只改一边，这条会当场抓住。
 
 ---
 
@@ -369,7 +397,70 @@ node selftest.mjs           # 自证（见 §8）
 
 ---
 
-## 10. 更新概览 · v0.8.1（当前）
+## 10. 更新概览 · v0.9.6（当前）
+
+本轮三件事：**补做脱敏那一步** · **把 `coords/` 并入补齐** · **命名统一成 `dsh-workdesktop`**。
+没有新功能，都是"账要平"的收口。
+
+**修正**
+
+- **脱敏那一步在 v0.9.x 的同步里漏跑了**：本仓 `lib/index.js` · `lib/client.js` 与作者私有的插件源
+  **逐字节相同**，也就是说"复制 → 逐条替换"里的**替换**没执行 —— 库内流水线目录这类**相对路径**、
+  一处示例关注域 id、一处私有规范文档路径、一处示例客户名都还在仓里（v0.8.0 ~ v0.9.5 都带着）。
+  本仓自测的脱敏守卫只做**结构性**规则（个人绝对路径 / 邮箱 / 手机号 / 凭据形态 / URL 令牌），
+  抓不到这些相对路径与业务词 ⇒ 它一直全绿，**真正抓到它们的是仓库外那份权威反扫**。
+  本轮已补做：逐条替换（每条断言命中次数）+ 替换后自证 + 反扫，**零命中**。
+- **全历史一并收拾，不只是 HEAD**：v0.8.0 ~ v0.9.5 那些提交里带着的同一批词，
+  用 `git filter-repo` 在**整条历史**上替换掉了（分支与全部 tag 都已重写，见 §11）。
+  改写后逐版本抽查：每个 tag 检出来扫一遍，零命中。
+- **两处词表外的漏网**（本轮全历史普查才抓到，已修 + 已写进仓外词表）：
+  ① `coords/README.md` 里两个指向作者公司域名的原型页面链接（路径里含**真实客户名的拼音**）；
+  ② `lib/client.js` 里一处随机子域的私有产物站（当初是当界面设计参考抄下来的）。
+- **订正数字**：§5.1 里工程图客户端套件写成 17 条，实测 **20** 条；README 的"当前版本"一直停在 v0.8.1，
+  已补上 v0.8.2 ~ v0.9.5 的概览（见 §10.1）。
+
+**契约变更（会咬到老用户的两条，写清楚）**
+
+- **包身份统一成 `dsh-workdesktop`**：`cordis.patch.yml` 的 `insert[].name`、浏览器半段注册的 `id`、
+  以及侧边栏 tab 类型前缀（`dsh-workdesktop:*` → `dsh-workdesktop:*`，`console` / `dashboard` /
+  `project-graph` / `workspaces` 四类）全部跟包名对齐。
+  ⇒ **已存的席位偏好会失配一次**；profile 的 `dsh.profile.bundles` 里若写的是旧名，要改。
+- **故意没改的两处**：`DSH_WORKDESKTOP_*` 环境变量（26 个，§4 整张表）与 `/workdesktop/api` 路由前缀。
+  它们是运行期契约 —— 改名等于让每台已配置好的机器重配一遍，不属于"身份串"。
+
+**升级**
+
+1. 历史被重写过 ⇒ **老的 clone 请重新 clone**，别在旧 clone 上硬拉。
+2. profile 里若把本包挂在旧名下，按新名重挂一次（`dsh plugin --profile <name> remove …` + `add …`），
+   并把 `dsh.profile.bundles` 里的旧条目改成 `dsh-workdesktop`。
+3. 重启 DSH（host 半段改动要重启；client 半段刷新页面即可）。侧边栏的席位偏好重新选一遍。
+
+**验证**
+
+- 本仓自测 `node selftest.mjs` **39/0**（含脱敏守卫与它的负向对照）。
+- 工程图：席位/顺序契约 **20/0** · `.prg` 文档容器编解码 **22/0**（+3 SKIP，要上游 CLI）—— 两条都进了 CI。
+- coords：产物一致性 + host **26/0** + 浏览器 **30/0** —— 三条都进了 CI（见 §8 的表）。
+- 仓库外权威反扫：对**仓内全部文本文件**零命中；改写后对**每一个 tag** 的检出再扫一遍，同样零命中。
+
+---
+
+### 10.1 v0.8.2 ~ v0.9.5 · 间隔版本（一句话一版）
+
+这几版的 README 没跟上（概览一直停在 v0.8.1），补一张索引表 —— 细节在各自 Release 里：
+
+| 版本 | 一句话 | Release |
+|---|---|---|
+| v0.9.5 | 修框选偏移（marquee 按画布原点算，不再偏一个原点） | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.9.5> |
+| v0.9.4 | 扩展实体点击 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.9.4> |
+| v0.9.3 | 涂鸦笔迹 + 右键拖动剪断 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.9.3> |
+| v0.9.2 | 图片节点：附件被服务、渲染、等比缩放 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.9.2> |
+| v0.9.1 | 剪刀：划一条线剪断连线 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.9.1> |
+| v0.9.0 | 工程图面板变成真画布（选中 / 移动 / 框选 / 右键菜单 / 连线 / 分区 / 缩放 / 撤销 / 层序） | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.9.0> |
+| v0.8.2 | 工程图 MCP：覆盖文档内容的全部操作（29 条上游工具全开 + 文档容器层 4 条 + 元工具 9 条 = 42 条） | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.8.2> |
+
+---
+
+### 10.2 v0.8.1 · 对外 MCP server
 
 补上 v0.8.0 里缺的那半边：**工程图现在也对外提供一个 MCP server**，DSH 的 MCP 客户端
 可以直接连上，用标准 MCP 工具调用建 / 改 / 删工程图内容。
@@ -413,7 +504,7 @@ node selftest.mjs           # 自证（见 §8）
 
 ---
 
-## 10.1 v0.8.0 · 第五个工作台「工程图」
+### 10.3 v0.8.0 · 第五个工作台「工程图」
 
 本轮一件事：**加入第五个工作台「工程图」**（Project Graph）。
 
@@ -442,11 +533,13 @@ node selftest.mjs           # 自证（见 §8）
 工程图席位契约 17 条断言；脱敏扫描的扩展名集合加入 `.cs` ⇒ 扫 16 个文件、零命中）。
 另有四套**不进 CI** 的离线套件（要上游检出 / Windows / csc）：路由真跑 28/0 ·
 上游 CLI 的读建改连删 31/0 · helper 行协议 15/0 · 席位契约 17/0 —— 命令见 §5.1。
+（席位契约那一套现在是 **20** 条，见 §5.1 与 §10 的"订正数字"。）
 
 **升级注意**：① 要先把上游 project-graph clone 下来并 `pnpm install`（`DSH_WORKDESKTOP_PROJECT_GRAPH_REPO` 指过去）；
 ② 首次用跑一次 `node pg-helper/setup-workspace.mjs`；③ host 半体改动**要重启 DSH**，client 半体刷新页面即可；
 ④ 没装上游时其余卡片与面板**不受影响** —— 工程图那一栏会逐条写出缺的是哪一样。
-## 10.2 上一版 · v0.7.0
+
+### 10.4 v0.7.0（更早一版）
 
 本轮三件事：**开工前先看进度**（首屏载入画面）· **给面板起了名字「弈枢」并配了一张名称图** · **详情页按"人话在前、机器字段收进折叠"重排**；另外修掉四个真机抓到的缺陷，其中一个是**一打开详情页就把整块面板带走**的崩溃。
 
@@ -474,48 +567,52 @@ node selftest.mjs           # 自证（见 §8）
 
 ## 11. 版本与同步来源
 
-本仓库是**从作者私有的知识库工作台里抽取出的插件本体**，经过脱敏后发布。发布不是手改，而是"复制 → 逐条替换（每条断言命中次数）→ 反扫（命中必须为 0）→ 克隆复验"的固定流程；权威脱敏词表留在仓库外，因此仓库内的守卫只做结构性规则（见 §8）。同步时记录的源文件指纹：
+本仓库是**从作者私有的知识库工作台里抽取出的插件本体**，经过脱敏后发布。发布不是手改，而是
+"复制 → 逐条替换（每条断言命中次数）→ 反扫（命中必须为 0）→ 克隆复验"的固定流程；
+**权威脱敏词表与全套流水线脚本都留在仓库外**，因此仓库内的守卫只做结构性规则（见 §8）。
 
-| 源（库内插件） | SHA256 前 16 位（2026-09-27 采样） |
-|---------------|----------------------------------|
-| `lib/index.js` | `940EF07E82A62CDA` |
-| `lib/client.js` | `818056FF10835199` |
+| 环节 | 做什么 | 在哪 |
+|---|---|---|
+| ① 复制 | 从私有源把要发布的文件抄进本仓 | 仓外 |
+| ② 逐条替换 | **每条替换断言命中次数**，对不上就退出；替换完再自证"必须消失的词一个不剩" | 仓外脚本 + 仓外词表 |
+| ③ 反扫 | 用仓外权威词表扫**仓内全部文本文件**，命中必须为 **0** | 仓外 |
+| ④ 身份串统一 | 包 / bundle / 客户端注册 id / tab 前缀一律对齐 `package.json` 的 `name` | 仓外 |
+| ⑤ 全历史改写 | `git filter-repo`：分支与**全部 tag** 一起重写（不只 HEAD） | 一次性 |
 
-（对应的脱敏产物指纹：`index.js D6CB90193D2EF5BE` · `client.js CC013B79B1701DDE`。两侧都按"隔 60 秒两次 `mtime`+SHA256 一致"采样。）
+#### 本轮同步记录（2026-10-03 · 脱敏补做 + 命名统一）
 
-#### 本轮同步记录（2026-10-03 · 并入 `coords/` 的那一轮）
+| 源（库内插件） | 源指纹 | 本仓产物 | 产物指纹（本轮改写后） |
+|---------------|--------|---------|----------------------|
+| `lib/index.js` | `3401DF9CCEADA330` | `lib/index.js` | `25DB4268C1338064` |
+| `lib/client.js` | `3FA2500CB0EE1E77` | `lib/client.js` | `84D81315DF22074F` |
+| `coords/src/*` | 与 `coords/lib/*` 同源 | `coords/lib/{index,client}.js` | 构建产物，`build.mjs --check` 守一致性（§5.2） |
 
-| 源（库内插件） | 源指纹 | 本仓产物 | 产物指纹 |
-|---------------|--------|---------|---------|
-| `lib/index.js` | `3401DF9CCEADA330` | `lib/index.js` | `13A79F6AB7BB7785` |
-| `lib/client.js` | `3FA2500CB0EE1E77` | `lib/client.js` | `7F80C0BED6EAA804` |
-| `coords/lib/index.js` | `D78A69763DA29C47` | `coords/lib/index.js` | `D78A69763DA29C47` |
-| `coords/lib/client.js` | `BEF066D044594D61` | `coords/lib/client.js` | `BEF066D044594D61` |
+两行的**源指纹与上一轮（并入 `coords/` 那轮）记录的完全相同** —— 说明私有源在这两次采样之间
+**没动过**；变的只是本仓这一侧：这一轮把漏掉的替换补上了，又把身份串统一成 `dsh-workdesktop`。
+所以本轮的产物指纹**不可能**再等于源指纹（上一轮那个"逐字节相同"的状态正是缺陷本身）。
 
-`coords/` 那两半的 `lib/` 是 `coords/src/` 的**构建产物**（两侧 `src/` 同源，所以指纹相同）；
-根目录那两半才是"复制 + 脱敏"的产物。
+> **脱敏口径（2026-10-03 起）**：本版起脱敏流程已加固 —— 替换步骤改为**逐条断言命中次数 + 替换后自证**，
+> 反扫用**仓外权威词表**扫仓内全部文本文件（含 3 个二进制文件的旁路扫描）；词表本身也收敛成**一份**
+> （此前"替换用一份、反扫用另一份"，本轮全历史普查正是在这个缝里抓到两处漏网）。
+> 历史（哪几版带着什么、怎么改的）不在这份公开 README 里展开，记在内部交接说明。
 
-> ⚠️ **本轮进场时，本仓 `lib/index.js` · `lib/client.js` 与源插件逐字节相同** —— 也就是说"逐条替换"
-> 这一步在 v0.9.x 这几版里**没有生效**：库内那条流水线目录（`_meta/` 下那个）这类**相对路径**（`lib/index.js` 13 处 / `lib/client.js` 10 处）、
-> 一处示例关注域 id、一处私有规范文档路径、一处示例客户名都还留在仓里。
-> 本仓自测的 `L4-1`（仓库自身零命中）只做**结构性**规则（绝对个人路径 / 邮箱 / 手机号 / 凭据形态 /
-> URL 令牌），抓不到这些相对路径与业务词 —— 抓到它们的是仓库外那份权威反扫。
-> 本轮已把替换补做：对 **52 个会上仓的文本文件**逐条替换 + 反扫，**零命中**（`selftest.mjs` 39/0 不变）。
-> **据此：`08117ba`（v0.7.0）是 `lib/index.js` 历史上唯一一份零命中的版本，v0.8.0 ~ v0.9.5 都带着上面那些词，
-> 且已经推到 GitHub。怎么处理历史（改写 / 转私有 / 接受）不在这份 README 的决定范围内，见本轮交接说明。**
-
-对应本仓库版本 **0.8.1**（**五个工作台** · 对外 MCP server · 13 张卡 · 三带布局 · 面板在 DSH **自带右侧栏**的席位 + 左侧栏入口 · **首屏载入画面** · 名称「弈枢」+ 水墨名称图（CSS 遮罩，随主题令牌变色）· **详情页"人话在前"**（机器字段收进「技术细节」折叠）· 卡片尺寸两档 + 拖动跟手/松手吸附动画 + 卡内小卡片按宽度 1/2/3/4 自适应 · 听记 → 事务草稿 · 纸墨外观 · 长按拖动排序 + `ui-prefs` 覆盖层 · 卡内只读透传 + 三条"不许静默"出口）。**README 里的卡片数与顺序对应当前同步进来的这份源码**（`CARD_ORDER` 13 键，与上表源指纹同一次采样）；**发布仓与源项目此后会各自演进**：再次同步请重跑上面的固定流程（同步脚本会打印新旧指纹），不要手工编辑本仓库的 `lib/`。
+对应本仓库版本 **0.9.6**（**五个工作台** · 对外 MCP server（42 条工具）· 13 张卡 · 三带布局 · 面板在 DSH **自带右侧栏**的席位 + 左侧栏入口 · **首屏载入画面** · 名称「弈枢」+ 水墨名称图（CSS 遮罩，随主题令牌变色）· **详情页"人话在前"**（机器字段收进「技术细节」折叠）· 卡片尺寸两档 + 拖动跟手/松手吸附动画 + 卡内小卡片按宽度 1/2/3/4 自适应 · 听记 → 事务草稿 · 纸墨外观 · 长按拖动排序 + `ui-prefs` 覆盖层 · 卡内只读透传 + 三条"不许静默"出口 · 工程图画布（选中/移动/框选/连线/分区/撤销/层序）· 工程图文档容器层（`pg_document` / `pg_locate` / `pg_move_node` / `pg_set_details`）· 同仓第二个包 `dsh-coords`）。**README 里的卡片数与顺序对应当前同步进来的这份源码**（`CARD_ORDER` 13 键）；**发布仓与源项目此后会各自演进**：再次同步请重跑上面的固定流程，不要手工编辑本仓库的 `lib/`。
 
 ### 发布清单（照这个顺序做，**只打 tag 不算发布**）
 
-1. 复制 `lib/index.js` · `lib/client.js`（本版起还有 `assets/`）进本仓库，按上面的固定流程脱敏：**逐条替换（脚本对每条替换断言命中次数，对不上直接退出）→ 反扫（命中必须为 0）**。反扫的覆盖范围是仓库里**全部会上仓的文本文件**（本轮实测 **52 个**：`.js` / `.mjs` / `.cjs` / `.json` / `.md` / `.yml` / `.py` / `.cs` / `.txt` / `.editorconfig` / `.gitignore`）—— `lib/` 两半体、`coords/` 整包、`pg-helper/`、`assets/`、`selftest/fixtures/`、README 与两份 `package.json`、`cordis.patch.yml` 都在内。本轮起 `coords/` 整包也在替换与反扫的范围内。
+1. 复制 `lib/index.js` · `lib/client.js`（本版起还有 `assets/`）进本仓库，按上面的固定流程脱敏：**逐条替换（脚本对每条替换断言命中次数，对不上直接退出）→ 反扫（命中必须为 0）**。反扫的覆盖范围是仓库里**全部文本文件**（本轮实测 **53 个**：`.js` / `.mjs` / `.cjs` / `.json` / `.md` / `.yml` / `.py` / `.cs` / `.txt` / `.editorconfig` / `.gitignore`）**加 3 个二进制文件的旁路扫描**（两张 PNG + `empty-project.prg`，做法是逐字节找词表，不按"有 NUL 就当二进制跳过"）；`lib/` 两半体、`coords/` 整包、`pg-helper/`、`assets/`、`selftest/fixtures/`、README 与两份 `package.json`、`cordis.patch.yml` 都在内。**再确认一遍身份串**：`package.json` 的 `name`、`cordis.patch.yml` 的 `insert[].name`、`lib/client.js` 注册的 `id` 与 tab 前缀四处必须一致。
 2. `node selftest.mjs` ⇒ 必须全绿（CI 也会跑一遍）。
 3. 改 `package.json` 版本号 + 更新本节的两处指纹 + §10 的更新概览。
 4. 提交 → **打 tag** → push（分支与 tag 都要推）。
 5. **建 GitHub Release**（`gh release create <tag> --notes-file <说明>`），正文写清新增 / 修正 / 契约变更 / 升级 / 验证 / 已知限制。
 6. 核对 `gh release list`：每一版都该有 Release，最新一版标 `Latest`；README 里引用的链接必须真的能打开。
+7. **改过已发布的历史时**（比如本轮）：先 `git clone --mirror` 到仓外整仓备份 → 本地全绿 → `git filter-repo` 改写 →
+   **逐 tag 检出再反扫一遍** → 强推分支与全部 tag → 核对 `git ls-remote` 与 `gh release list`。
 
-> 脱敏口径补记（2026-09-27）：上面的"命中必须为 0"从这一版起才是**真的 0**。上一版（v0.6.0）实际带着 **12 处**已知命中发布 —— 库内流水线目录（`_meta/` 下那个）这类**相对路径**（README 与产品报错文案靠它指路）、一处示例关注域 id、一处私有规范文档路径；当时按"相对路径不算敏感"放行，可仓库里同时写着"0 命中"，属自相矛盾。本版把脱敏脚本改成**逐条断言命中次数 + 替换后自证**，并把这些词一并换成中性写法（第一次跑就抓到 `assets/` 里一处漏网的注入脚本路径）。
+> 脱敏口径补记（2026-09-27，2026-10-03 收紧）：清单第 1 步的"命中必须为 0"，**早期几版用的口径更松** ——
+> 有一批**相对路径**当时按"不算敏感"放行，而 README 里同时写着"0 命中"，属自相矛盾。
+> 现在的口径是**逐条断言命中次数 + 替换后自证 + 仓外权威反扫**三件套，以反扫的读数为准，
+> 不再用"这类看着不算敏感"的判断去替代它。
 
 > 教训（2026-09-24）：**v0.4.0 当时只打了 tag、没建 Release** —— README 里写着这一版的更新概览，GitHub 上却没有对应 Release，是发布流程第 5 步漏了。已补建，并把这一步写进清单。
 
@@ -523,6 +620,14 @@ node selftest.mjs           # 自证（见 §8）
 
 | 版本 | Release |
 |---|---|
+| v0.9.6 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.9.6> |
+| v0.9.5 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.9.5> |
+| v0.9.4 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.9.4> |
+| v0.9.3 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.9.3> |
+| v0.9.2 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.9.2> |
+| v0.9.1 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.9.1> |
+| v0.9.0 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.9.0> |
+| v0.8.2 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.8.2> |
 | v0.8.1 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.8.1> |
 | v0.8.0 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.8.0> |
 | v0.7.0 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.7.0> |
@@ -530,6 +635,9 @@ node selftest.mjs           # 自证（见 §8）
 | v0.5.0 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.5.0> |
 | v0.4.0 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.4.0>（补建） |
 | v0.3.0 | <https://github.com/jorinyang/dsh-workdesktop/releases/tag/v0.3.0> |
+
+> ⚠️ **v0.9.6 那一版的历史被重写过**：v0.3.0 ~ v0.9.5 的 tag 与提交哈希**全部变了**（内容一致、脱敏更干净）。
+> 老 clone 请重新 clone；引用旧哈希的笔记/链接要按新哈希更新。
 
 **v0.7.0 当轮真机读数**（作者库内 `verify-sidebar-tab.mjs`，本轮**有效**：跑期被测源码零写入、无并发工具在途）：
 **155 / 0**，另有 **5 条 SKIP**（每条都写明原因，SKIP 既不算通过也不算产品失败）——

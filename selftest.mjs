@@ -372,8 +372,11 @@ for (const f of ['lib/index.js', 'lib/client.js']) {
   const host = read(path.join(HERE, 'lib', 'index.js'));
 
   // ① 四个工作台席位：右栏 tab + 键控席位 + 左侧栏入口
+  //   ⚠️ tab 类型 id 的**前缀就是包身份**（2026-10-03 命名统一后 = `dsh-workdesktop`）。
+  //   这里断言到完整前缀而不是 `workbench:console` 这种半截串 —— 改名时半截串**不会**被一起改掉，
+  //   守卫会静默失效（本轮真发生过：包名改了、这条 `/workbench:console/` 没改，L3-seats 变红才发现）。
   const seats = /sidebarRightTabs/.test(client) && /sidebar\.right\.pane\.tab/.test(client)
-    && /sidebar\.footer\.action/.test(client) && /workbench:console/.test(client);
+    && /sidebar\.footer\.action/.test(client) && /dsh-workdesktop:console/.test(client);
   chk('L3-seats', '席位接线在位：右栏 tab 类型 + `sidebar.right.pane.tab` 键控席位 + 左侧栏 `sidebar.footer.action` 入口（三处齐备才不会"点不到"）',
     seats, `sidebarRightTabs=${/sidebarRightTabs/.test(client)} · pane.tab=${/sidebar\.right\.pane\.tab/.test(client)} · footer.action=${/sidebar\.footer\.action/.test(client)}`);
 

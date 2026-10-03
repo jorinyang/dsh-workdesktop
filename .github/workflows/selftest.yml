@@ -1,7 +1,10 @@
 name: selftest
 
-# The suite is zero-dependency and offline on purpose: it must be able to prove the
-# repository works from a bare clone, on any machine, with no vault and no DSH runtime.
+# Every suite wired here is zero-dependency and offline on purpose: the repository must be
+# able to prove itself from a bare clone, on any machine, with no vault and no DSH runtime.
+# Suites that need an upstream checkout / Windows csc.exe / the official MCP SDK are kept
+# out deliberately (they are listed in README §5.1) - putting them here would only produce
+# a wall of red that proves nothing.
 on:
   push:
     branches: [main]
@@ -21,5 +24,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - name: Run selftest
+
+      # One step per suite on purpose: when something goes red it must be obvious *which*
+      # contract broke, without digging through one lump of output.
+      - name: '1/6 selftest.mjs - repo contract + redaction guard'
         run: node selftest.mjs
+
+      - name: '2/6 Project Graph panel contract (source level)'
+        run: node selftest-project-graph-client.mjs
+
+      - name: '3/6 Project Graph .prg document-container codec'
+        run: node pg-helper/verify-project-graph-doc.mjs
+
+      # The two packages in this repo keep their lib/ in different ways: the root one is a
+      # "copy + redact" artifact, coords/lib is a build output of coords/src. Renaming or
+      # rewording tends to touch only one side - this step catches exactly that.
+      - name: '4/6 coords: lib/ still matches src/'
+        run: node coords/scripts/build.mjs --check
+
+      - name: '5/6 coords host half'
+        run: node coords/selftest.mjs
+
+      - name: '6/6 coords browser half (source level)'
+        run: node coords/selftest-client.mjs
