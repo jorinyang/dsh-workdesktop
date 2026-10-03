@@ -85,8 +85,20 @@ export function assertKept(label, source, symbols) {
   }
 }
 
+/**
+ * 统一换行：**源与产物都按 LF 处理**。
+ *
+ * 为什么必须有这一步（2026-10-03，进 CI 当天在 Windows runner 上抓到）：
+ * 产物是"模板 + 内联源"**拼**出来的，而拼装用的分隔符是 `\n`（见 `BANNER()` / `compose()`）。
+ * 一旦工作区是 CRLF（Windows 上 `core.autocrlf=true` 的检出就是），`lib/` 里那些**本来由模板带的**
+ * 行尾是 CRLF，而**由本脚本拼出来的**行尾是 LF ⇒ 逐字节比必然不一致，`--check` 当场假红。
+ * 这条守卫要守的是"**产物与源码一致**"，不是"行尾风格"，所以两侧都归一化再比。
+ * （不改 `.gitattributes` 是因为那会改掉整个仓库的检出行为，代价比这条守卫大得多。）
+ */
+const toLF = (s) => s.replace(/\r\n/g, '\n')
+
 async function readSource(name) {
-  return readFile(join(root, 'src', name), 'utf8')
+  return toLF(await readFile(join(root, 'src', name), 'utf8'))
 }
 
 /** 组装一个产物：模板 + 若干内联源。 */
@@ -159,7 +171,8 @@ async function main() {
   for (const output of outputs) {
     if (check) {
       const current = await readFile(output.file, 'utf8').catch(() => null)
-      const same = current === output.content
+      // 两侧都归一到 LF 再比：CRLF 检出不算"产物与源码不一致"（见 readSource 上面的注释）。
+      const same = current !== null && toLF(current) === output.content
       process.stdout.write(`${same ? '✓' : '✗'} ${output.file} ${same ? '与 src/ 一致' : '与 src/ 不一致'}\n`)
       if (!same) drifted += 1
       continue
