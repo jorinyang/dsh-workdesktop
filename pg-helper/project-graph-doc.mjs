@@ -103,6 +103,10 @@ export function summarize(object, index, stage = null) {
     // 分区（Section）的嵌套：子对象的 uuid 列表
     childUuids,
     // 分区自己的三个状态字段（Section.tsx 第 74/80/85 行）
+    // 图片节点（ImageNode.tsx）：附件的 id、缩放、是不是当背景图
+    attachmentId: typeof object.attachmentId === 'string' ? object.attachmentId : undefined,
+    scale: typeof object.scale === 'number' ? object.scale : undefined,
+    isBackground: typeof object.isBackground === 'boolean' ? object.isBackground : undefined,
     collapsed: typeof object.isCollapsed === 'boolean' ? object.isCollapsed : undefined,
     locked: typeof object.locked === 'boolean' ? object.locked : undefined,
     borderStyle: typeof object.borderStyle === 'string' ? object.borderStyle : undefined,
@@ -669,6 +673,100 @@ export function makeSection(stage, spec = {}) {
     },
     childIndexes: indexes,
     box: { x: left, y: top, width, height },
+  }
+}
+
+/* ── 附件（图片节点要用）──────────────────────────────────────────────── */
+
+/** 扩展名 → content-type（看图够用；认不出就按二进制给） */
+const MIME_BY_EXT = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp', avif: 'image/avif',
+}
+
+/**
+ * 读出某个附件的字节。id 就是 ImageNode 的 attachmentId（**不带扩展名**）——
+ * 容器里存的是 attachments/<id>.<ext>（见 Project.tsx 第 392 行）。
+ * 找不到就如实报错，不要给一张空图。
+ */
+export function readAttachment(file, id) {
+  const wanted = String(id === undefined || id === null ? '' : id)
+  if (wanted === '') return { ok: false, error: 'attachmentId 是空的' }
+  let doc
+  try { doc = readPrg(readFileSync(file)) } catch (error) {
+    return { ok: false, error: `读 .prg 失败：${String((error && error.message) || error)}` }
+  }
+  const prefix = 'attachments/'
+  const hit = doc.entries.find((e) => {
+    if (!e.name.startsWith(prefix)) return false
+    const rest = e.name.slice(prefix.length)
+    const dot = rest.lastIndexOf('.')
+    return (dot < 0 ? rest : rest.slice(0, dot)) === wanted
+  })
+  if (hit === undefined) {
+    const have = doc.attachments.map((a) => a.uuid)
+    return {
+      ok: false,
+      error: `这个工程里没有附件 ${wanted}（现有：${have.join(', ') || '无'}）`,
+      code: 'ATTACHMENT_NOT_FOUND',
+    }
+  }
+  const dot = hit.name.lastIndexOf('.')
+  const ext = dot < 0 ? '' : hit.name.slice(dot + 1).toLowerCase()
+  return {
+    ok: true, data: hit.data, ext, bytes: hit.data.length,
+    contentType: MIME_BY_EXT[ext] || 'application/octet-stream',
+  }
+}
+
+/**
+ * 往容器里塞一个附件。writePrg 会把 entries 里其它条目原样搬运，所以推进去就能落盘。
+ * 名字规则是 attachments/<id>.<ext>（Project.tsx 第 392 行）。
+ */
+export function addAttachment(file, id, ext, data) {
+  const name = `attachments/${String(id)}.${String(ext)}`
+  let doc
+  try { doc = readPrg(readFileSync(file)) } catch (error) {
+    return { ok: false, error: `读 .prg 失败：${String((error && error.message) || error)}` }
+  }
+  if (doc.entries.some((e) => e.name === name)) return { ok: false, error: `附件已存在：${name}` }
+  const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data)
+  doc.entries.push({ name, data: buffer })
+  try { writeFileSync(file, writePrg(doc, {})) } catch (error) {
+    return { ok: false, error: `写 .prg 失败：${String((error && error.message) || error)}` }
+  }
+  return { ok: true, name, bytes: buffer.length }
+}
+
+/**
+ * 造一个图片节点。字段照 ImageNode.tsx 的构造函数抄（第 41-54 行）：
+ *   uuid / collisionBox / attachmentId / scale / isBackground
+ * 注意：它的几何字段就是普通的 collisionBox（**不是** 分区那种 _collisionBoxNormal）。
+ */
+export function makeImageNode(spec = {}) {
+  const attachmentId = String(spec.attachmentId === undefined ? '' : spec.attachmentId)
+  if (attachmentId === '') return { ok: false, error: 'attachmentId 是空的' }
+  const width = Number.isFinite(Number(spec.width)) ? Number(spec.width) : 240
+  const height = Number.isFinite(Number(spec.height)) ? Number(spec.height) : 160
+  const x = Number.isFinite(Number(spec.x)) ? Number(spec.x) : 0
+  const y = Number.isFinite(Number(spec.y)) ? Number(spec.y) : 0
+  return {
+    ok: true,
+    node: {
+      _: 'ImageNode',
+      uuid: spec.uuid === undefined ? randomUUID() : String(spec.uuid),
+      collisionBox: {
+        _: 'CollisionBox',
+        shapes: [{
+          _: 'Rectangle',
+          location: { _: 'Vector', x, y },
+          size: { _: 'Vector', x: width, y: height },
+        }],
+      },
+      attachmentId,
+      scale: Number.isFinite(Number(spec.scale)) ? Number(spec.scale) : 1,
+      isBackground: spec.isBackground === true,
+    },
   }
 }
 

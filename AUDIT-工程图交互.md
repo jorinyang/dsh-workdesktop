@@ -351,15 +351,30 @@ UI-19d 划的过程中剪断线画出来了；**UI-19e 划完之后盘上那条�
 > 不能"取屏幕上最远的一对节点" —— 第一版那么写，垂线画在了另一对节点中间，剪了个空。
 > 连线两端是文档里的 `links`（舞台下标），节点 `<title>` 里有 uuid 前 8 位，两边对起来才可靠。
 
-### 7.15 还没做
+### 7.15 已完成 · **P4 图片节点**（2026-10-03）
+
+字段照 `ImageNode.tsx` 的构造函数抄（第 41-54 行）：`uuid / collisionBox / attachmentId / scale / isBackground`。
+⚠️ 它的几何字段就是**普通的 `collisionBox`**（不是分区那种 `_collisionBoxNormal`）。
+附件在容器里是 `attachments/<attachmentId>.<ext>`（`Project.tsx` 第 392 行）。
+
+- host 新增 `GET /pg/attachment?project=&id=`：按 id 吐字节，扩展名 → content-type，认不出按二进制给；
+  找不到**如实回 JSON 错误**（不给空图、不 500）。
+- 面板把它当底图铺在框里（`<image preserveAspectRatio=none>`），`isBackground` 的画在最下面。
+- **缩放等比**（对齐 `ControllerImageScale`）：拉变形不是它要的。
+
+验：`pg-helper/verify-project-graph-image.mjs` **9/0**（含**上游 CLI 认这个图片节点**、
+以及**上游写过一次之后附件仍在且字节没变** —— 这条守的是写盘时不重打包附件）；
+`pg-helper/verify-project-graph-image-live.py` **8/0**（附件路由的 content-type 与字节、
+面板真的画出 `<image>`、href 指对、浏览器取到 200）。
+
+### 7.16 还没做
 
 | 还没做 | 对应原项目 |
 | --- | --- |
 | 涂鸦（画笔） | `ControllerPenStrokeDrawing` / `ControllerPenStrokeControl` |
-| 图片节点渲染与缩放 | `ControllerImageScale` |
 | 自定义快捷键系统 | — |
 
-**原项目 17 个交互控制器，已覆盖 15 个。**
+**原项目 17 个交互控制器，已覆盖 16 个。**
 
 ⚠️ **桌面端 19387 那个宿主仍是旧代码**：当前会话就跑在它里面，重启会把会话杀掉，
 所以只重启了 3080 那个 web 宿主来验收。桌面端要等它自己下次重启才生效。
