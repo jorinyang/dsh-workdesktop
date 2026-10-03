@@ -18,6 +18,7 @@
     "lib",
     "pg-helper",
     "assets",
+    "coords",
     "cordis.patch.yml",
     "README.md",
     "selftest.mjs",

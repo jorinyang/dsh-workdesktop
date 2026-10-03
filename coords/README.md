@@ -86,7 +86,7 @@
 ## 安装与重启
 
 ```powershell
-# 1) profile 依赖（link 到本目录）
+# 1) profile 依赖（link 到本仓库里的 coords/ 目录）
 #    编辑 $DSH_HOME/profiles/web/package.json：
 #      dependencies."dsh-coords" = "link:<本仓库检出>/coords"
 #      dsh.profile.bundles 追加 "dsh-coords"
@@ -94,6 +94,13 @@
 New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-coords" `
   -Target "<本仓库检出>\coords"
 ```
+
+> **两个包同仓**：本仓库根目录那层是 `dsh-workdesktop`（工作台），`coords/` 是**第二个包**
+> `dsh-coords`（有自己的 `package.json` / `cordis.patch.yml` / `lib/`）。
+> DSH 的 `dsh.profile.bundles` 按**包名**逐条装载，所以两个包要**各自挂一次**
+> （工作台：`dsh plugin --profile web add <本仓库>`；坐标系：`dsh plugin --profile web add <本仓库>/coords`），
+> 或按上面的 `link:` + junction 手工挂两条。根目录那份 `cordis.patch.yml` **只插工作台**
+> —— 别把 `dsh-coords` 加进去，否则没装第二个包时 profile 会去解析一个不存在的包。
 
 **改完本插件要重启 DSH**：profile 的 `patchReload: live` 只重载**组合**，不重载已被
 Node 缓存的 ESM 模块；新加的路由在运行中的实例上会一直 404（`/coords/api/meta` 试一下
@@ -162,8 +169,8 @@ lib/index.js / lib/client.js   ← scripts/build.mjs 生成
 ```powershell
 node scripts/build.mjs          # 重新生成 lib/
 node scripts/build.mjs --check  # 只校验产物与 src/ 一致
-node selftest.mjs               # host 半段 24 项
-node selftest-client.mjs        # 浏览器半段 21 项（含渲染与几何断言）
+node selftest.mjs               # host 半段 26 项
+node selftest-client.mjs        # 浏览器半段 30 项（含渲染与几何断言）
 ```
 
 `selftest.mjs` 会把 `lib/index.js` 当 ESM 载入、造一个假 cordis 上下文跑 `apply()`，
@@ -174,6 +181,14 @@ sharedStrings + sheet1），因此读表路径是真跑过的，不是 mock。
 平行于坐标轴）。
 
 ## 真机验收（隔离实例，不碰正在用的 3080）
+
+> ⚠️ **本节这几条脚本没有随本仓库发布** —— `scripts/trial-boot.mjs` · `verify-gui.mjs` ·
+> `verify-structure.mjs` · `verify-layout.mjs` · `verify-no-popup.mjs` · `live-verify.mjs` ·
+> `live-register.mjs` 都不在仓里（本仓 `coords/scripts/` 只有 `build.mjs`）。
+> 它们是**作者本机的真机验收套件**：要一份能跑的 DSH 检出（`DSH_HARNESS_ROOT`）、一个带 token
+> 的在用实例、以及从别处借来的 Playwright（本插件不装浏览器依赖），换台机器定位就得重写。
+> 下面记的是**当时量到的读数**，留作设计意图与阈值的存档。
+> **clone 下来就能跑的自证只有 `coords/` 里那两条 `node selftest*.mjs`。**
 
 ```powershell
 node scripts/trial-boot.mjs --port 3181          # 另起一个实例（自己还原 profile）
@@ -199,6 +214,10 @@ Playwright 从 `<你的插件目录>/dsh-web-ui/node_modules` 借（本插件不
 > 但直接 `element.click()` 又能生效（很容易误判成卡片的 bug）。实测踩过。
 
 ## 线上实例验证（不新建会话，零污染）
+
+> ⚠️ 这两条同样**没随本仓库发布**（`scripts/live-verify.mjs` / `live-register.mjs`）：
+> 它们要连一个**正在运行**的实例（用 URL 里的 token），并借 Playwright 去点设置里的
+> 卡片清单，依赖本机的浏览器与 profile。下面记的是当时的结果。
 
 ```powershell
 node scripts/live-verify.mjs  "<带 token 的 URL>" http://127.0.0.1:3080

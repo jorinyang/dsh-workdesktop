@@ -12,7 +12,7 @@
 
 | 半体 | 文件 | 运行位置 | 职责 |
 |------|------|---------|------|
-| host | `lib/index.js` | DSH 的 Node 进程 | 挂载 `/workdesktop/api/*` 只读路由、注册 4 个 agent 工具、跑本机 CLI 采集 |
+| host | `lib/index.js` | DSH 的 Node 进程 | 挂载 `/workdesktop/api/*` 只读路由、注册 5 个 agent 工具、跑本机 CLI 采集 |
 | client | `lib/client.js` | 浏览器页面 | 在 DSH **自带**右侧栏注册「工作台」tab（键控席位），渲染 13 张卡片，按需轮询 host |
 
 设计原则（决定了它的行为）：
@@ -33,7 +33,8 @@
 - **Windows**：host 半体用 PowerShell 5.1 跑采集脚本（macOS/Linux 可运行，但采集类卡片需自行替换实现）。
 - ⚠️ **本版不再依赖第三方侧边栏插件**（0.6.0 起的席位变更）：五个工作台与入口**全部**挂在 **DSH 自带**的两条栏上 ——
   ① 「工作台 / 驾驶舱 / **工程图**」的正文 = 自带**右侧栏的 tab 类型**（`ctx.sidebarRightTabs`）+ 键控席位 `sidebar.right.pane.tab`（key = tab id）；
-  ② 「坐标系 / 建模中心」同一席位，类型由 `dsh-coords` / `dsh-modeling` 各自注册；
+  ② 「坐标系 / 建模中心」同一席位，类型由 `dsh-coords` / `dsh-modeling` 各自注册
+     （**`dsh-coords` 现在就并在本仓的 `coords/` 里** —— 它是第二个包，怎么挂见 §5.2；`dsh-modeling` 仍是本仓之外的插件）；
   ③ 左侧栏底部（设置按钮上方）的**五行**工作台图标 = `sidebar.footer.action`（由本插件统一画五行：
      工作台 · 驾驶舱 · 坐标系 · **工程图** · 建模中心；侧边栏折叠成 56px 竖栏时自动切竖排，不溢出）。
   0.5.0 及以前需要 `dsh-better-sidebar` 0.18.x 的那条前提**随之作废**（旧版是挂在那条第三方栏的 tab 上）；
@@ -256,6 +257,58 @@ create/rename/delete，**本插件唯一自己写盘的地方**，只碰 `.prg` 
 后四套**故意不进 CI**：它们要 clone 上游、`pnpm install`、Windows + `csc.exe`、
 或 DSH 检出里的官方 MCP SDK —— 放进 CI 会让"裸 clone 就能自证"这条承诺失效（见 §8）。
 
+### 5.2 坐标系（Coords）· 2026-10-03 并入本仓
+
+本仓库现在是**一个仓、两个包**：
+
+| 包 | 目录 | 包里是什么 | profile 里那条 bundles 条目 |
+|---|---|---|---|
+| `dsh-workdesktop` | 仓库根 | 工作台（13 张卡）+ 工程图席位 + `pg-helper/` | `dsh-workdesktop`（根 `cordis.patch.yml`） |
+| `dsh-coords` | `coords/` | 坐标系插件（host 路由 + 官方右栏 tab） | `dsh-coords`（`coords/cordis.patch.yml`） |
+
+> ⚠️ 两半的 `lib/` **来历不同**，别按同一套办法改：根目录的 `lib/index.js` · `lib/client.js` 是
+> "从插件源**复制 + 脱敏**"的产物（见 §11），改它要走发布流水线；`coords/lib/` 是 `coords/src/` 的
+> **构建产物**（`node coords/scripts/build.mjs`，`--check` 守"产物与 src/ 一致"）。
+
+**「两个插件同仓」在安装/加载层面怎么落地。** DSH 的 `dsh.profile.bundles` 是**包名列表**，
+profile 启动时按顺序把每个包的 `dsh.bundle.patch`（`cordis.patch.yml`）叠成插件树
+（`packages/boot/app-boot/src/profile.ts`：`packageName` → `packageDir` → `patchPaths` → `patches`）。
+也就是说 **一个包 = 一条 bundles 条目 = 一层 patch**，两个包就得**各挂一次**：
+
+```bash
+dsh plugin --profile web add <本仓库>            # 装根目录那个包（dsh-workdesktop）
+dsh plugin --profile web add <本仓库>/coords     # 装 coords/ 那个包（dsh-coords）
+```
+
+手工挂也行（作者本机就是这个形状，见 `coords/README.md`）：profile 的 `dependencies` 各写一条
+`link:`，`node_modules` 各建一个 junction，`dsh.profile.bundles` 追加两个名字 ——
+本机 `~/.dsh/profiles/web/package.json` 里 `dependencies` 的**键名**、`node_modules` 里的
+**目录名**、`bundles` 里的**条目**三者必须是同一个名字。
+
+**根目录那份 `cordis.patch.yml` 只插 `dsh-workdesktop` 一行，故意不插 `dsh-coords`。**
+理由：patch 里的 `insert[].name` 是**裸说明符**，由 profile 的 `node_modules` 解析
+（`packages/boot/app-boot/tests/profile.spec.ts` 的 "anchoring inserted paths beside each file"：
+只有 `./local.js` 这类**相对名**才会被锚定到 patch 文件旁并转成 `file://`，`pkg-a` 这类裸名原样交给加载器）。
+没装第二个包时把 `dsh-coords` 写进去，boot 会去解析一个不存在的包。
+
+坐标系这一半：
+
+| 面 | 内容 |
+|---|---|
+| 席位 | 官方右侧栏的 tab 类型 `dsh-coords:center`；左侧栏底部那五行入口由**工作台**统一渲染 |
+| host 路由 | `/coords/api/*`：`meta` · `sets` · `set` · `parse` · `intake` · `templates` / `template` · `events` · `open` · `sample` |
+| agent 工具 | `coords_open` · `coords_save` · `coords_list` · `coords_get` · `coords_read` · `coords_template` |
+| 落盘 | `$DSH_HOME/.dsh-coords/`（`DSH_COORDS_DIR` 可覆盖） |
+| 运行期变量 | `DSH_COORDS_MAX_POINTS`（点上限，默认 2000）· `DSH_COORDS_MAX_BYTES`（导入体积上限，默认 8MB） |
+| 自带自证 | `cd coords && npm test`（= `build.mjs --check` + host **26 条** + 浏览器 **30 条**），三条都只依赖仓内文件 |
+
+> ⚠️ **`coords/scripts/` 只随仓发布 `build.mjs` 一个脚本。** 作者本机那几条真机验收
+> （`trial-boot` / `verify-gui` / `verify-structure` / `verify-layout` / `verify-no-popup` /
+> `live-verify` / `live-register`）**没进本仓** —— 它们要一份能跑的 DSH 检出（`DSH_HARNESS_ROOT`）、
+> 一个带 token 的**在用**实例、以及从别处借来的 Playwright（本插件不装浏览器依赖），换台机器定位就得重写。
+> `coords/package.json` 的 `scripts` 里**没有**指向这些文件的条目（免得 `npm run` 指向空气）；
+> `coords/README.md` 保留了这些套件的设计意图与当时的读数（含"未复跑"这类如实标注）。
+
 ## 6. 数据从哪来（重要）
 
 面板**不生产数据**。它读的是知识库目录里的产物（`_meta/out/*.json`：`snapshot.json`、`matters.json`、`triggers.json`、`objects.json`、`disposition.json`、`crosscheck.json`、`s-metrics.json` 等），这些产物由**你自己的库内管线**生成。
@@ -430,11 +483,32 @@ node selftest.mjs           # 自证（见 §8）
 
 （对应的脱敏产物指纹：`index.js D6CB90193D2EF5BE` · `client.js CC013B79B1701DDE`。两侧都按"隔 60 秒两次 `mtime`+SHA256 一致"采样。）
 
+#### 本轮同步记录（2026-10-03 · 并入 `coords/` 的那一轮）
+
+| 源（库内插件） | 源指纹 | 本仓产物 | 产物指纹 |
+|---------------|--------|---------|---------|
+| `lib/index.js` | `3401DF9CCEADA330` | `lib/index.js` | `13A79F6AB7BB7785` |
+| `lib/client.js` | `3FA2500CB0EE1E77` | `lib/client.js` | `7F80C0BED6EAA804` |
+| `coords/lib/index.js` | `D78A69763DA29C47` | `coords/lib/index.js` | `D78A69763DA29C47` |
+| `coords/lib/client.js` | `BEF066D044594D61` | `coords/lib/client.js` | `BEF066D044594D61` |
+
+`coords/` 那两半的 `lib/` 是 `coords/src/` 的**构建产物**（两侧 `src/` 同源，所以指纹相同）；
+根目录那两半才是"复制 + 脱敏"的产物。
+
+> ⚠️ **本轮进场时，本仓 `lib/index.js` · `lib/client.js` 与源插件逐字节相同** —— 也就是说"逐条替换"
+> 这一步在 v0.9.x 这几版里**没有生效**：库内那条流水线目录（`_meta/` 下那个）这类**相对路径**（`lib/index.js` 13 处 / `lib/client.js` 10 处）、
+> 一处示例关注域 id、一处私有规范文档路径、一处示例客户名都还留在仓里。
+> 本仓自测的 `L4-1`（仓库自身零命中）只做**结构性**规则（绝对个人路径 / 邮箱 / 手机号 / 凭据形态 /
+> URL 令牌），抓不到这些相对路径与业务词 —— 抓到它们的是仓库外那份权威反扫。
+> 本轮已把替换补做：对 **52 个会上仓的文本文件**逐条替换 + 反扫，**零命中**（`selftest.mjs` 39/0 不变）。
+> **据此：`08117ba`（v0.7.0）是 `lib/index.js` 历史上唯一一份零命中的版本，v0.8.0 ~ v0.9.5 都带着上面那些词，
+> 且已经推到 GitHub。怎么处理历史（改写 / 转私有 / 接受）不在这份 README 的决定范围内，见本轮交接说明。**
+
 对应本仓库版本 **0.8.1**（**五个工作台** · 对外 MCP server · 13 张卡 · 三带布局 · 面板在 DSH **自带右侧栏**的席位 + 左侧栏入口 · **首屏载入画面** · 名称「弈枢」+ 水墨名称图（CSS 遮罩，随主题令牌变色）· **详情页"人话在前"**（机器字段收进「技术细节」折叠）· 卡片尺寸两档 + 拖动跟手/松手吸附动画 + 卡内小卡片按宽度 1/2/3/4 自适应 · 听记 → 事务草稿 · 纸墨外观 · 长按拖动排序 + `ui-prefs` 覆盖层 · 卡内只读透传 + 三条"不许静默"出口）。**README 里的卡片数与顺序对应当前同步进来的这份源码**（`CARD_ORDER` 13 键，与上表源指纹同一次采样）；**发布仓与源项目此后会各自演进**：再次同步请重跑上面的固定流程（同步脚本会打印新旧指纹），不要手工编辑本仓库的 `lib/`。
 
 ### 发布清单（照这个顺序做，**只打 tag 不算发布**）
 
-1. 复制 `lib/index.js` · `lib/client.js`（本版起还有 `assets/`）进本仓库，按上面的固定流程脱敏：**逐条替换（脚本对每条替换断言命中次数，对不上直接退出）→ 反扫（命中必须为 0）**。反扫的覆盖范围是 `lib/` 两半体 + `README.md` + `selftest.mjs` + `assets/` 两份生成脚本 + `package.json` + `cordis.patch.yml`。
+1. 复制 `lib/index.js` · `lib/client.js`（本版起还有 `assets/`）进本仓库，按上面的固定流程脱敏：**逐条替换（脚本对每条替换断言命中次数，对不上直接退出）→ 反扫（命中必须为 0）**。反扫的覆盖范围是仓库里**全部会上仓的文本文件**（本轮实测 **52 个**：`.js` / `.mjs` / `.cjs` / `.json` / `.md` / `.yml` / `.py` / `.cs` / `.txt` / `.editorconfig` / `.gitignore`）—— `lib/` 两半体、`coords/` 整包、`pg-helper/`、`assets/`、`selftest/fixtures/`、README 与两份 `package.json`、`cordis.patch.yml` 都在内。本轮起 `coords/` 整包也在替换与反扫的范围内。
 2. `node selftest.mjs` ⇒ 必须全绿（CI 也会跑一遍）。
 3. 改 `package.json` 版本号 + 更新本节的两处指纹 + §10 的更新概览。
 4. 提交 → **打 tag** → push（分支与 tag 都要推）。
