@@ -36,9 +36,11 @@ function workpacesBlock() {
 
 const block = workpacesBlock()
 
-// ── PGC-1 左侧栏底部那五行的顺序（用户 2026-10-03 裁定的**位置**要求）──────────
-chk('PGC-1', '★ 左侧栏底部图标行是 5 行（工作台 · 驾驶舱 · 坐标系 · 工程图 · 建模中心）',
-  block !== null && (block.match(/\{ id:/g) || []).length === 5,
+// ── PGC-1 左侧栏底部的行数与顺序 ──────────────────────────────────────────
+// 2026-10-08：用户裁定把「遥控器」插在「驾驶舱」下方、「坐标系」上方 ⇒ 从 5 行变 6 行。
+// 位置要求本身没变（工程图仍在坐标系下方、建模中心上方），这里把行数与顺序表一起跟上。
+chk('PGC-1', '★ 左侧栏底部图标行是 6 行（工作台 · 驾驶舱 · 遥控器 · 坐标系 · 工程图 · 建模中心）',
+  block !== null && (block.match(/\{ id:/g) || []).length === 6,
   block === null ? '没找到 WORKSPACES 段' : `行数=${(block.match(/\{ id:/g) || []).length}`)
 
 /**
@@ -53,8 +55,8 @@ function resolveLabel(token) {
 }
 const order = block === null ? [] : [...block.matchAll(/label:\s*(?:'([^']*)'|([A-Z_]+))/g)]
   .map((m) => resolveLabel(m[1] || `«${m[2]}»`))
-chk('PGC-2', '★ 顺序契约：工程图排在「坐标系」下方、「建模中心」上方',
-  JSON.stringify(order) === JSON.stringify(['工作台', '驾驶舱', '坐标系', '工程图', '建模中心']),
+chk('PGC-2', '★ 顺序契约：工程图排在「坐标系」下方、「建模中心」上方（遥控器在驾驶舱与坐标系之间）',
+  JSON.stringify(order) === JSON.stringify(['工作台', '驾驶舱', '遥控器', '坐标系', '工程图', '建模中心']),
   order.join(' → '))
 
 const idxCoords = block === null ? -1 : block.indexOf("label: '坐标系'")

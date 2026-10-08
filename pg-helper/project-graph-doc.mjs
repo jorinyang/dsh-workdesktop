@@ -686,6 +686,112 @@ export function makeSection(stage, spec = {}) {
   }
 }
 
+/* ── 复制 / 剪切 / 粘贴 ───────────────────────────────────────────────── */
+
+/**
+ * 把选中的对象抽成一份「剪贴板」内容。
+ *
+ * ⚠️ 规则（这个模块里最容易出错的地方就是引用）：
+ *   · **连线只在两端都被选中时**才一起带走 —— 否则复制出来会是一条连回原件的线；
+ *   · **分区 children 里指向批外的项直接丢掉**，并报出丢了几条。
+ * 于是「复制出来的东西只包含你选中的那部分」：没有悬空引用，
+ * 剪切（下标整体前移）之后也不会指到别的对象上去。
+ */
+export function extractForClipboard(stage, uuids) {
+  const wanted = new Set((Array.isArray(uuids) ? uuids : [uuids]).map(String))
+  const picked = []
+  stage.forEach((object, index) => {
+    if (object && !isEdge(object) && wanted.has(object.uuid)) picked.push(index)
+  })
+  if (picked.length === 0) return { ok: false, error: '没有选中任何实体' }
+  const inBatch = new Set(picked)
+  stage.forEach((object, index) => {
+    if (!object || !isEdge(object)) return
+    const links = Array.isArray(object.associationList) ? object.associationList : []
+    const ends = links.map((entry) => {
+      const parsed = entry && typeof entry.$ === 'string' ? parseRefPath(entry.$) : null
+      return parsed === null ? null : parsed.index
+    })
+    if (ends.length >= 2 && ends.every((i) => i !== null && inBatch.has(i))) picked.push(index)
+  })
+  picked.sort((a, b) => a - b)
+  const objects = picked.map((index) => structuredClone(stage[index]))
+  let droppedRefs = 0
+  for (const object of objects) {
+    if (!Array.isArray(object.children)) continue
+    const before = object.children.length
+    object.children = object.children.filter((child) => {
+      const parsed = child && typeof child.$ === 'string' ? parseRefPath(child.$) : null
+      return parsed !== null && inBatch.has(parsed.index)
+    })
+    droppedRefs += before - object.children.length
+  }
+  return {
+    ok: true,
+    clip: {
+      indexes: picked.slice(),
+      objects,
+      droppedRefs,
+      entities: objects.filter((o) => !isEdge(o)).length,
+      edges: objects.filter((o) => isEdge(o)).length,
+    },
+  }
+}
+
+/**
+ * 把剪贴板里的东西贴进舞台：**换新 uuid、内部引用重指到副本、几何整体偏移**。
+ * 一律**追加在末尾**，所以既有对象的下标不动、不需要重编号。
+ */
+export function pasteClipboard(stage, clip, dx, dy) {
+  if (!clip || !Array.isArray(clip.objects) || clip.objects.length === 0) {
+    return { ok: false, error: '剪贴板是空的' }
+  }
+  const ox = Number.isFinite(Number(dx)) ? Number(dx) : 0
+  const oy = Number.isFinite(Number(dy)) ? Number(dy) : 0
+  const base = stage.length
+  const map = new Map()
+  clip.indexes.forEach((oldIndex, k) => map.set(oldIndex, base + k))
+  const copies = clip.objects.map((raw) => {
+    const copy = structuredClone(raw)
+    copy.uuid = randomUUID()
+    if (String(copy._) === 'PenStroke' && Array.isArray(copy.segments)) {
+      for (const segment of copy.segments) {
+        if (segment && segment.location) {
+          segment.location.x = Number(segment.location.x) + ox
+          segment.location.y = Number(segment.location.y) + oy
+        }
+      }
+    } else {
+      const shapes = shapesOf(copy)
+      if (shapes !== null) {
+        for (const shape of shapes) {
+          if (shape && shape.location) {
+            shape.location.x = Number(shape.location.x) + ox
+            shape.location.y = Number(shape.location.y) + oy
+          }
+        }
+      }
+    }
+    return copy
+  })
+  for (const copy of copies) {
+    walkRefs(copy, (holder) => {
+      const parsed = parseRefPath(holder.$)
+      if (parsed === null) return
+      const next = map.get(parsed.index)
+      if (next === undefined) return
+      holder.$ = '/' + next + parsed.rest
+    })
+  }
+  const next = stage.concat(copies)
+  try {
+    assertNoDanglingRefs(next)
+  } catch (error) {
+    return { ok: false, error: String((error && error.message) || error) }
+  }
+  return { ok: true, stage: next, created: copies.map((c) => c.uuid), count: copies.length }
+}
+
 /* ── 附件（图片节点要用）──────────────────────────────────────────────── */
 
 /** 扩展名 → content-type（看图够用；认不出就按二进制给） */
