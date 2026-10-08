@@ -115,9 +115,13 @@ chk('PGC-6', '★ 面板接的是 host 的 `/workdesktop/api/pg/*`：status / pr
     .every((p) => view.includes(p)),
   ["'/pg/document?project='", "'/pg/move'", "'/pg/insert'", "'/pg/delete'", "'/pg/text'"]
     .filter((p) => !view.includes(p)).join(', ') || 'ok')
-chk('PGC-6b', '★ 面板仍然只调**上游真实存在**的工具（画布交互走文档层，不再自己编工具名）',
-  ['expand_node_tree_from_node'].every((t) => view.includes(`'${t}'`) || view.includes(`"${t}"`)),
-  '')
+// 2026-10-09 改：长出子树**不再绕上游命令行**（那条每调用一次要起一个进程，界面干等好几秒），
+// 改走文档层的 /pg/grow（瞬时）。所以这条断言的落点也跟着变：
+//   · 面板必须**确实走文档层**（/pg/grow）；
+//   · 顺手仍然不许自己编上游工具名 —— 面板里凡出现 `tool: 'x'`，x 必须在真实目录里。
+chk('PGC-6b', '★ 长出子树走**文档层**（/pg/grow，瞬时），不再绕上游命令行',
+  src.includes("'/pg/grow'"),
+  src.includes("'/pg/grow'") ? '/pg/grow 在位' : '面板里找不到 /pg/grow')
 chk('PGC-6c', '面板写盘失败时**如实显示原因**，不吞成"成功"',
   /r\.ok !== true/.test(view) && /say\('bad'/.test(view) && /String\(r\.error \|\|/.test(view),
   '')

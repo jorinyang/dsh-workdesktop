@@ -1,0 +1,29 @@
+release: 0.10.0 - groups, in-canvas popups, search, and two bugs found on the way
+
+Groups. Built on the upstream Section type rather than a new one: a hand-made type that
+upstream does not know makes the whole file unreadable, which I proved earlier with the
+extension entity. The cost is that a group shows up as a section in the official app; the
+benefit is that the file stays valid and upstream sees the groups. Four slices, each verified:
+creating one around a selection with a name and a box that encloses it; dragging the group moves
+the members while a member can still be dragged alone; the box refits to its members on every
+move, so it grows when one leaves and shrinks back to the minimum when they come together; the
+cut deletes a group or a member depending on where the line passes. An element belongs to at
+most one group - creating a second group around a member takes it out of the first.
+
+Popups. The panel no longer uses a single browser dialog. Delete, create node, create note, grow
+tree, name a group, name a project and edit an edge label all now open a layer on the canvas at
+the pointer, with Enter to confirm and Escape to cancel. Asking for an upstream reference is gone
+entirely - it was a host-side handle the panel can look up itself.
+
+Ctrl+F searches the text on the canvas and highlights matches live.
+
+Two bugs found while verifying, both worth recording. The hit test walked the stage array while
+the drawing used a layer order, so a group created after its members sat on top for clicks and
+its members could not be selected or dragged at all; the two orders are now the same. And
+growing a tree locally computed the parent index from the pre-insert array, which yielded -1 and
+wrote a negative index into the first edge - upstream rejected the whole file. The assertion that
+should have caught it treated an unparseable reference path as fine and skipped it; it now fails
+on those too.
+
+Verified: host 19/0, client 43/0, seat contract 20/0, document layer 25/0, groups 19/0, and in a
+real browser search and multi-select 14/0.

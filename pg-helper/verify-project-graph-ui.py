@@ -179,9 +179,14 @@ try:
         #    这里曾经整体偏一个"画布左上角" —— 因为那个 div 是画布内的绝对定位元素（left/top 相对画布），
         #    而拖动记的是 clientX/clientY（视口坐标），没减画布原点。看着偏、判定却是对的，很难察觉。
         box_drawn = page.locator(".dshw-pg-marquee").first.bounding_box() if shot_marquee == 1 else None
+        # ★ 松手**之前**，框里的东西就该亮起来（用户 2026-10-09 要求）——
+        #   所以这条必须在 mouse.up() 之前数，松手之后数就分不清是"预览"还是"真选上了"。
+        live_picked = page.locator('.dshw-pg-node[data-picked="1"]').count()
         page.mouse.up()
         page.wait_for_timeout(800)
         chk("UI-8", "★ 拖出框选时**框真的画出来了**", shot_marquee == 1, f"marquee={shot_marquee}")
+        chk("UI-8d", "★★ 拖动**过程中**框里的框体就已经亮起来了（不用等松手）",
+            live_picked >= 1, f"拖动中已亮 {live_picked} 个")
         want_x = cb["x"] + 12
         want_y = cb["y"] + 12
         want_w = cb["width"] - 24
@@ -288,24 +293,28 @@ try:
             f"乙={box_src} 丙={box_dst}")
 
         edges_before = len([o for o in doc_objects() if o.get("type") == "LineEdge"])
+        # ⚠️ 2026-10-09 用户裁定：框体右侧那个"连接把手"已移除，连线一律改成**在框体上按住右键拖**。
+        #    所以这里不再找把手，改成断言"它确实没了"，然后走右键那条路。
         handle = connect_handle_of(box_src) if box_src else None
-        chk("UI-12b", "★ 节点上有「连接把手」", handle is not None, f"handle={handle}")
+        chk("UI-12b", "★ 框体上**已经没有那个连接把手了**（连线改走右键）", handle is None, f"handle={handle}")
 
-        if handle is not None and box_dst is not None:
-            page.mouse.move(handle[0], handle[1])
-            page.wait_for_timeout(200)
-            page.mouse.down()
+        if box_src is not None and box_dst is not None:
+            sx = box_src["x"] + box_src["width"] / 2
+            sy = box_src["y"] + box_src["height"] / 2
             tx = box_dst["x"] + box_dst["width"] / 2
             ty = box_dst["y"] + box_dst["height"] / 2
+            page.mouse.move(sx, sy)
+            page.wait_for_timeout(200)
+            page.mouse.down(button="right")
             for s in range(1, 13):
-                page.mouse.move(handle[0] + (tx - handle[0]) * s / 12, handle[1] + (ty - handle[1]) * s / 12)
+                page.mouse.move(sx + (tx - sx) * s / 12, sy + (ty - sy) * s / 12)
                 page.wait_for_timeout(30)
             drafting = page.locator(".dshw-pg-draft").count()
-            page.mouse.up()
+            page.mouse.up(button="right")
             page.wait_for_timeout(4000)
             chk("UI-12c", "★ 拖的过程中**虚线预览**画出来了", drafting == 1, f"draft={drafting}")
             edges_after = [o for o in doc_objects() if o.get("type") == "LineEdge"]
-            chk("UI-12d", "★★ 松手在另一个节点上 ⇒ **盘上真的多了一条连线**",
+            chk("UI-12d", "★★ 右键松在另一个节点上 ⇒ **盘上真的多了一条连线**",
                 len(edges_after) == edges_before + 1, f"{edges_before} -> {len(edges_after)}")
             page.screenshot(path=SHOT + r"\ui-8-connected.png")
 

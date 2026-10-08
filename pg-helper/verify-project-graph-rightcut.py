@@ -136,6 +136,14 @@ try:
                 page.mouse.move(x0 + (x1 - x0) * k / 12, y)
                 page.wait_for_timeout(35)
             drawing = page.locator(".dshw-pg-cutline").count()
+            # ★ 松手之前，会被剪掉的那批要**先描红**（用户 2026-10-09 要求）
+            #   连线、框体、说明文字都算 —— 这里同时数连线与节点两种。
+            hot_edges = page.locator('.dshw-pg-edge[data-cut="1"]').count()
+            hot_nodes = page.locator('.dshw-pg-node[data-cut="1"]').count()
+            chk("RC-7b", "★★ 拖动中：**将被剪掉的连线被描红**（松手前就看得见）",
+                hot_edges >= 1, f"红的连线 {hot_edges} 条")
+            chk("RC-7c", "★★ 拖动中：**将被剪掉的框体也被描红**",
+                hot_nodes >= 1, f"红的框体 {hot_nodes} 个")
             page.mouse.up(button="right")
             page.wait_for_timeout(4500)
             chk("RC-7", "★ 右键拖动时那条**直线画出来了**", drawing == 1, f"cutline={drawing}")

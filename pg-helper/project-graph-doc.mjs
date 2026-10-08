@@ -259,6 +259,19 @@ export function removeObjects(stage, indexes) {
   if (doomed.length === 0) return structuredClone(stage)
   const doomedSet = new Set(doomed)
   const next = structuredClone(stage)
+
+  // ⚠️ **先摘掉组合成员名单里指向被删对象的那些引用**，再重编号。
+  //    不摘的话它们会变成"孤儿引用"，assertNoOrphanRefs 直接抛 ——
+  //    表现出来就是"删组内某个成员，整个删除操作失败"（2026-10-09 实测到了）。
+  //    另外注意：**删组合本身不连带删成员** —— 成员活着，只是不再属于任何组合。
+  for (const object of next) {
+    if (!object || String(object._) !== 'Section' || !Array.isArray(object.children)) continue
+    object.children = object.children.filter((child) => {
+      const parsed = child && typeof child.$ === 'string' ? parseRefPath(child.$) : null
+      return parsed === null || !doomedSet.has(parsed.index)
+    })
+  }
+
   const orphans = renumber(next, 0, next.length - 1, (old) => {
     if (doomedSet.has(old)) return null
     return old - doomed.filter((d) => d < old).length
@@ -301,6 +314,19 @@ export function removeObjectsAndDanglingEdges(stage, indexes) {
 
   const doomedSet = new Set(doomed)
   const next = structuredClone(stage)
+
+  // ⚠️ **先摘掉组合成员名单里指向被删对象的那些引用**，再重编号。
+  //    不摘的话它们会变成"孤儿引用"，assertNoOrphanRefs 直接抛 ——
+  //    表现出来就是"删组内某个成员，整个删除操作失败"（2026-10-09 实测到了）。
+  //    另外注意：**删组合本身不连带删成员** —— 成员活着，只是不再属于任何组合。
+  for (const object of next) {
+    if (!object || String(object._) !== 'Section' || !Array.isArray(object.children)) continue
+    object.children = object.children.filter((child) => {
+      const parsed = child && typeof child.$ === 'string' ? parseRefPath(child.$) : null
+      return parsed === null || !doomedSet.has(parsed.index)
+    })
+  }
+
   const orphans = renumber(next, 0, next.length - 1, (old) => {
     if (doomedSet.has(old)) return null
     return old - doomed.filter((d) => d < old).length
@@ -321,11 +347,18 @@ function entityUuid(stage, index) {
 /** 任何 `$` 路径指向的下标都必须还在范围内 —— 越界就是"接错对象"的前兆，直接抛。 */
 export function assertNoDanglingRefs(stage) {
   const bad = []
+  const unparsable = []
   walkRefs(stage, (holder) => {
     const parsed = parseRefPath(holder.$)
-    if (parsed === null) return
+    // ⚠️ 解析不了**不等于没问题**：/-1 这种就是解析不了，而它是个真错误。
+    //    原来这里直接 return，于是这种引用被静默放过（实测：本地长子树写出的 /-1 就这么漏出去的）。
+    if (parsed === null) { unparsable.push(holder.$); return }
     if (parsed.index < 0 || parsed.index >= stage.length) bad.push(holder.$)
   })
+  if (unparsable.length > 0) {
+    throw new Error('有 ' + unparsable.length + ' 条 $ 引用不成形（应当是 /数字）：'
+      + [...new Set(unparsable)].slice(0, 5).join(', '))
+  }
   if (bad.length > 0) {
     throw new Error(`有 ${bad.length} 条 $ 引用指向舞台外（下标越界）：${[...new Set(bad)].slice(0, 5).join(', ')}`)
   }
@@ -439,6 +472,17 @@ export function makeTextNode(stage, spec = {}) {
   node.uuid = spec.uuid === undefined ? randomUUID() : String(spec.uuid)
   node.text = String(spec.text === undefined ? '新节点' : spec.text)
   if (Object.prototype.hasOwnProperty.call(node, 'details')) node.details = []
+  // 说明文字：无边框（TextNode.tsx 第 67 行 borderStyle 有 none 这一档）
+  if (spec.borderStyle !== undefined && spec.borderStyle !== null) {
+    if (!Object.prototype.hasOwnProperty.call(node, 'borderStyle')) {
+      return { ok: false, error: '模板 TextNode 上没有 borderStyle 字段，拒绝新造一个' }
+    }
+    const wanted = String(spec.borderStyle)
+    if (!['solid', 'dashed', 'none'].includes(wanted)) {
+      return { ok: false, error: 'borderStyle 只能是 solid / dashed / none，收到：' + wanted }
+    }
+    node.borderStyle = wanted
+  }
   const shapes = node.collisionBox && Array.isArray(node.collisionBox.shapes) ? node.collisionBox.shapes : null
   if (shapes === null || shapes.length === 0) return { ok: false, error: '模板 TextNode 没有 collisionBox.shapes' }
   const put = (field, key, value) => {
@@ -686,6 +730,102 @@ export function makeSection(stage, spec = {}) {
   }
 }
 
+/* ── 组合的包围盒（自动贴合）────────────────────────────────────────── */
+
+/**
+ * 按成员**当前位置**重算一个组合的包围盒 —— 成员拖出去了就扩、拖拢了就缩，
+ * 始终保持最小面积（用户 2026-10-09 裁定）。
+ *
+ * 边距与标题位的算法跟 makeSection 保持一致（同一个 pad / titleBar），
+ * 不然"新建时"和"拖动后"两个框会长得不一样。
+ */
+export function fitSection(stage, sectionUuid) {
+  const section = stage.find((o) => o && o.uuid === String(sectionUuid || '') && String(o._) === 'Section')
+  if (section === undefined) return { ok: false, error: '找不到这个组合：' + String(sectionUuid || '') }
+  const children = Array.isArray(section.children) ? section.children : []
+  if (children.length === 0) return { ok: true, stage, changed: false, empty: true }
+  const pad = 24
+  const titleBar = String(section.text || '') === '' ? 0 : 44
+  let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity
+  for (const child of children) {
+    const parsed = child && typeof child.$ === 'string' ? parseRefPath(child.$) : null
+    if (parsed === null) continue
+    const target = stage[parsed.index]
+    if (target === undefined || target === null) continue
+    const location = locationOf(target); const size = sizeOf(target)
+    if (location === null || size === null) continue
+    x0 = Math.min(x0, location.x); y0 = Math.min(y0, location.y)
+    x1 = Math.max(x1, location.x + size.width); y1 = Math.max(y1, location.y + size.height)
+  }
+  if (!Number.isFinite(x0) || !Number.isFinite(y0)) return { ok: true, stage, changed: false }
+  const left = x0 - pad
+  const top = y0 - pad - titleBar
+  const width = Math.max(80, x1 - x0 + pad * 2)
+  const height = Math.max(60, y1 - y0 + pad * 2 + titleBar)
+  const next = structuredClone(stage)
+  const copy = next.find((o) => o && o.uuid === section.uuid)
+  const shapes = shapesOf(copy)
+  if (shapes === null || shapes.length === 0 || !shapes[0].location || !shapes[0].size) {
+    return { ok: false, error: '这个组合没有可写的几何字段' }
+  }
+  const before = { x: shapes[0].location.x, y: shapes[0].location.y, w: shapes[0].size.x, h: shapes[0].size.y }
+  const changed = Math.abs(before.x - left) > 0.5 || Math.abs(before.y - top) > 0.5
+    || Math.abs(before.w - width) > 0.5 || Math.abs(before.h - height) > 0.5
+  shapes[0].location.x = left; shapes[0].location.y = top
+  shapes[0].size.x = width; shapes[0].size.y = height
+  return { ok: true, stage: next, changed, box: { x: left, y: top, width, height } }
+}
+
+/**
+ * 凡是"有成员在这些 uuid 里"的组合，全部重算包围盒。
+ * 用在 /pg/move 落盘之后 —— 成员一动，它所在的组合就跟着贴合。
+ */
+export function fitSectionsTouching(stage, uuids) {
+  const moved = new Set((Array.isArray(uuids) ? uuids : [uuids]).map(String))
+  let current = stage
+  const refit = []
+  for (const object of stage) {
+    if (!object || String(object._) !== 'Section' || !Array.isArray(object.children)) continue
+    const touches = object.children.some((child) => {
+      const parsed = child && typeof child.$ === 'string' ? parseRefPath(child.$) : null
+      return parsed !== null && current[parsed.index] !== undefined && moved.has(current[parsed.index].uuid)
+    })
+    if (!touches) continue
+    const result = fitSection(current, object.uuid)
+    if (result.ok !== true) return result
+    if (result.changed === true) refit.push(object.uuid)
+    current = result.stage
+  }
+  return { ok: true, stage: current, refit }
+}
+
+
+/* ── 组合的归属 ───────────────────────────────────────────────────────── */
+
+/**
+ * 一个元素**只能在一个组合里**（用户 2026-10-09 裁定）。
+ * 把 childIndexes 这些下标从**所有已有组合**的 children 里摘掉。
+ *
+ * 只改 children 数组、**不动舞台顺序** ⇒ 下标一个都不变，
+ * 所以调用方刚算好的包围盒、以及新组合自己的 children 引用，全都仍然有效。
+ */
+export function detachFromOtherSections(stage, childIndexes) {
+  const doomed = new Set((Array.isArray(childIndexes) ? childIndexes : [childIndexes]).map(Number))
+  const next = structuredClone(stage)
+  let removed = 0
+  for (const object of next) {
+    if (!object || String(object._) !== 'Section' || !Array.isArray(object.children)) continue
+    const before = object.children.length
+    object.children = object.children.filter((child) => {
+      const parsed = child && typeof child.$ === 'string' ? parseRefPath(child.$) : null
+      return parsed === null || !doomed.has(parsed.index)
+    })
+    removed += before - object.children.length
+  }
+  return { ok: true, stage: next, removed }
+}
+
+
 /* ── 复制 / 剪切 / 粘贴 ───────────────────────────────────────────────── */
 
 /**
@@ -790,6 +930,89 @@ export function pasteClipboard(stage, clip, dx, dy) {
     return { ok: false, error: String((error && error.message) || error) }
   }
   return { ok: true, stage: next, created: copies.map((c) => c.uuid), count: copies.length }
+}
+
+/* ── 长出子树 ─────────────────────────────────────────────────────────── */
+
+/**
+ * 在一棵已有节点下面长一棵树（按缩进文本）。**本地直接写**，不走上游命令行 ——
+ * 上游那条路每调用一次要起一个进程，界面要等好几秒（用户 2026-10-09 报的"慢"就是这个）。
+ *
+ * ⚠️ 连线两端存的是**舞台下标**，所以顺序不能颠倒：
+ *   先建好所有节点并一次性插到末尾（这时才拿得到它们最终的下标），**然后**再按下标建连线。
+ *   反过来的话，连线会指到错的（或还不存在的）对象上。
+ */
+export function expandNodeTree(stage, parentUuid, text) {
+  const parent = stage.find((o) => o && o.uuid === String(parentUuid || ''))
+  if (parent === undefined) return { ok: false, error: '找不到父节点：' + String(parentUuid || '') }
+  if (typeof text !== 'string' || text.trim() === '') return { ok: false, error: '内容为空' }
+  const raw = text.replace(/\r/g, "").split("\n").filter((line) => line.trim() !== "")
+  if (raw.length === 0) return { ok: false, error: '内容为空' }
+
+  // 每一行的层级 = 缩进空格数 / 2，并且**不许跳级**（跳级的按上一层算，免得挂到不存在的父上）
+  const rows = []
+  let previousDepth = -1
+  for (const line of raw) {
+    const indent = line.length - line.replace(/^\s+/, '').length
+    let depth = Math.floor(indent / 2)
+    if (depth > previousDepth + 1) depth = previousDepth + 1
+    rows.push({ depth, text: line.trim() })
+    previousDepth = depth
+  }
+
+  const parentBox = locationOf(parent) || { x: 0, y: 0 }
+  const parentSize = sizeOf(parent) || { width: 0, height: 0 }
+  // 简单的树形摆位：每一层往右推一列，同层往下排
+  const COL = Math.max(200, (Number(parentSize.width) || 0) + 120)
+  const ROW = 90
+  const perDepth = {}
+  const nodes = []
+  for (const row of rows) {
+    perDepth[row.depth] = (perDepth[row.depth] === undefined ? 0 : perDepth[row.depth]) + 1
+    const k = perDepth[row.depth]
+    const made = makeTextNode(stage, {
+      text: row.text,
+      x: Math.round((Number(parentBox.x) || 0) + COL * (row.depth + 1)),
+      y: Math.round((Number(parentBox.y) || 0) + (k - 1) * ROW),
+    })
+    if (made.ok !== true) return made
+    nodes.push({ node: made.node, depth: row.depth })
+  }
+
+  const withNodes = insertObjects(stage, nodes.map((it) => it.node), null)
+  // ⚠️ 父节点在新数组里的位置必须**按 uuid 找**：insertObjects 返回的是深拷贝，
+  //    拿旧对象去 indexOf 只会得到 -1，然后长出来的连线就会写成 {"$":"/-1"}（实测踩过，文件直接被上游拒）。
+  const parentIndexInNew = withNodes.findIndex((o) => o && o.uuid === String(parentUuid))
+  if (parentIndexInNew < 0) return { ok: false, error: '插入之后找不到父节点了（不该发生）' }
+  const indexOfNode = new Map()
+  for (const it of nodes) indexOfNode.set(it.node.uuid, withNodes.indexOf(it.node))
+
+  // 连起来：父 → 该行；每一行挂到**它上面最近的、层级浅一层**的那一行
+  const edgeSpecs = []
+  const lastAtDepth = {}
+  for (const it of nodes) {
+    const parentIndex = it.depth === 0
+      ? parentIndexInNew
+      : (lastAtDepth[it.depth - 1] === undefined ? parentIndexInNew : lastAtDepth[it.depth - 1])
+    edgeSpecs.push({ from: parentIndex, to: indexOfNode.get(it.node.uuid) })
+    lastAtDepth[it.depth] = indexOfNode.get(it.node.uuid)
+  }
+
+  let next = withNodes
+  const edges = []
+  for (const spec of edgeSpecs) {
+    const made = makeEdge(next, spec.from, spec.to, {})
+    if (made.ok !== true) return made
+    edges.push(made.edge)
+  }
+  next = insertObjects(next, edges, null)
+  try { assertNoDanglingRefs(next) } catch (error) { return { ok: false, error: String((error && error.message) || error) } }
+  return {
+    ok: true,
+    stage: next,
+    nodes: nodes.map((it) => it.node.uuid),
+    edges: edges.map((e) => e.uuid),
+  }
 }
 
 /* ── 附件（图片节点要用）──────────────────────────────────────────────── */
