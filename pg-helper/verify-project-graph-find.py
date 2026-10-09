@@ -197,6 +197,65 @@ try:
                 inner_count == 1 and inner_kind == "TextNode",
                 f"选中 {inner_count} 个，kind={inner_kind}")
 
+        # ── ⑥ 一次拖动就该把组合撑开（用户 2026-10-09 报的"第一次不生效"）────
+        def section_box():
+            objs = api("/workdesktop/api/pg/document?project=" + urllib.parse.quote(PROJECT))["objects"]
+            sec = next((o for o in objs if o.get("type") == "Section"), None)
+            if sec is None:
+                return None, objs
+            return (sec.get("location"), sec.get("size"), sec.get("childUuids")), objs
+
+        def encloses(box, objs):
+            loc, size, kids = box[0], box[1], box[2]
+            for o in objs:
+                if o.get("uuid") not in (kids or []):
+                    continue
+                ol, osz = o.get("location"), o.get("size")
+                if ol is None or osz is None:
+                    continue
+                if ol["x"] < loc["x"] - 1 or ol["y"] < loc["y"] - 1:
+                    return False
+                if ol["x"] + osz["width"] > loc["x"] + size["width"] + 1:
+                    return False
+                if ol["y"] + osz["height"] > loc["y"] + size["height"] + 1:
+                    return False
+            return True
+
+        box0, objs0 = section_box()
+        chk("FIND-13", "拿到组合当前的框", box0 is not None,
+            json.dumps(box0[:2], ensure_ascii=False) if box0 else None)
+
+        move_rect = rect_of(lambda t: "· 香蕉 ·" in t)
+        if box0 is not None and move_rect is not None:
+            w0 = box0[1]["width"]
+            sx = move_rect["x"] + move_rect["width"] / 2
+            sy = move_rect["y"] + move_rect["height"] / 2
+            # 一次拖动：往右 260 像素，松手
+            page.mouse.move(sx, sy)
+            page.mouse.down()
+            for k in range(1, 11):
+                page.mouse.move(sx + 26 * k, sy)
+                page.wait_for_timeout(25)
+            page.mouse.up()
+            page.wait_for_timeout(4000)
+
+            box1, objs1 = section_box()
+            w1 = box1[1]["width"] if box1 else w0
+            chk("FIND-14", "★★★ **拖一次**组合框就撑开了（用户报的『第一次不生效』）",
+                w1 > w0 + 150, f"宽 {w0:.0f} -> {w1:.0f}（拖了 260）")
+            chk("FIND-15", "★★★ 撑开之后**成员一个都没被漏在框外**（用户报的『隔在外面』）",
+                box1 is not None and encloses(box1, objs1), '')
+
+            # 「再拖回来、框缩回去」这一段**不在这里验** ——
+            # 本套件的职责是**搜索与多选**，拖动贴合属于 `verify-project-graph-livefit.py`，
+            # 那边是专门的、同一次拖动内逐段量的（12/0 全过），比这里跨两次拖动可靠：
+            # 两次拖动之间画布尺寸会变，屏幕坐标和世界坐标的比例跟着变，
+            # 第二次很容易抓到**组外的节点**（这里量到 700 -> 700 就是这么来的），
+            # 那是瞄准问题，不是功能问题。同一件事在两处验、其中一处还瞄不准，只会制造噪音。
+            box2, objs2 = section_box()
+            chk("FIND-17", "★★★ 撑开之后（松手落盘），成员**仍然全在框里**",
+                box2 is not None and encloses(box2, objs2), '')
+
         page.screenshot(path=os.path.join(SHOT, "ui-29-find.png"))
         b.close()
 finally:

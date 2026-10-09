@@ -701,8 +701,12 @@ export function makeSection(stage, spec = {}) {
   }
   const left = x0 - pad
   const top = y0 - pad - titleBar
-  const width = Math.max(80, x1 - x0 + pad * 2)
+  let width = Math.max(80, x1 - x0 + pad * 2)
   const height = Math.max(60, y1 - y0 + pad * 2 + titleBar)
+  // ⚠️ 上游 Section.tsx 第 171 行：框宽至少要装得下标题。
+  //    不然组合名一长就溢出框外（中文字符按 12px 估，宁可宽一点）。
+  const titleWidth = String(spec.text === undefined ? '分区' : spec.text).length * 12 + pad * 2
+  if (titleWidth > width) width = titleWidth
   return {
     ok: true,
     section: {
@@ -760,8 +764,11 @@ export function fitSection(stage, sectionUuid) {
   if (!Number.isFinite(x0) || !Number.isFinite(y0)) return { ok: true, stage, changed: false }
   const left = x0 - pad
   const top = y0 - pad - titleBar
-  const width = Math.max(80, x1 - x0 + pad * 2)
+  let width = Math.max(80, x1 - x0 + pad * 2)
   const height = Math.max(60, y1 - y0 + pad * 2 + titleBar)
+  // ⚠️ 上游 Section.tsx 第 171 行：框宽至少要装得下标题，不然组合名一长就溢出框外。
+  const titleWidth = String(section.text || '').length * 12 + pad * 2
+  if (titleWidth > width) width = titleWidth
   const next = structuredClone(stage)
   const copy = next.find((o) => o && o.uuid === section.uuid)
   const shapes = shapesOf(copy)
