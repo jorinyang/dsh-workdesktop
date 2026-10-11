@@ -33,10 +33,9 @@ import { ingestOnce as fsCalIngest } from './feishu-calendar.mjs';
 import { ingestOnce as fsTaskIngest } from './feishu-task.mjs';
 import { ingestOnce as imIngest } from './imessage.mjs';
 import { ingestOnce as kbIngest } from './dingtalk-wiki.mjs';
-import { ingestOnce as fsDriveIngest } from './feishu-drive.mjs';
 import { ingestOnce as fsMinIngest } from './feishu-minutes.mjs';
 import { ingestOnce as fsBaseIngest } from './feishu-bitable.mjs';
-import { listAll as fsDriveListAll } from './feishu-drive.mjs';
+import { ingestOnce as fsDriveIngest, listAll as fsDriveListAll, fetchBodiesOnce as fsDriveBodies } from './feishu-drive.mjs';
 
 const args = process.argv.slice(2);
 const DRY = args.includes('--dry-run');
@@ -101,7 +100,19 @@ const IMPL = {
   'dd-kb':           { engine: 'collector', fn: async () => kbIngest({ dryRun: DRY }) },
   // 2026-10-12 新增：飞书云文档（原始 API 列文件；同时是 fs-bitable 的"发现段"）。
   // 不传 since：内部按统一判据按**创建时间**判起点（注意源字段是秒，已在映射里 ×1000）。
-  'fs-doc':          { engine: 'collector', fn: async () => fsDriveIngest({ dryRun: DRY }) },
+  // ★ 同一轮里**顺带抓正文**（需求 3.1.1/3.1.2 要的是内容）：按 revision_id 缓存，不重复抓。
+  'fs-doc':          { engine: 'collector', fn: async () => {
+    const r = fsDriveIngest({ dryRun: DRY });
+    const ld = fsDriveListAll({});
+    if (ld.ok === true) {
+      const b = fsDriveBodies({ files: ld.files, dryRun: DRY });
+      r.bodyFetch = b.why;
+      if (b.errors?.length) r.errors = [...(r.errors ?? []), ...b.errors];
+    } else {
+      r.bodyFetch = `正文抓取跳过（列表取不到：${ld.why}）`;
+    }
+    return r;
+  } },
   // 2026-10-12 新增：飞书妙记（按笔记入流；权限由用户 2026-10-12 授权后解锁）。不传 since：内部按开始时间判起点。
   'fs-minutes':      { engine: 'collector', fn: async () => fsMinIngest({ dryRun: DRY }) },
   // 2026-10-12 新增：飞书多维表**记录段**。**发现段复用 fs-doc 的原始 API 列表**（type=bitable 的 token 即 base token），

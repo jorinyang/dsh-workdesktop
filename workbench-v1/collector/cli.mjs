@@ -32,7 +32,17 @@ export function buildCommand(bin, args) {
   if (!SAFE_ARG.test(b)) throw new Error(`可执行名含不安全字符：${JSON.stringify(bin)}`);
   return b + ' ' + (args ?? []).map((a) => {
     const s = String(a);
-    return SAFE_ARG.test(s) ? s : `"${s.replace(/"/g, '\\"')}"`;
+    if (SAFE_ARG.test(s)) return s;
+    // ★ 2026-10-12（升级 lark-cli 1.0.97 后新增 `--params <JSON>` 传参）：含双引号的参数（典型是 JSON）
+    //   在 Windows 上要穿**两层**解析，实测踩了三次才通：
+    //     ① 用反斜杠转义 + 双引号包裹 ⇒ **PowerShell 自己先按 `"` 断词**（CLI 报 `accepts 2 arg(s), received 3`）；
+    //     ② 用单引号包裹 ⇒ PowerShell 原样传了，但 **MSVCRT 又把里面的 `"` 吃掉**（CLI 报 `expected JSON object`）；
+    //     ③ 正解 = **单引号包裹 + 把每个 `"` 写成 `\"`**：PowerShell 原样输出，MSVCRT 还原成真引号。
+    if (s.includes('"')) {
+      if (s.includes("'")) return `"${s.replace(/"/g, '\\"')}"`;   // 罕见：本身带单引号，退回双引号方案
+      return `'${s.replace(/"/g, '\\"')}'`;
+    }
+    return `"${s}"`;
   }).join(' ');
 }
 
@@ -139,6 +149,16 @@ export function selfTest() {
   chk('CLI-12', '★ 说明里带**小 JSON 示例**时，不能被它抢先选中（实测踩到：只拿回一个 {"id":…}）', (() => {
     const out = 'notes: {"id":"recXDFiAHamU0d"} is an example\n{"ok":true,"data":{"items":[{"record_id":"r1","fields":{"a":1}}],"has_more":false}}\n';
     try { const j = extractJson(out); return j.ok === true && j.data.items.length === 1 && j.data.items[0].record_id === 'r1'; } catch { return false; }
+  })());
+  // CLI-13/14：JSON 参数要穿过 PowerShell 与 MSVCRT **两层**解析（升级 lark-cli 1.0.97 后新增 `--params <JSON>`）
+  chk('CLI-13', '★ JSON 参数：单引号包裹 + 每个 `"` 写成 `\\"`（两层解析都过）', (() => {
+    const c = buildCommand('lark-cli', ['api', 'GET', '/x', '--params', '{"a":1}']);
+    return c === `lark-cli api GET /x --params '{\\"a\\":1}'`;
+  })(), buildCommand('lark-cli', ['api', 'GET', '/x', '--params', '{"a":1}']));
+  chk('CLI-14', '★ JSON 参数里不能留着裸 `"`（会被 MSVCRT 吃掉 ⇒ CLI 报 expected JSON object）', (() => {
+    const c = buildCommand('lark-cli', ['api', 'GET', '/x', '--params', '{"a":1}']);
+    const body = c.slice(c.indexOf("'") + 1, c.lastIndexOf("'"));
+    return !/^[^\\]*"[^\\]*$/.test(body) && body.includes('\\"');
   })());
 
   const pass = out.filter((x) => x.ok).length;

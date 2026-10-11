@@ -32,9 +32,10 @@ import path from 'node:path';
 
 import { makeEvent } from '../schema.mjs';
 import * as store from '../store.mjs';
-import { v1Out } from '../paths.mjs';
+import { v1Out, KB_ROOT, hasKbRoot } from '../paths.mjs';
 import { inScope } from './registry.mjs';
 import { runCli } from './cli.mjs';
+import { suggestDocName } from '../processor/links.mjs';   // 复用同一套"日期-主题"命名（需求 3.1.2）
 
 export const KEY = 'fs-doc';              // 主登记（fs-bitable 的发现段也走这里，登记表里两条的 consumedBy 都指向本文件）
 export const INTERVAL_SEC = 300;
@@ -79,9 +80,13 @@ export function listFiles({ folderToken = null, pageSize = MAX_PAGE, pageToken =
     if (rt.ok !== true) return { ok: false, why: `根目录 token 取不到：${rt.why}` };
     t = rt.token;
   }
-  let p = `/open-apis/drive/v1/files?folder_token=${encodeURIComponent(t)}&page_size=${Number(pageSize)}`;
-  if (pageToken) p += `&page_token=${encodeURIComponent(pageToken)}`;
-  const r = run(['api', 'GET', p]);
+  // ★ 2026-10-12 升级 lark-cli 1.0.84 → **1.0.97** 后的**行为变更**（升级当场撞到，不是猜的）：
+  //   `api GET <path?query>` ⇒ **`path must not contain a query string or fragment`**，
+  //   CLI 的提示写得很清楚：**查询参数改用 `--params`（JSON）传，路径里不要带 `?`**。
+  //   ⇒ 下面改成 `--params`；路径保持干净。
+  const params = { folder_token: t, page_size: Number(pageSize) };
+  if (pageToken) params.page_token = pageToken;
+  const r = run(['api', 'GET', '/open-apis/drive/v1/files', '--params', JSON.stringify(params)]);
   if (r.ok !== true) return { ok: false, why: r.why };
   const files = r.json?.data?.files;
   if (!Array.isArray(files)) return { ok: false, why: '返回里没有 data.files 数组（形状变了？）' };
@@ -182,6 +187,91 @@ export function ingestOnce({ run = defaultRun, dryRun = false, pageSize = MAX_PA
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// 正文抓取（需求 3.1.1/3.1.2 要的是**内容**，不只是"名字+类型"）
+//
+// 实测形状（2026-10-12）：
+//   `lark-cli docs +fetch --doc <token> --doc-format markdown`（**参数名是 `--doc`**，不是 `--document-id`）
+//   ⇒ `{ok, data:{document:{content, document_id, revision_id}}}` —— 正文在 **`document.content`**，
+//     是 markdown（含 `<whiteboard token=…>` 这类内嵌块占位符，原样保留、不假装解出来了）。
+//
+// 三条纪律：
+//   ① **按 `revision_id` 缓存** —— 同一个版本不重复抓（5 分钟一轮，10 个文档不能每轮都抓一遍）；
+//   ② **落盘到知识库**（`Other/Inflow/文档/日期-标题.md`），与链接抓取同一套命名；
+//   ③ **抓不到不算失败** —— 记 `failed` 并写明原因，正文留空，绝不假装有内容。
+// ══════════════════════════════════════════════════════════════════════════════
+
+export const DOCS_DIR = 'Other/Inflow/文档';
+export const BODY_MAX = 1024 * 1024;          // 单篇正文上限（超过只存前 1MB 并标注截断）
+
+export function bodyCacheFile() { return path.join(v1Out(), 'fs-doc-bodies.json'); }
+export function loadBodyCache() { try { return JSON.parse(fs.readFileSync(bodyCacheFile(), 'utf8')) ?? {}; } catch { return {}; } }
+export function saveBodyCache(doc) {
+  const f = bodyCacheFile();
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  const tmp = `${f}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(doc, null, 2) + '\n', 'utf8');
+  fs.renameSync(tmp, f);
+}
+
+/** 抓一篇文档的正文 */
+export function fetchDocBody({ token, run = defaultRun } = {}) {
+  const r = run(['docs', '+fetch', '--doc', String(token), '--doc-format', 'markdown']);
+  if (r.ok !== true) return { ok: false, why: r.why };
+  const d = r.json?.data?.document;
+  if (!d || typeof d.content !== 'string') return { ok: false, why: '返回里没有 data.document.content（形状变了？）' };
+  return { ok: true, content: d.content, revisionId: String(d.revision_id ?? ''), documentId: String(d.document_id ?? token) };
+}
+
+/**
+ * 抓一轮正文。只抓 `doc` 子通道的文件（多维表走记录段，另有其人）。
+ * @param {{files?:Array, kbRoot?:string, run?:Function, dryRun?:boolean, now?:number, maxDocs?:number}} o
+ */
+export function fetchBodiesOnce({ files = [], kbRoot = null, run = defaultRun, dryRun = false, now = Date.now(), maxDocs = 10 } = {}) {
+  const docs = files.filter((f) => String(f?.type ?? '') !== 'folder' && String(f?.type ?? '') !== 'bitable' && f?.token);
+  if (docs.length === 0) return { ok: true, picked: 0, fetched: 0, cached: 0, failed: 0, savedFiles: [], errors: [], why: '没有可抓正文的文档（全部是文件夹/多维表？）' };
+  if (!kbRoot && !hasKbRoot()) return { ok: false, picked: docs.length, fetched: 0, cached: 0, failed: 0, savedFiles: [], errors: [], why: '没有知识库根，正文抓回来没处放（设 WB_V1_KB_ROOT）' };
+  const root = kbRoot ?? KB_ROOT;
+  const cache = loadBodyCache();
+
+  let fetched = 0; let cachedCount = 0; let failed = 0; const errors = []; const savedFiles = [];
+  for (const f of docs.slice(0, maxDocs)) {
+    const key = `fs-drive-${f.token}`;
+    const body = fetchDocBody({ token: f.token, run });
+    if (body.ok !== true) {
+      failed += 1; errors.push(`${String(f.name ?? f.token).slice(0, 30)} ⇒ ${body.why}`);
+      cache[key] = { ...(cache[key] ?? {}), lastError: body.why, lastTryAt: new Date(now).toISOString() };
+      continue;
+    }
+    if (cache[key]?.revisionId && cache[key].revisionId === body.revisionId && cache[key].saved) {
+      cachedCount += 1; continue;                                   // ① 同版本不重复抓
+    }
+    const truncated = body.content.length > BODY_MAX;
+    const text = truncated ? body.content.slice(0, BODY_MAX) : body.content;
+    const date = (() => {                                   // ★ 必须用**本地日期**：`toISOString()` 是 UTC，
+      const d = new Date(now);                              //   在东八区会把文件名日期减一天（真跑踩到：10-12 存成 10-11）
+      const p = (n) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    })();
+    const name = suggestDocName({ date, topic: String(f.name ?? '未命名') })
+      .replace(/\.md$/, '.md');                                     // 与链接抓取同一套命名（日期+主题）
+    if (!dryRun) {
+      const dest = path.join(root, DOCS_DIR, name);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, text, 'utf8');
+      cache[key] = { revisionId: body.revisionId, saved: `${DOCS_DIR}/${name}`, bytes: text.length, truncated, at: new Date(now).toISOString() };
+      savedFiles.push(`${DOCS_DIR}/${name}`);
+    }
+    fetched += 1;
+  }
+  if (!dryRun) saveBodyCache(cache);
+  return {
+    ok: true, picked: docs.length, fetched, cached: cachedCount, failed, savedFiles, errors,
+    why: `可抓文档 ${docs.length} 篇 → 本轮实抓 ${fetched} · 命中缓存跳过 ${cachedCount} · 失败 ${failed}`
+      + (docs.length > maxDocs ? ` · 其余 ${docs.length - maxDocs} 篇下一轮` : '') + (dryRun ? ' · 干跑（不落盘）' : ''),
+  };
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // 自检（注入假 run）
 // ══════════════════════════════════════════════════════════════════════════════
 export async function selfTest() {
@@ -261,7 +351,41 @@ export async function selfTest() {
     //   ⇒ 这里不重复断言（同一条规则两处测 = 迟早两处不一致）。
     //   起因：真跑踩到"含 `&` 的参数没加引号 ⇒ PowerShell 整条解析失败"，统一后规则只有一份。
 
-    // ⑧ 干跑不写盘
+    // ⑧ 正文抓取（需求 3.1.1/3.1.2 要的是内容）
+    {
+      let calls = 0;
+      const bodyRun = (args) => {
+        calls += 1;
+        if (args[1] === '+fetch') {
+          // ⚠️ 第一版这里判的是 `String(args[3]).includes('bad')`，而坏文档的 token 是 `T2` ⇒ 它被当成好的抓成功了，
+          //   于是"失败要如实记"这条检查红着（**夹具写错，不是实现错** —— 但红就是红，改成按 token 判）。
+          if (String(args[3]) === 'T2') return { ok: false, why: 'lark-cli 报错：permission denied' };
+          return { ok: true, json: { ok: true, data: { document: { content: '# 标题\n\n正文甲', document_id: args[3], revision_id: 'rev-1' } } } };
+        }
+        return { ok: false, why: '未预期：' + args.join(' ') };
+      };
+      const fb = fetchDocBody({ token: 'T1', run: bodyRun });
+      chk('FDB-1', '★ 正文取得到（在 data.document.content，是 markdown）', fb.ok === true && /正文甲/.test(fb.content) && fb.revisionId === 'rev-1', JSON.stringify(fb).slice(0, 110));
+
+      const files = [F('T1', '智能纪要甲', 'docx', SEC - 100), F('T2', '坏文档', 'docx', SEC - 100)];
+      calls = 0;
+      const r1 = fetchBodiesOnce({ files, kbRoot: tmp, run: bodyRun, now: NOW });
+      chk('FDB-2', '★ 一轮：抓到正文（失败的那篇如实记下原因，不假装有）', r1.fetched === 1 && r1.failed === 1 && /permission denied/.test(r1.errors[0]), JSON.stringify({ f: r1.fetched, bad: r1.failed }));
+      const destDir = path.join(tmp, DOCS_DIR);
+      const saved = fs.existsSync(destDir) ? fs.readdirSync(destDir) : [];
+      chk('FDB-3', '★ 正文落盘到知识库，命名 = 日期-主题.md（与链接抓取同一套）', saved.length === 1 && /^\d{4}-\d{2}-\d{2}-.*\.md$/.test(saved[0]), JSON.stringify(saved));
+      chk('FDB-4', '落盘内容就是正文', saved.length === 1 && /正文甲/.test(fs.readFileSync(path.join(destDir, saved[0]), 'utf8')));
+
+      const before = calls;
+      const r2 = fetchBodiesOnce({ files: [files[0]], kbRoot: tmp, run: bodyRun, now: NOW });
+      chk('FDB-5', '★ 同一版本不重复抓（按 revision_id 命中缓存）', r2.cached === 1 && r2.fetched === 0 && calls > before, JSON.stringify({ cached: r2.cached, fetched: r2.fetched }));
+
+      const nBefore = fs.readdirSync(destDir).length;
+      fetchBodiesOnce({ files: [F('T9', '干跑不该写', 'docx', SEC)], kbRoot: tmp, run: bodyRun, dryRun: true, now: NOW });
+      chk('FDB-6', '干跑不落盘', fs.readdirSync(destDir).length === nBefore);
+    }
+
+    // ⑨ 干跑不写盘
     const before = store.list({ type: 'message' }).length;
     ingestOnce({ run: runWith(pages), dryRun: true });
     chk('FSD-18', '干跑不写盘', store.list({ type: 'message' }).length === before);
