@@ -35,6 +35,8 @@ import { ingestOnce as imIngest } from './imessage.mjs';
 import { ingestOnce as kbIngest } from './dingtalk-wiki.mjs';
 import { ingestOnce as fsDriveIngest } from './feishu-drive.mjs';
 import { ingestOnce as fsMinIngest } from './feishu-minutes.mjs';
+import { ingestOnce as fsBaseIngest } from './feishu-bitable.mjs';
+import { listAll as fsDriveListAll } from './feishu-drive.mjs';
 
 const args = process.argv.slice(2);
 const DRY = args.includes('--dry-run');
@@ -102,6 +104,14 @@ const IMPL = {
   'fs-doc':          { engine: 'collector', fn: async () => fsDriveIngest({ dryRun: DRY }) },
   // 2026-10-12 新增：飞书妙记（按笔记入流；权限由用户 2026-10-12 授权后解锁）。不传 since：内部按开始时间判起点。
   'fs-minutes':      { engine: 'collector', fn: async () => fsMinIngest({ dryRun: DRY }) },
+  // 2026-10-12 新增：飞书多维表**记录段**。**发现段复用 fs-doc 的原始 API 列表**（type=bitable 的 token 即 base token），
+  // 本步只管读行。起点判据与其他通路不同：行里有 ISO 时间字段就用它，没有就用"首次见到"（见模块头说明）。
+  'fs-bitable':      { engine: 'collector', fn: async () => {
+    const ld = fsDriveListAll({});                       // 复用发现段：列出云文档
+    if (ld.ok !== true) return { why: `多维表发现段取不到：${ld.why}`, errors: [ld.why] };
+    const bases = ld.files.filter((f) => String(f?.type) === 'bitable').map((f) => ({ token: f.token, name: f.name }));
+    return fsBaseIngest({ bases, dryRun: DRY });
+  } },
 };
 
 let sharedRun = null;

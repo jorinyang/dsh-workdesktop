@@ -52,14 +52,30 @@ export function runCli(bin, args, { timeoutMs = 60000, maxBuffer = 8 * 1024 * 10
   if (r.error) return { ok: false, why: `调用失败：${r.error.message}` };
   if (r.status !== 0) return { ok: false, why: `${bin} 退出码 ${r.status}：${(err || out).slice(0, 240)}` };
   try {
-    // ★ 有些命令（实测 `lark-cli minutes +detail`）会**先打几行进度再打 JSON**：
-    //     `[minutes +detail] querying 1 minute_token(s)` …
-    //   第一版要求"整段 stdout 就是 JSON"⇒ 这类命令一律被判失败。
-    //   ⇒ 改成**从第一个 `{` 到最后一个 `}` 取子串**再解析（仍严格 JSON，不做宽松修补）。
+    // ★ 有些命令会**先打几行进度/说明再打 JSON**：
+    //   · `lark-cli minutes +detail` ⇒ `[minutes +detail] querying …`
+    //   · `lark-cli base +record-list` ⇒ 一行带反引号的说明（**里面也有花括号**）
+    //   第一版"整段就是 JSON"、第二版"从第一个 `{` 取到最后一个 `}`"都不够：
+    //   第二版在"说明里含 `{` 且其后还有别的 `}`"时会把范围取歪 ⇒ 解析报
+    //   `Unexpected non-whitespace character after JSON`。
+    //   ⇒ 现在**枚举所有能解析成功的候选**，然后**优先选带 `ok` 字段的那个**（我们的 CLI 一律返回 `{ok:…}`）；
+    //     没有带 `ok` 的就取**最大**的那个。
+    //   ⚠️ 只"取第一个能解析的"还不够：说明文字里可能带**小 JSON 示例**（实测 `base +record-list` 的说明里
+    //     就有个 `{"id":"rec…"}`）⇒ 会被抢先选中，拿回一个只有 id 的假结果。
     const s = out.indexOf('{');
     const e = out.lastIndexOf('}');
-    const candidate = s >= 0 && e > s ? out.slice(s, e + 1) : out;
-    const j = JSON.parse(candidate);
+    if (s < 0 || e <= s) return { ok: false, why: `输出里没有 JSON 对象（前 120 字：${out.slice(0, 120)}）` };
+    const cands = [];
+    let from = s;
+    for (let tries = 0; tries < 12 && from >= 0 && from < e; tries += 1) {
+      const text = out.slice(from, e + 1);
+      try { cands.push({ text, j: JSON.parse(text) }); } catch { /* 不是这个位置 */ }
+      from = out.indexOf('{', from + 1);
+    }
+    if (cands.length === 0) return { ok: false, why: `输出不是 JSON（前 120 字：${out.slice(0, 120)}）` };
+    const withOk = cands.filter((c) => c.j && typeof c.j === 'object' && 'ok' in c.j);
+    const pick = (withOk.length ? withOk : cands).sort((a, b) => b.text.length - a.text.length)[0];
+    const j = pick.j;
     // 飞书 CLI 用 `ok:false` 表示业务错误（退出码仍是 0）⇒ 这里一并翻成失败，别让调用方以为成功
     if (j && j.ok === false) return { ok: false, why: `${bin} 报错：${String(j.error?.message ?? '未知错误').slice(0, 200)}` };
     return { ok: true, json: j, stdout: out };
@@ -97,14 +113,32 @@ export function selfTest() {
   //   用一个不依赖外部命令的方式验证解析逻辑：直接调一个只打印文本的 node 进程太绕，
   //   这里改用**同样的提取规则**对两段样本做断言（规则本身被测，不引入网络/外部依赖）。
   const extractJson = (out) => {
-    const s = out.indexOf('{'); const e = out.lastIndexOf('}');
-    return JSON.parse(s >= 0 && e > s ? out.slice(s, e + 1) : out);
+    // 与 runCli 同款策略：枚举候选，优先带 `ok` 的，其次取最大
+    const e = out.lastIndexOf('}');
+    const cands = [];
+    let from = out.indexOf('{');
+    for (let i = 0; i < 12 && from >= 0 && from < e; i += 1) {
+      const text = out.slice(from, e + 1);
+      try { cands.push({ text, j: JSON.parse(text) }); } catch { /* 换下一个位置 */ }
+      from = out.indexOf('{', from + 1);
+    }
+    if (!cands.length) throw new Error('没有可解析的 JSON 对象');
+    const withOk = cands.filter((c) => c.j && typeof c.j === 'object' && 'ok' in c.j);
+    return (withOk.length ? withOk : cands).sort((a, b) => b.text.length - a.text.length)[0].j;
   };
   chk('CLI-9', '★ 进度行 + JSON ⇒ 能取出 JSON（否则这类命令一律判失败）', (() => {
     try { const j = extractJson('[minutes +detail] querying 1 minute_token(s)\n{"ok":true,"data":{"minutes":[]}}\n'); return j.ok === true && Array.isArray(j.data.minutes); } catch { return false; }
   })());
   chk('CLI-10', '反例对照：整段就是 JSON 时也照常解析', (() => {
     try { return extractJson('{"ok":true}').ok === true; } catch { return false; }
+  })());
+  chk('CLI-11', '★ 说明文字里**含花括号**时也要取对（base +record-list 实测）', (() => {
+    const out = '`_record_id` is metadata, e.g. {"a":1} is not the payload\n{"ok":true,"data":{"items":[{"record_id":"r1"}]}}\n';
+    try { const j = extractJson(out); return j.ok === true && j.data.items[0].record_id === 'r1'; } catch { return false; }
+  })());
+  chk('CLI-12', '★ 说明里带**小 JSON 示例**时，不能被它抢先选中（实测踩到：只拿回一个 {"id":…}）', (() => {
+    const out = 'notes: {"id":"recXDFiAHamU0d"} is an example\n{"ok":true,"data":{"items":[{"record_id":"r1","fields":{"a":1}}],"has_more":false}}\n';
+    try { const j = extractJson(out); return j.ok === true && j.data.items.length === 1 && j.data.items[0].record_id === 'r1'; } catch { return false; }
   })());
 
   const pass = out.filter((x) => x.ok).length;
