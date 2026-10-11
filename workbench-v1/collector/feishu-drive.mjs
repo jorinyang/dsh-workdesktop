@@ -288,8 +288,12 @@ export async function selfTest() {
   const runWith = (pages) => (args) => {
     if (args[2] === '/open-apis/drive/explorer/v2/root_folder/meta') return { ok: true, json: { ok: true, data: { token: 'ROOT' } } };
     if (String(args[2]).startsWith('/open-apis/drive/v1/files')) {
-      const m = /page_token=([^&]+)/.exec(String(args[2]));
-      const idx = m ? Number(m[1]) : 0;
+      // ⚠️ 2026-10-12：升级 1.0.97 后**参数从 URL 挪到 `--params` JSON**，夹具也必须跟着改 ——
+      //   第一版仍从 `args[2]` 里正则抓 `page_token` ⇒ 永远抓到空 ⇒ 每轮都返回第一页 ⇒
+      //   翻到 `maxPages` 上限、返回 5 条（FSD-13 红）。**这是夹具错，不是实现错。**
+      const pi = args.indexOf('--params');
+      const params = pi >= 0 ? JSON.parse(args[pi + 1]) : {};
+      const idx = params.page_token ? Number(params.page_token) : 0;
       const page = pages[idx];
       if (!page) return { ok: true, json: { ok: true, data: { files: [], has_more: false } } };
       const hasMore = idx + 1 < pages.length;
