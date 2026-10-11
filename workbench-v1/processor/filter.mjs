@@ -125,9 +125,12 @@ export async function selfTest() {
   process.env.WB_V1_KB_ROOT = path.join(tmp, 'kb');
   try {
     // 意图判定与链接抽取的纯函数自检（并入本套件）
+    // ⚠️ 2026-10-12：`links.selfTest()` 改成了 **async**（它要测出队抓取），这里**必须 await** ——
+    //   第一版没加 await ⇒ `lk` 是 Promise、`lk.details` 是 undefined ⇒ 整条主链套件抛异常
+    //   （`lk.details is not iterable`）。教训：**把某个自检改成异步，必须回头改所有调用方**。
     const it = intentMod.selfTest();
     for (const d of it.details) out.push(d);
-    const lk = links.selfTest();
+    const lk = await links.selfTest();
     for (const d of lk.details) out.push(d);
 
     const mk = (over) => makeEvent({
