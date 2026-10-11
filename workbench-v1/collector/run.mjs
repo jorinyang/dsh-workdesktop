@@ -35,6 +35,7 @@ import { ingestOnce as imIngest } from './imessage.mjs';
 import { ingestOnce as kbIngest } from './dingtalk-wiki.mjs';
 import { ingestOnce as fsMinIngest } from './feishu-minutes.mjs';
 import { ingestOnce as fsBaseIngest } from './feishu-bitable.mjs';
+import { ingestOnce as fsEvtIngest } from './feishu-events.mjs';
 import { ingestOnce as fsDriveIngest, listAll as fsDriveListAll, fetchBodiesOnce as fsDriveBodies } from './feishu-drive.mjs';
 
 const args = process.argv.slice(2);
@@ -72,6 +73,10 @@ const IMPL = {
   'dd-im-group':     { engine: 'collector', fn: null, shareWith: 'dd-im-o2o' },   // 与上面同一次运行
   'dd-im-at':        { engine: 'collector', fn: null, shareWith: 'dd-im-o2o' },
   'dd-im-selfvoice': { engine: 'collector', fn: null, shareWith: 'dd-im-o2o' },
+  // 2026-10-12 新增：飞书聊天实时（Stream 长链接）。**一条事件流同时含单聊与群聊** ⇒ 两条登记共用一次读取。
+  // 事件由常驻消费者 `collector/feishu-events.mjs` 写进 NDJSON，本步只读文件（与钉钉那条同款做法）。
+  'fs-im-group':     { engine: 'collector', fn: async () => fsEvtIngest({ dryRun: DRY }) },
+  'fs-im-p2p':       { engine: 'collector', fn: null, shareWith: 'fs-im-group' },
   // A 类（复用现有引擎的最后一段映射）
   'dd-minutes':      { engine: 'collector', fn: async () => minutesIngest({ dryRun: DRY, since: SINCE }) },
   'dd-mail':         { engine: 'collector', fn: async () => mailIngest({ dryRun: DRY, since: SINCE }) },
@@ -127,6 +132,7 @@ const IMPL = {
 
 let sharedRun = null;
 let ddImRun = null;          // 钉钉 IM 那一次跟随的读数（四条逻辑通路共用）
+let fsImRun = null;          // 飞书聊天那一次读取的读数（单聊/群聊两条共用）
 for (const r of implementedRoutes()) {
   const spec = IMPL[r.key];
   if (!spec) { chk(`RUN-${r.key}`, `${r.label} —— 已在注册表标 implemented 但入口没实现`, false, '注册表与入口不一致（必须补上或改回 implemented:false）'); continue; }
@@ -137,15 +143,19 @@ for (const r of implementedRoutes()) {
   });
   sharedRun = res;
   if (r.key === 'dd-im-o2o') ddImRun = res;      // ★ 只由 dd-im-o2o 决定"共享跟随"的读数（别被后续通路覆盖）
+  if (r.key === 'fs-im-group') fsImRun = res;    // ★ 飞书聊天：由 fs-im-group 决定，单聊那条共用
   chk(`RUN-${r.key}`, `${r.label}：进 ${res.inCount} / 出 ${res.outCount}${res.deferred ? ` / 排队 ${res.deferred}` : ''}${res.quarantined ? ` / 隔离 ${res.quarantined}` : ''}`, true, res.why ?? '');
   if (res.errors?.length) chk(`RUN-${r.key}-errors`, `${r.label}：本轮有 I/O 错误（水位线未前进）`, false, res.errors.join('；'));
 }
 
-// 共享同一次运行的其它三条逻辑通路：如实说明（不是"没跑"）
+// 共享同一次运行的其它逻辑通路：如实说明（不是"没跑"）
 for (const r of implementedRoutes()) {
   const spec = IMPL[r.key];
   if (spec?.shareWith === 'dd-im-o2o' && ddImRun) {
     chk(`RUN-${r.key}`, `${r.label}：与 ${spec.shareWith} 共用同一次跟随（进 ${ddImRun.inCount} / 出 ${ddImRun.outCount}）`, true);
+  }
+  if (spec?.shareWith === 'fs-im-group' && fsImRun) {
+    chk(`RUN-${r.key}`, `${r.label}：与 ${spec.shareWith} 共用同一条事件流（进 ${fsImRun.inCount} / 出 ${fsImRun.outCount}）`, true);
   }
 }
 

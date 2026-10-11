@@ -87,10 +87,19 @@ export const ROUTES = Object.freeze([
     note: 'Q6：采集侧只打标（source=self-voice），**命令 / 笔记的判定交给筛选引擎**' },
 
   // ── 飞书 · Stream（全部群聊）+ 私聊兜底轮询 ───────────────────────────────────
-  { key: 'fs-im-group',      channel: 'feishu', kind: 'stream', label: '飞书 · 全部群聊（排除项见 SCOPE_DENY）', scope: 'im.message.receive_v1 (chat_type=group)', consumedBy: 'collector/feishu-im.mjs', implemented: false,
-    why: '① `lark-cli event consume` 实测报 internal/"context canceled"，待先 `lark-cli update`（1.0.84→1.0.97）；② 机器人当前只在「AI+研究院」群里（实测：我的会话 3 个、bot 在 1 个），要覆盖别的群需把机器人加进去 —— 但用户已裁定「示例群（发布脱敏）」**不采集**，故该群不加、由 SCOPE_DENY 排除' },
-  { key: 'fs-im-p2p',        channel: 'feishu', kind: 'poll',   intervalSec: FEISHU_P2P_INTERVAL_SEC, label: '飞书 · 私聊（用户身份轮询兜底）', scope: 'lark-cli im +chat-messages-list --as user', consumedBy: 'collector/feishu-im.mjs', implemented: false,
-    why: 'Q19：`im.message.receive_v1` 的 AUTH 只有 bot，他人与我的单聊实时拿不到 ⇒ 用用户身份 1 分钟轮询兜底' },
+  { key: 'fs-im-group',      channel: 'feishu', kind: 'stream', label: '飞书 · 全部群聊（排除项见 SCOPE_DENY）', scope: 'im.message.receive_v1（`lark-cli event consume --as bot`，常驻写 NDJSON）', consumedBy: 'collector/feishu-events.mjs', implemented: true,
+    reuse: '**实时长连接**（需求 2.2）：常驻消费者把 `lark-cli event consume im.message.receive_v1 --as bot` 的输出**追加**到 '
+      + '`_meta/out/v1/.runtime/fs-im-events.ndjson`，采集器每轮只读文件 —— **不在 tick 里跑 consume**（那会漏掉两次 tick 之间的消息，属假绿）。'
+      + '做法与钉钉那条（`_meta/workbench/im-event-consume.mjs`）一致。'
+      + '★ 三条实测约束：① **必须 `--as bot`**（`--as user` 直接被拒）；② **同一应用只能有一条实时连接** —— 本轮占它的是 '
+      + '**`.hermes-fde` 那个 hermes 实例**（同 app id + websocket），停掉后 `online_instance_cnt` 从 1 变 0、连接立刻建立；'
+      + '③ **可见范围 = 机器人在的群 + 与机器人的单聊**（要覆盖别的群得把机器人拉进去）—— 这是"全部群聊"的实际边界，读数如实写。'
+      + '幂等键 `fs-evt-<event_id>`；起点按消息 `create_time`（**毫秒**，直接用）' },
+  { key: 'fs-im-p2p',        channel: 'feishu', kind: 'stream', label: '飞书 · 私聊', scope: '同 fs-im-group：一条事件流里 `chat_type=p2p` 的那些', consumedBy: 'collector/feishu-events.mjs', implemented: true,
+    // 2026-10-12 改判：原来打算"用户身份 1 分钟轮询兜底"（Q19：receive_v1 的 AUTH 只有 bot）
+    //   ⇒ 实测**一条事件流同时含 p2p 与 group**，不必再走轮询 ⇒ 两条登记**共用同一次读取**（run.mjs 里 shareWith）。
+    reuse: '与 `fs-im-group` **共用同一条事件流**（`shareWith`），按 `chat_type=p2p` 分流；不必再单独轮询。'
+      + '可见范围同样受"机器人"约束：**与我单聊的对方要能看到机器人**才进得来' },
 
   // ── 微信（保持现状：dsh-im + openclaw 通道，仅聊天窗口对话）────────────────────
   { key: 'wx-chat',          channel: 'weixin',   kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '微信 · 聊天窗口（链接/图片/文字）', scope: 'dsh-im 会话文件（f-weixin-session）；按游标增量扫描', consumedBy: 'collector/weixin.mjs', implemented: true,
@@ -237,7 +246,11 @@ export function selfTest() {
 
   const badInterval = polls().filter((r) => r.intervalSec !== (INTERVAL_EXCEPTIONS[r.key] ?? POLL_INTERVAL_SEC));
   chk('REG-3', '轮询类通路间隔 = 300s；例外必须明文登记（Q19 的飞书私聊 60s）', badInterval.length === 0, badInterval.map((r) => `${r.key}:${r.intervalSec}`).join(','));
-  chk('REG-4', '飞书私聊兜底 = 60s（Q19 压到 1 分钟）', byKey('fs-im-p2p').intervalSec === FEISHU_P2P_INTERVAL_SEC);
+  // 2026-10-12 改判：飞书私聊**不再走"用户身份 1 分钟轮询兜底"**（Q19 的旧方案）——
+  //   实测 `im.message.receive_v1` 一条事件流**同时含 p2p 与 group** ⇒ 两条登记共用同一次读取。
+  //   ⇒ 断言从"钉轮询间隔"改成"钉新设计"（否则它会一直红着说旧方案没了）。
+  chk('REG-4', '飞书私聊 = 与群聊共用同一条事件流（不再单靠轮询兜底）',
+    byKey('fs-im-p2p').kind === 'stream' && byKey('fs-im-p2p').implemented === true && byKey('fs-im-group').kind === 'stream');
   chk('REG-5', '★ 未实现的通路必须写明 why（不许把缺口藏起来）', missingRoutes().every((r) => typeof r.why === 'string' && r.why.length >= 8), missingRoutes().filter((r) => !r.why).map((r) => r.key).join(','));
   chk('REG-6', '★ 已实现的通路必须能指到消费模块', implementedRoutes().every((r) => typeof r.consumedBy === 'string' && r.consumedBy.endsWith('.mjs')), implementedRoutes().map((r) => r.key).join(','));
   chk('REG-7', 'health() 如实报缺口（missing 数 == 未实现数）', health().missing === missingRoutes().length && health().missingList.length === missingRoutes().length);
