@@ -1,0 +1,31 @@
+{
+  "name": "dsh-workbench-v1",
+  "version": "1.0.0",
+  "private": true,
+  "description": "弈枢 · 工作台 1.0 —— 采集器 / 处理器 / 存储器三部分重建；只含引擎与页面，不含任何数据",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "selftest": "node selftest-all.mjs",
+    "collect": "node collector/run.mjs",
+    "serve": "node api/server.mjs 8791",
+    "render": "node ui/preview.mjs && node ui/cockpit-page.mjs && node ui/status-page.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "workbench",
+    "yishu",
+    "collector",
+    "rag"
+  ],
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "dependencies": {},
+  "notes": [
+    "零第三方依赖：全部用 node 内置模块（fs/path/url/child_process/crypto/http）。",
+    "需要知识库根才能做采集与写入；用 WB_V1_KB_ROOT 指定，或把本包放回 <KB>/_meta/workbench/v1/。",
+    "运行态用 WB_V1_OUT 指定，默认 <KB_ROOT>/_meta/out/v1。",
+    "自检不需要知识库：每条套件自己造临时运行态（node selftest-all.mjs）。"
+  ]
+}

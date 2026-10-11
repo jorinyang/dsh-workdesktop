@@ -1,0 +1,30 @@
+{
+  "schema": "workbench-v1-pages/1",
+  "version": 1,
+  "updatedAt": "2026-10-11",
+  "decision": "用户 2026-10-12 需求 3.3.x + Q2（三形态）；页面集合与状态栏的唯一来源 = v1/pages.mjs",
+  "pages": [
+    "overview",
+    "messages",
+    "todos",
+    "schedules",
+    "notes"
+  ],
+  "pagesSha256": "878358b119b6b317fd5336aecbf2c0c4e2b2969cb164ccbd1f73498c381dd65a",
+  "statusBar": [
+    "dws",
+    "mcp",
+    "localtools",
+    "browser",
+    "realtime_reply",
+    "voice_command",
+    "vector_search"
+  ],
+  "statusBarSha256": "660e0e2f03229577f2cb45565a2a354373a458057649af732c21704f60548550",
+  "formFactors": [
+    "fullscreen",
+    "tab",
+    "mobile"
+  ],
+  "defaultPage": "overview"
+}

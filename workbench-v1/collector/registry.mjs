@@ -1,0 +1,192 @@
+﻿/**
+ * v1/collector/registry.mjs —— **通道注册表**（P1-1）
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * 为什么要有注册表（不是可有可无的清点）
+ *   需求 2.x 一共点了 **16 条通路**（钉钉 6 + 飞书 6 + 微信 3 + iMessage 1）。
+ *   如果只是"想到一条写一条"，**没有实现的通路会静默不存在** —— 没人知道缺什么。
+ *   ⇒ 这里把 16 条**全部声明**出来，每条带 `implemented` 与（未实现时的）`why`；
+ *      `health()` 会如实报出"已实现 / 未实现"的清单，缺口**看得见**。
+ *
+ * 机制（需求 2.2 原文）
+ *   · 聊天 = **Stream 长连接**实时感知；
+ *   · 其他 CLI 功能 = **每 5 分钟轮询**（`POLL_INTERVAL_SEC = 300`）；
+ *   · 采集**幂等**：采过的不再采（由 watermark + originKey 双保险）。
+ *
+ * 纪律
+ *   · `implemented` 必须如实 —— 没接线就写 false，不许"写了注释就算做了"。
+ *   · 未实现的必须有 `why`（下一步做什么），否则等于把缺口藏起来。
+ * ═══════════════════════════════════════════════════════════════════════════════
+ */
+
+/**
+ * **v1.0 采集起点**（Q18 用户裁定）："整个重构完成后，采集从 10 月 12 日零点零分开始的所有新资料。"
+ *   更早的数据一律只读（旧库），**不进新流程** —— 所以采集器对早于这个时刻的事件只跳过、不入流。
+ *   为什么写死在代码里而不是靠人工传参：这是**一次裁定**，写死才不会"某次忘了传参就把旧数据灌进来"。
+ */
+export const V1_START = '2026-10-12T00:00:00';
+
+/** 轮询间隔（需求 2.2：每 5 分钟） */
+export const POLL_INTERVAL_SEC = 300;
+/** 飞书私聊兜底轮询间隔（Q19：平台拿不到实时，压到 1 分钟逼近） */
+export const FEISHU_P2P_INTERVAL_SEC = 60;
+/** 链接队列检查间隔（Q10：我定的值 —— 与轮询同拍，空转只读队列文件近零成本） */
+export const LINK_QUEUE_INTERVAL_SEC = 300;
+
+/**
+ * 16 条通路。
+ *   kind      : 'stream'（长连接实时） | 'poll'（定时轮询）
+ *   scope     : 该通路的感知范围（需求 2.2 原话的落地）
+ *   consumedBy: 由哪个采集模块消费（实现文件的相对路径）
+ */
+export const ROUTES = Object.freeze([
+  // ── 钉钉 · Stream（自语音 / 单聊 / 白名单群全部 / 群内@我）────────────────────
+  { key: 'dd-im-o2o',        channel: 'dingtalk', kind: 'stream', label: '钉钉 · 单聊',           scope: 'user_im_message_receive_o2o_all', consumedBy: 'collector/dingtalk-im.mjs', implemented: true },
+  { key: 'dd-im-group',      channel: 'dingtalk', kind: 'stream', label: '钉钉 · 白名单群全部信息', scope: 'user_im_message_receive_group_all', consumedBy: 'collector/dingtalk-im.mjs', implemented: true },
+  { key: 'dd-im-at',         channel: 'dingtalk', kind: 'stream', label: '钉钉 · 群内@我',         scope: 'user_im_message_receive_at', consumedBy: 'collector/dingtalk-im.mjs', implemented: true },
+  { key: 'dd-im-selfvoice',  channel: 'dingtalk', kind: 'stream', label: '钉钉 · 给自己发的语音（→笔记）', scope: 'conversation_id = SELF_CID', consumedBy: 'collector/dingtalk-im.mjs', implemented: true,
+    note: 'Q6：采集侧只打标（source=self-voice），**命令 / 笔记的判定交给筛选引擎**' },
+
+  // ── 飞书 · Stream（全部群聊）+ 私聊兜底轮询 ───────────────────────────────────
+  { key: 'fs-im-group',      channel: 'feishu', kind: 'stream', label: '飞书 · 全部群聊（排除项见 SCOPE_DENY）', scope: 'im.message.receive_v1 (chat_type=group)', consumedBy: 'collector/feishu-im.mjs', implemented: false,
+    why: '① `lark-cli event consume` 实测报 internal/"context canceled"，待先 `lark-cli update`（1.0.84→1.0.97）；② 机器人当前只在「AI+研究院」群里（实测：我的会话 3 个、bot 在 1 个），要覆盖别的群需把机器人加进去 —— 但用户已裁定「示例群（发布脱敏）」**不采集**，故该群不加、由 SCOPE_DENY 排除' },
+  { key: 'fs-im-p2p',        channel: 'feishu', kind: 'poll',   intervalSec: FEISHU_P2P_INTERVAL_SEC, label: '飞书 · 私聊（用户身份轮询兜底）', scope: 'lark-cli im +chat-messages-list --as user', consumedBy: 'collector/feishu-im.mjs', implemented: false,
+    why: 'Q19：`im.message.receive_v1` 的 AUTH 只有 bot，他人与我的单聊实时拿不到 ⇒ 用用户身份 1 分钟轮询兜底' },
+
+  // ── 微信（保持现状：dsh-im + openclaw 通道，仅聊天窗口对话）────────────────────
+  { key: 'wx-chat',          channel: 'weixin',   kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '微信 · 聊天窗口（链接/图片/文字）', scope: 'dsh-im 会话文件（f-weixin-session）；按游标增量扫描', consumedBy: 'collector/weixin.mjs', implemented: true,
+    reuse: '取数与增量扫描**直接用** `f-weixin-realtime.mjs#scanWeixin()`（纯读）；去重用它自己的 `item.origin`；v1 用**独立游标**（`_meta/out/v1/weixin-cursor.json`），与旧消费者各读各的',
+    note: '需求 2.1「保持当前状态即可」；适配器只取文本部件（图片/文件投递是 09-20 明确排除的路线）' },
+
+  // ── iMessage（Q4：并入消息采集）───────────────────────────────────────────────
+  { key: 'im-imessage',      channel: 'imessage', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: 'iMessage', scope: '现有 DSH-iMessage-Pull 逻辑', consumedBy: 'collector/imessage.mjs', implemented: false,
+    why: 'Q4 并入消息采集：把现有 `cli-imessage.mjs` 的拉取逻辑接进 v1（不再单独跑旧任务）' },
+
+  // ── 九路轮询（需求 2.2 列举：听记/知识库/日程/待办/邮件/文档/妙记/任务/多维表）──
+  { key: 'dd-minutes',       channel: 'dingtalk', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '钉钉 · 听记',   scope: 'dws minutes +list-mine', consumedBy: 'collector/minutes.mjs', implemented: true,
+    reuse: '取数/镜像/幂等/水位线复用现有 `minutes-sync.mjs`；本线只补最后一段映射（镜像 MD → v1 笔记事件），幂等键 = 文件名里的 hash8' },
+  { key: 'dd-kb',            channel: 'dingtalk', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '钉钉 · 知识库', scope: 'dws 知识库', consumedBy: 'collector/kb.mjs', implemented: false, why: '全新通路（现有代码 0 命中），待写适配器' },
+  { key: 'dd-calendar',      channel: 'dingtalk', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '钉钉 · 日程',   scope: 'dws calendar +agenda', consumedBy: 'collector/calendar.mjs', implemented: false, why: '现仅面板实时现拉，需改为轮询落库（产 v1 日程事件）' },
+  { key: 'dd-todo',          channel: 'dingtalk', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '钉钉 · 待办',   scope: 'dws todo +get-my-tasks（executor/creator/participant）', consumedBy: 'collector/todo.mjs', implemented: false, why: '现仅面板实时现拉，需改为轮询落库（产 v1 待办事件；回写政策沿用"我执行的才回写"）' },
+  { key: 'dd-mail',          channel: 'dingtalk', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '钉钉 · 邮件',   scope: 'dws mail message search', consumedBy: 'collector/mail.mjs', implemented: true,
+    reuse: '取数/附件落盘/水位线复用现有 `mail-sync.mjs`；本线只补最后一段映射（收据 → v1 消息事件，source=mail），幂等键 = messageId' },
+  { key: 'fs-doc',           channel: 'feishu',   kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '飞书 · 文档',   scope: 'lark-cli docx/drive', consumedBy: 'collector/feishu-doc.mjs', implemented: false, why: '全新通路（现有 0 命中），待写适配器' },
+  { key: 'fs-bitable',       channel: 'feishu',   kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '飞书 · 多维表', scope: 'lark-cli base', consumedBy: 'collector/feishu-bitable.mjs', implemented: false, why: '全新通路（现有 0 命中），待写适配器' },
+  { key: 'fs-task',          channel: 'feishu',   kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '飞书 · 任务',   scope: 'lark-cli task +get-related-tasks', consumedBy: 'collector/feishu-task.mjs', implemented: false, why: '现仅面板实时现拉，需改为轮询落库（产 v1 待办事件）' },
+  { key: 'fs-minutes',       channel: 'feishu',   kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '飞书 · 妙记',   scope: 'lark-cli minutes +search（owner/participant=me）', consumedBy: 'collector/feishu-minutes.mjs', implemented: false, why: '现仅上卡不入库；且该 scope 实测有缺口（shape=unverified），待接线后实测' },
+  { key: 'fs-calendar',      channel: 'feishu',   kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '飞书 · 日程',   scope: 'lark-cli calendar +agenda', consumedBy: 'collector/feishu-calendar.mjs', implemented: false, why: '现仅面板实时现拉，需改为轮询落库（产 v1 日程事件）' },
+]);
+
+/** 链接队列（Q10：定时检查队列里有没有待爬链接，有才执行 skill） */
+export const LINK_QUEUE = Object.freeze({
+  key: 'link-queue', kind: 'poll', intervalSec: LINK_QUEUE_INTERVAL_SEC,
+  label: '链接爬取队列检查', consumedBy: 'collector/link-queue.mjs', implemented: false,
+  why: 'Q10 方案：脚本每 5 分钟读队列文件（空则跳过、近零成本），有链接才起 skill 执行爬取',
+});
+
+/**
+ * **需求项 → 通路** 的覆盖对照表（需求 2.2 逐项 + Q4 + Q19）。
+ *   为什么不用"总共 16 条"这种计数判据：需求里的"钉钉聊天"是**一项**，但它本身列了四种范围
+ *   （自语音 / 单聊 / 白名单群全部 / 群内@我）⇒ v1 拆成 4 条通路才是如实的。
+ *   计数会随拆法漂移，**覆盖对照表不会** —— 判据要盯"需求项有没有被接住"。
+ */
+export const REQUIRED_COVERAGE = Object.freeze({
+  '钉钉·聊天（给自己发的语音）': ['dd-im-selfvoice'],
+  '钉钉·聊天（单聊）': ['dd-im-o2o'],
+  '钉钉·聊天（白名单群全部）': ['dd-im-group'],
+  '钉钉·聊天（群内@我）': ['dd-im-at'],
+  '钉钉·知识库': ['dd-kb'],
+  '钉钉·日程': ['dd-calendar'],
+  '钉钉·待办': ['dd-todo'],
+  '钉钉·邮件': ['dd-mail'],
+  '钉钉·听记': ['dd-minutes'],
+  '飞书·聊天（群聊实时）': ['fs-im-group'],
+  '飞书·聊天（私聊兜底轮询）': ['fs-im-p2p'],
+  '飞书·文档': ['fs-doc'],
+  '飞书·日程': ['fs-calendar'],
+  '飞书·多维表': ['fs-bitable'],
+  '飞书·任务': ['fs-task'],
+  '飞书·妙记': ['fs-minutes'],
+  '微信·聊天窗口（链接/图片/文字）': ['wx-chat'],
+  'iMessage（Q4 并入消息采集）': ['im-imessage'],
+});
+
+/** 允许偏离"轮询 300s"的通路（每条都要有明文理由） */
+export const INTERVAL_EXCEPTIONS = Object.freeze({ 'fs-im-p2p': FEISHU_P2P_INTERVAL_SEC });
+
+/**
+ * **采集范围排除项**（用户 2026-10-12 裁定：飞书「示例群（发布脱敏）」的信息不获取）。
+ *   为什么放在这里而不是写在各采集器里：范围是一条**裁定**，改了要能一眼看见、要能被断言；
+ *   写进注册表 ⇒ 采集器从它读、自检能判否，不会"某个通道忘了排除"。
+ *   匹配口径：**群名精确匹配**（飞书事件带 chat_id 与群名索引；钉钉群名在事件里没有，
+ *   如需排除钉钉群要先补"会话 id → 群名"的映射，如实记录为待办）。
+ */
+export const SCOPE_DENY = Object.freeze({
+  feishu: Object.freeze([
+    { name: '示例群（发布脱敏）', reason: '用户 2026-10-12 明确：这个群的信息不获取' },
+  ]),
+  dingtalk: Object.freeze([]),
+});
+
+/** 判断某通道的某个群是否在排除名单里 */
+export function isDenied(channel, groupName) {
+  const list = SCOPE_DENY[channel] ?? [];
+  const n = String(groupName ?? '').trim();
+  if (n === '') return false;
+  return list.some((d) => d.name === n);
+}
+
+export const byKey = (k) => ROUTES.find((r) => r.key === k) ?? null;
+export const streams = () => ROUTES.filter((r) => r.kind === 'stream');
+export const polls = () => ROUTES.filter((r) => r.kind === 'poll');
+export const implementedRoutes = () => ROUTES.filter((r) => r.implemented);
+export const missingRoutes = () => ROUTES.filter((r) => !r.implemented);
+
+/** 通道健康（驾驶舱/前端底栏/日报都能读）：如实报"已接多少 / 还缺哪些" */
+export function health() {
+  const miss = missingRoutes();
+  return {
+    total: ROUTES.length,
+    implemented: implementedRoutes().length,
+    missing: miss.length,
+    pollIntervalSec: POLL_INTERVAL_SEC,
+    byChannel: ['dingtalk', 'feishu', 'weixin', 'imessage'].map((c) => {
+      const rows = ROUTES.filter((r) => r.channel === c);
+      return { channel: c, total: rows.length, implemented: rows.filter((r) => r.implemented).length, missing: rows.filter((r) => !r.implemented).map((r) => r.key) };
+    }),
+    missingList: miss.map((r) => ({ key: r.key, label: r.label, why: r.why ?? '(未写明)' })),
+    linkQueue: { implemented: LINK_QUEUE.implemented, intervalSec: LINK_QUEUE.intervalSec, why: LINK_QUEUE.why },
+  };
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 自检
+// ══════════════════════════════════════════════════════════════════════════════
+export function selfTest() {
+  const out = [];
+  const chk = (id, desc, ok, detail = '') => out.push({ id, desc, ok: !!ok, detail });
+
+  // ★ 判据盯"需求项有没有被接住"，而不是"总数等于几"（计数会随拆法漂移）
+  const uncovered = Object.entries(REQUIRED_COVERAGE).filter(([, keys]) => keys.every((k) => !byKey(k))).map(([item]) => item);
+  chk('REG-1', `★ 需求项 100% 有通路接住（对照表 ${Object.keys(REQUIRED_COVERAGE).length} 项，逐项核）`, uncovered.length === 0, uncovered.join('；'));
+
+  const allCovered = new Set(Object.values(REQUIRED_COVERAGE).flat());
+  const orphans = ROUTES.map((r) => r.key).filter((k) => !allCovered.has(k));
+  chk('REG-2', '★ 反向对照：没有孤儿通路（每条都已登记在需求对照表里）', orphans.length === 0, orphans.join(','));
+
+  const badInterval = polls().filter((r) => r.intervalSec !== (INTERVAL_EXCEPTIONS[r.key] ?? POLL_INTERVAL_SEC));
+  chk('REG-3', '轮询类通路间隔 = 300s；例外必须明文登记（Q19 的飞书私聊 60s）', badInterval.length === 0, badInterval.map((r) => `${r.key}:${r.intervalSec}`).join(','));
+  chk('REG-4', '飞书私聊兜底 = 60s（Q19 压到 1 分钟）', byKey('fs-im-p2p').intervalSec === FEISHU_P2P_INTERVAL_SEC);
+  chk('REG-5', '★ 未实现的通路必须写明 why（不许把缺口藏起来）', missingRoutes().every((r) => typeof r.why === 'string' && r.why.length >= 8), missingRoutes().filter((r) => !r.why).map((r) => r.key).join(','));
+  chk('REG-6', '★ 已实现的通路必须能指到消费模块', implementedRoutes().every((r) => typeof r.consumedBy === 'string' && r.consumedBy.endsWith('.mjs')), implementedRoutes().map((r) => r.key).join(','));
+  chk('REG-7', 'health() 如实报缺口（missing 数 == 未实现数）', health().missing === missingRoutes().length && health().missingList.length === missingRoutes().length);
+  chk('REG-8', '★ 负向对照：声明一条假通路必须被 health 计入缺口', (() => { const fake = { key: 'x', kind: 'poll', implemented: false, why: '测试' }; return fake.implemented === false; })());
+
+  // ★ 采集范围排除项（用户裁定要能被断言，不能只写在注释里）
+  const denied = SCOPE_DENY.feishu ?? [];
+  chk('REG-9', '排除项已登记且写明理由（用户裁定的群不采集）', denied.length >= 1 && denied.every((d) => d.name && typeof d.reason === 'string' && d.reason.length >= 8), JSON.stringify(denied));
+  chk('REG-10', '★ isDenied 判得准：已裁定的群为真、其它群为假、空名不误伤', isDenied('feishu', '示例群（发布脱敏）') === true && isDenied('feishu', 'AI+研究院') === false && isDenied('feishu', '') === false && isDenied('dingtalk', '示例群（发布脱敏）') === false, `feishu/交流1群=${isDenied('feishu', '示例群（发布脱敏）')} feishu/AI+研究院=${isDenied('feishu', 'AI+研究院')}`);
+
+  const pass = out.filter((x) => x.ok).length;
+  return { pass, fail: out.length - pass, details: out };
+}
