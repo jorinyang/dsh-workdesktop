@@ -34,7 +34,11 @@ export function readSwitches() {
 /** 四个系统状态：走真实探针（三态：true/false/null=未探明） */
 export function readStatus() { return {}; }
 
-export async function renderAll({ api = 'http://127.0.0.1:8791/workdesktop/api/v1' } = {}) {
+// ★ 接口基址用**相对路径**（2026-10-12 改）：页面既要能由 v1 自己的独立服务提供，
+//   也要能被 DSH 插件 host 内嵌（`/workdesktop/api/yishu/<页>`）。
+//   写死 `http://127.0.0.1:8791/...` 时，嵌进面板后会去调 8791 —— 只有那个独立服务在跑才出数据。
+//   相对路径两种场景都对：独立服务下同源、插件下由 host 透传到 v1 处理器。
+export async function renderAll({ api = '/workdesktop/api/v1' } = {}) {
   const { ok, switches, updatedAt, why } = readSwitches();
   // 真实探针：灯亮必须有依据（探测失败 ⇒ null ⇒ 灰灯 + 说明，不假装）
   const probes = await probeAll();
