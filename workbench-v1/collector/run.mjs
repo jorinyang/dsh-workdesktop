@@ -33,6 +33,7 @@ import { ingestOnce as fsCalIngest } from './feishu-calendar.mjs';
 import { ingestOnce as fsTaskIngest } from './feishu-task.mjs';
 import { ingestOnce as imIngest } from './imessage.mjs';
 import { ingestOnce as kbIngest } from './dingtalk-wiki.mjs';
+import { ingestOnce as fsDriveIngest } from './feishu-drive.mjs';
 
 const args = process.argv.slice(2);
 const DRY = args.includes('--dry-run');
@@ -95,6 +96,9 @@ const IMPL = {
   // 2026-10-12 新增：钉钉知识库（库清单 → 各库动态 → 去重 → 产 v1 消息事件，子通道 doc）。
   // 同样不传 since：内部按统一判据按**文档创建时间**判起点。
   'dd-kb':           { engine: 'collector', fn: async () => kbIngest({ dryRun: DRY }) },
+  // 2026-10-12 新增：飞书云文档（原始 API 列文件；同时是 fs-bitable 的"发现段"）。
+  // 不传 since：内部按统一判据按**创建时间**判起点（注意源字段是秒，已在映射里 ×1000）。
+  'fs-doc':          { engine: 'collector', fn: async () => fsDriveIngest({ dryRun: DRY }) },
 };
 
 let sharedRun = null;

@@ -112,8 +112,18 @@ export const ROUTES = Object.freeze([
     reuse: '取数走 `dws todo`；本线只做映射与幂等。**权威完成标志实测是详情里的 `isDone`**（不是列表里的 finalStatusStage 数字）；幂等键 = `dd-todo-<taskId>`；钉钉侧已完成 ⇒ 落库即补一条带依据的 done' },
   { key: 'dd-mail',          channel: 'dingtalk', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '钉钉 · 邮件',   scope: 'dws mail message search', consumedBy: 'collector/mail.mjs', implemented: true,
     reuse: '取数/附件落盘/水位线复用现有 `mail-sync.mjs`；本线只补最后一段映射（收据 → v1 消息事件，source=mail），幂等键 = messageId' },
-  { key: 'fs-doc',           channel: 'feishu',   kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '飞书 · 文档',   scope: 'lark-cli docx/drive', consumedBy: 'collector/feishu-doc.mjs', implemented: false, why: '全新通路（现有 0 命中），待写适配器' },
-  { key: 'fs-bitable',       channel: 'feishu',   kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '飞书 · 多维表', scope: 'lark-cli base', consumedBy: 'collector/feishu-bitable.mjs', implemented: false, why: '全新通路（现有 0 命中），待写适配器' },
+  // ★★ 2026-10-12 探明**可行出路**（上一轮以为硬阻塞，这轮用原始 API 打通了，**不必升级 CLI**）：
+  //   ① `lark-cli api GET /open-apis/drive/explorer/v2/root_folder/meta` ⇒ `{ok:true, data:{token}}`（根目录 token）
+  //   ② `lark-cli api GET "/open-apis/drive/v1/files?folder_token=<token>&page_size=20"`
+  //      ⇒ `{ok:true, data:{files:[{token, name, type, created_time, modified_time, url, owner_id, parent_token}], has_more}}`
+  //      实测根目录 11 个文件；`created_time/modified_time` 是**秒**（不是毫秒，转本地日期时要乘 1000）。
+  //   ⇒ 幂等键 = `fs-drive-<token>`；起点按 `created_time`（用户裁定：消息/笔记按创建时间）；
+  //     `type` 里 **`bitable` 就是多维表**（它的 `token` 正是 fs-bitable 需要的 app_token）。
+  //   ⇒ 下一轮据此实现 `collector/feishu-drive.mjs`（一条通路同时服务 fs-doc 与 fs-bitable 的发现段）。
+  { key: 'fs-doc',           channel: 'feishu',   kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '飞书 · 文档',   scope: '`lark-cli api GET /open-apis/drive/v1/files`（原始 API 列文件；`docs +search` 必须带关键词、`drive` 没有列文件命令 ⇒ 走原始 API）', consumedBy: 'collector/feishu-drive.mjs', implemented: true,
+    reuse: '**一条通路服务两条登记**：本文件同时是 fs-bitable 的"发现段"。实测根目录 11 个文件、字段含 token/name/type/created_time/modified_time/url/has_more；⚠️ **时间是秒**（要 ×1000）、**有 has_more 要翻页**。按 type 分流：folder 不采（计数）、bitable 走子通道 `bitable`、其余走 `doc`。幂等键 `fs-drive-<token>`；起点按 created_time。**正文未抓**：`docs +fetch` 是下一步，raw 只到"名字+类型"' },
+  { key: 'fs-bitable',       channel: 'feishu',   kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '飞书 · 多维表', scope: '发现段与 fs-doc 共用（`type=bitable` 的 token 即 app_token）；记录段待接 `lark-cli base`', consumedBy: 'collector/feishu-drive.mjs', implemented: false,
+    why: '**只通了一半，如实分开记**：发现段已通（与 fs-doc 共用同一份列表，实测根目录里就能认出 `type=bitable` 的「邮件追踪表」，它的 token 就是 app_token），**多维表本身会作为一条事件采进来**；但**记录段（读表里的行）尚未接** `lark-cli base` ⇒ 现在**不会**采到多维表里的数据行' },
   { key: 'fs-task',          channel: 'feishu',   kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '飞书 · 任务',   scope: 'lark-cli task +get-my-tasks（分派给我的）', consumedBy: 'collector/feishu-task.mjs', implemented: true,
     reuse: '取数走 `lark-cli task`；本线只做映射与幂等。幂等键 = `fs-task-<guid>`；完成标志用 `completed`（**不是**"有 completed_at 就算完"）；飞书侧已完成 ⇒ 落库即补带依据的 done。**实测该视图只给** `guid/summary/completed/completed_at/created_at/due_at/url`：**没有描述、没有发布人、没有执行人** ⇒ 契约必填的 `detail` 用主题兜底（与钉钉同样的写法），`publisher`/`executor` **确实拿不到就不填**（钉钉那边有 creatorInfo/executorIds，所以两边如实不同）' },
   { key: 'fs-minutes',       channel: 'feishu',   kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '飞书 · 妙记',   scope: 'lark-cli minutes +search（需 minutes 权限）', consumedBy: 'collector/feishu-minutes.mjs', implemented: false,

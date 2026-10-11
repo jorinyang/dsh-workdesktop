@@ -28,6 +28,7 @@ import { makeEvent } from '../schema.mjs';
 import * as store from '../store.mjs';
 import { inScope } from './registry.mjs';
 import { v1Out } from '../paths.mjs';
+import { buildCommand } from './cli.mjs';
 
 export const KEY = 'dd-calendar';
 export const INTERVAL_SEC = 300;
@@ -62,10 +63,7 @@ export function saveSeen(doc) {
 /** 默认取数：经 PowerShell 调 `dws`（Windows 上 `dws` 是 .cmd 垫片，直接 spawn 会 ENOENT） */
 export function defaultRun(args) {
   const PS = 'powershell.exe';
-  const cmd = 'dws ' + args.map((a) => {
-    const s = String(a);
-    return /[\s"']/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s;
-  }).join(' ');
+  const cmd = buildCommand('dws', args);   // 统一走 collector/cli.mjs（引号规则只有一份）
   const r = spawnSync(PS, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', cmd], {
     encoding: 'utf8', timeout: 60000, windowsHide: true, maxBuffer: 8 * 1024 * 1024,
   });
