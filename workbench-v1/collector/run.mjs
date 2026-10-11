@@ -29,6 +29,8 @@ import { ingestOnce as mailIngest } from './mail.mjs';
 import { ingestOnce as weixinIngest } from './weixin.mjs';
 import { ingestOnce as todoIngest } from './dingtalk-todo.mjs';
 import { ingestOnce as calIngest } from './dingtalk-calendar.mjs';
+import { ingestOnce as fsCalIngest } from './feishu-calendar.mjs';
+import { ingestOnce as fsTaskIngest } from './feishu-task.mjs';
 
 const args = process.argv.slice(2);
 const DRY = args.includes('--dry-run');
@@ -79,6 +81,10 @@ const IMPL = {
   // 2026-10-12 新增：钉钉日程（窗口取数 → 产 v1 日程事件）。同样不传 since（日程也是"状态型"，
   //   窗口本身就把它限制在 前 30 天 ~ 后 7 天，按创建时间过滤没有意义）。
   'dd-calendar':     { engine: 'collector', fn: async () => calIngest({ dryRun: DRY }) },
+  // 2026-10-12 新增：飞书日程（窗口取数 → 产 v1 日程事件）。同样不传 since（状态型，窗口本身有界）。
+  'fs-calendar':     { engine: 'collector', fn: async () => fsCalIngest({ dryRun: DRY }) },
+  // 2026-10-12 新增：飞书任务（分派给我的 → 产 v1 待办事件）。同样是"状态型"，不传 since。
+  'fs-task':         { engine: 'collector', fn: async () => fsTaskIngest({ dryRun: DRY }) },
 };
 
 let sharedRun = null;

@@ -199,6 +199,39 @@ export async function runCycles({ now = Date.now(), modelFn = null, dryRun = fal
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// 命令行入口（计划任务用）：\`node cycles.mjs [--weekly|--monthly|--all] [--dry-run]\`
+//   · 缺省 = --all（周 + 月都跑；两者各自幂等，指纹没变就跳过）
+//   · 末行给 \`PASS = n   FAIL = m\` —— 节拍包装靠它 + 新台账行判"是不是空转"（假绿守卫）
+//   · **写不出资产不算失败**（周期没到 / 指纹没变 ⇒ 本来就不该写）；FAIL 只在抛异常时出现
+// ══════════════════════════════════════════════════════════════════════════════
+if (process.argv[1] && process.argv[1].endsWith('cycles.mjs')) {
+  const DRY = process.argv.includes('--dry-run');
+  const only = process.argv.includes('--weekly') ? 'weekly' : (process.argv.includes('--monthly') ? 'monthly' : 'all');
+  console.log('############ 工作台 v1.0 · 存储周期（' + only + (DRY ? ' · 干跑' : '') + '）############');
+  try {
+    // ★ 必须注入模型：`weeklySediment`/`monthlyReview` 的 `modelFn` 缺省是 null，
+    //   不注入就只打印「未注入模型」⇒ **定时任务 exit=0 却什么都不产出**（假绿那种形态，已实测踩到）。
+    //   干跑**不注入**（不花 token）：干跑要看的只是"会不会写、写到哪"。
+    let modelFn = null;
+    if (!DRY) {
+      const { runModel } = await import('../processor/analyze.mjs');
+      modelFn = runModel;
+    }
+    const w = (only === 'monthly') ? { skipped: true, why: '本轮只跑月' } : await weeklySediment({ dryRun: DRY, modelFn });
+    const m = (only === 'weekly') ? { skipped: true, why: '本轮只跑周' } : await monthlyReview({ dryRun: DRY, modelFn });
+    console.log('  周：' + (w.skipped ? w.why : (w.why ?? JSON.stringify({ wrote: w.wrote, fp: w.fp }))));
+    console.log('  月：' + (m.skipped ? m.why : (m.why ?? JSON.stringify({ wrote: m.wrote, fp: m.fp }))));
+    const vs = vectorizeStatus({});
+    console.log('  向量化状态：' + JSON.stringify(vs).slice(0, 220));
+    console.log('\nPASS = 1   FAIL = 0');
+  } catch (e) {
+    console.log('  ✗ 周期执行异常：' + (e && e.message ? e.message : String(e)));
+    console.log('\nPASS = 0   FAIL = 1');
+    process.exit(1);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // 自检（临时知识库根 + 桩模型）
 // ══════════════════════════════════════════════════════════════════════════════
 export async function selfTest() {
@@ -245,6 +278,19 @@ export async function selfTest() {
 
     const r = await runCycles({ now: NOW, modelFn: stub });
     chk('CYC-11', 'runCycles 记台账且说明里带三段读数', typeof r.why === 'string' && r.why.includes('向量化核对'), r.why);
+
+    // ── CYC-13/14：守护"定时任务真的会产出"（2026-10-12 实测踩到的假绿形态）──────────
+    //   现象：`node cycles.mjs` 曾经**没有命令行入口**（静默退出）；补了入口之后又发现
+    //   `weeklySediment/monthlyReview` 的 `modelFn` 缺省是 null ⇒ 打印「未注入模型」
+    //   然后 **exit=0 却什么都不产出**。计划任务看退出码只会判"成功"。
+    //   所以这两条查的是源码事实：① 有入口；② 非干跑分支**真的注入了**模型。
+    {
+      const src = fs.readFileSync(new URL(import.meta.url), 'utf8');
+      chk('CYC-13', '★ 有命令行入口（否则计划任务跑它是静默退出＝假绿）', /process\.argv\[1\][\s\S]{0,80}cycles\.mjs/.test(src));
+      chk('CYC-14', '★ 非干跑分支注入了模型（否则 exit=0 但一个资产都不产出）',
+        /if \(!DRY\)[\s\S]{0,200}runModel/.test(src) && /modelFn\s*=\s*runModel/.test(src));
+    }
+
     chk('CYC-12', '★ 负向对照：模型失败 ⇒ 不写资产文件（不产出空壳）', (async () => true)() && await (async () => {
       const t2 = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-v1-cyc2-'));
       process.env.WB_V1_OUT = path.join(t2, 'out'); process.env.WB_V1_KB_ROOT = path.join(t2, 'kb');
