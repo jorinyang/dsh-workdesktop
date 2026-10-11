@@ -31,6 +31,8 @@ import { ingestOnce as todoIngest } from './dingtalk-todo.mjs';
 import { ingestOnce as calIngest } from './dingtalk-calendar.mjs';
 import { ingestOnce as fsCalIngest } from './feishu-calendar.mjs';
 import { ingestOnce as fsTaskIngest } from './feishu-task.mjs';
+import { ingestOnce as imIngest } from './imessage.mjs';
+import { ingestOnce as kbIngest } from './dingtalk-wiki.mjs';
 
 const args = process.argv.slice(2);
 const DRY = args.includes('--dry-run');
@@ -85,6 +87,14 @@ const IMPL = {
   'fs-calendar':     { engine: 'collector', fn: async () => fsCalIngest({ dryRun: DRY }) },
   // 2026-10-12 新增：飞书任务（分派给我的 → 产 v1 待办事件）。同样是"状态型"，不传 since。
   'fs-task':         { engine: 'collector', fn: async () => fsTaskIngest({ dryRun: DRY }) },
+  // 2026-10-12 新增：iMessage / 短信（读库内 digest → 产 v1 消息事件）。
+  // ★ **故意不传 `since`**：它内部已按统一判据 `inScope('message', …)` 按**发送时间**判起点
+  //   （与其他事件流同一条规则）。传 `since` 反而是冗余参数 —— 而本模块并不收它，
+  //   传了会被**静默忽略**，那正是"参数被悄悄无视"的坏味道（本轮差点就这么写下去）。
+  'im-imessage':     { engine: 'collector', fn: async () => imIngest({ dryRun: DRY }) },
+  // 2026-10-12 新增：钉钉知识库（库清单 → 各库动态 → 去重 → 产 v1 消息事件，子通道 doc）。
+  // 同样不传 since：内部按统一判据按**文档创建时间**判起点。
+  'dd-kb':           { engine: 'collector', fn: async () => kbIngest({ dryRun: DRY }) },
 };
 
 let sharedRun = null;

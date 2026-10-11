@@ -98,13 +98,14 @@ export const ROUTES = Object.freeze([
     note: '需求 2.1「保持当前状态即可」；适配器只取文本部件（图片/文件投递是 09-20 明确排除的路线）' },
 
   // ── iMessage（Q4：并入消息采集）───────────────────────────────────────────────
-  { key: 'im-imessage',      channel: 'imessage', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: 'iMessage', scope: '现有 DSH-iMessage-Pull 逻辑', consumedBy: 'collector/imessage.mjs', implemented: false,
-    why: 'Q4 并入消息采集：把现有 `cli-imessage.mjs` 的拉取逻辑接进 v1（不再单独跑旧任务）' },
+  { key: 'im-imessage',      channel: 'imessage', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: 'iMessage', scope: '库内 `_meta/out/imessage-digest.json`（由 Mac 侧 imessage-digest.py 产出、旧任务 DSH-iMessage-Pull 经 SSH 拉回）', consumedBy: 'collector/imessage.mjs', implemented: true,
+    reuse: '**沿用旧链路，不另造取数**：旧任务只管"拉"，本线管"并"。幂等键 = `im-<guid>`；只收收到的（`from_me=false` 双保险）；`source` 契约里是**枚举**（iMessage 属 `im`，SMS/iMessage 之别留在 `origin.raw`）。**通道健康与数据新鲜度如实报**（`scanned.channelHealthy` / `silentDays` / digest 生成时间），"读不到/坏 JSON/形状变了"三种分得清，**都不写成"没有消息"**' },
 
   // ── 九路轮询（需求 2.2 列举：听记/知识库/日程/待办/邮件/文档/妙记/任务/多维表）──
   { key: 'dd-minutes',       channel: 'dingtalk', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '钉钉 · 听记',   scope: 'dws minutes +list-mine', consumedBy: 'collector/minutes.mjs', implemented: true,
     reuse: '取数/镜像/幂等/水位线复用现有 `minutes-sync.mjs`；本线只补最后一段映射（镜像 MD → v1 笔记事件），幂等键 = 文件名里的 hash8' },
-  { key: 'dd-kb',            channel: 'dingtalk', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '钉钉 · 知识库', scope: 'dws 知识库', consumedBy: 'collector/kb.mjs', implemented: false, why: '全新通路（现有代码 0 命中），待写适配器' },
+  { key: 'dd-kb',            channel: 'dingtalk', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '钉钉 · 知识库', scope: 'dws wiki space list（库清单）+ dws wiki feed list --workspace（动态）', consumedBy: 'collector/dingtalk-wiki.mjs', implemented: true,
+    reuse: '取数走 `dws wiki`；实测本机 5 个知识库。feed 的 `content` 是**内嵌 JSON 字符串**（要再解一层）；那条 feed 是**动态流**（谁动了哪个文档）⇒ 按 `dentryUuid` **去重**，一个文档一条。起点按**文档创建时间**（用户裁定"按发送/创建时间"）⇒ 老文档今天被编辑仍算出界（**"编辑"这一路尚未跟踪**）。**正文未抓**：`dws doc +export` 是另一段活，本轮只到"文档名 + 所属知识库"这一层，**不假装存了正文**' },
   { key: 'dd-calendar',      channel: 'dingtalk', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '钉钉 · 日程',   scope: 'dws calendar +agenda（窗口取数）+ dws calendar +attendee-list --event（参会人）', consumedBy: 'collector/dingtalk-calendar.mjs', implemented: true,
     reuse: '取数走 `dws calendar`；本线只做映射与幂等。窗口 = 前 30 天 ~ 后 7 天（与日程页展示口径一致）；幂等键 = `dd-cal-<eventId>`；已取消的日程不进工作台（如实计数）；**事件里没有 location 字段 ⇒ 地点不填，不编**' },
   { key: 'dd-todo',          channel: 'dingtalk', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '钉钉 · 待办',   scope: 'dws todo +get-my-tasks（列表）+ dws todo +get --taskId（详情）', consumedBy: 'collector/dingtalk-todo.mjs', implemented: true,
