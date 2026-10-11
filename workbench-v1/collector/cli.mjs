@@ -52,10 +52,17 @@ export function runCli(bin, args, { timeoutMs = 60000, maxBuffer = 8 * 1024 * 10
   if (r.error) return { ok: false, why: `调用失败：${r.error.message}` };
   if (r.status !== 0) return { ok: false, why: `${bin} 退出码 ${r.status}：${(err || out).slice(0, 240)}` };
   try {
-    const j = JSON.parse(out);
+    // ★ 有些命令（实测 `lark-cli minutes +detail`）会**先打几行进度再打 JSON**：
+    //     `[minutes +detail] querying 1 minute_token(s)` …
+    //   第一版要求"整段 stdout 就是 JSON"⇒ 这类命令一律被判失败。
+    //   ⇒ 改成**从第一个 `{` 到最后一个 `}` 取子串**再解析（仍严格 JSON，不做宽松修补）。
+    const s = out.indexOf('{');
+    const e = out.lastIndexOf('}');
+    const candidate = s >= 0 && e > s ? out.slice(s, e + 1) : out;
+    const j = JSON.parse(candidate);
     // 飞书 CLI 用 `ok:false` 表示业务错误（退出码仍是 0）⇒ 这里一并翻成失败，别让调用方以为成功
     if (j && j.ok === false) return { ok: false, why: `${bin} 报错：${String(j.error?.message ?? '未知错误').slice(0, 200)}` };
-    return { ok: true, json: j };
+    return { ok: true, json: j, stdout: out };
   } catch (e) {
     return { ok: false, why: `输出不是 JSON：${e.message}（前 120 字：${out.slice(0, 120)}）` };
   }
@@ -85,6 +92,20 @@ export function selfTest() {
   })());
   chk('CLI-8', '参数里的双引号被转义（不逃逸）',
     buildCommand('dws', ['a"b']).includes('\\"'));
+
+  // CLI-9/10：`runCli` 要能容忍"命令先打进度行、再打 JSON"（实测 `lark-cli minutes +detail` 就是这样）
+  //   用一个不依赖外部命令的方式验证解析逻辑：直接调一个只打印文本的 node 进程太绕，
+  //   这里改用**同样的提取规则**对两段样本做断言（规则本身被测，不引入网络/外部依赖）。
+  const extractJson = (out) => {
+    const s = out.indexOf('{'); const e = out.lastIndexOf('}');
+    return JSON.parse(s >= 0 && e > s ? out.slice(s, e + 1) : out);
+  };
+  chk('CLI-9', '★ 进度行 + JSON ⇒ 能取出 JSON（否则这类命令一律判失败）', (() => {
+    try { const j = extractJson('[minutes +detail] querying 1 minute_token(s)\n{"ok":true,"data":{"minutes":[]}}\n'); return j.ok === true && Array.isArray(j.data.minutes); } catch { return false; }
+  })());
+  chk('CLI-10', '反例对照：整段就是 JSON 时也照常解析', (() => {
+    try { return extractJson('{"ok":true}').ok === true; } catch { return false; }
+  })());
 
   const pass = out.filter((x) => x.ok).length;
   return { pass, fail: out.length - pass, details: out };
