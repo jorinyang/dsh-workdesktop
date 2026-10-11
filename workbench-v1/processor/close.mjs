@@ -175,3 +175,50 @@ export async function selfTest() {
   const pass = out.filter((x) => x.ok).length;
   return { pass, fail: out.length - pass, details: out };
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 命令行入口（节拍任务用：`node close.mjs`）
+//   两种自动完成条件都要能判：
+//     ① 过当天 24 点（自己算）② 钉钉存在该日程的 AI 听记（要读镜像）
+//   ⇒ 这里先把听记镜像扫成 {title, at} 列表再交给 autoCloseOnce，**读不到就如实说**
+//     （只按条件①判，不假装两种都判过了）。
+//   末行给 PASS/FAIL，否则节拍包装的假绿守卫会把这步当空转。
+// ══════════════════════════════════════════════════════════════════════════════
+if (process.argv[1] && process.argv[1].endsWith('close.mjs')) {
+  console.log('############ 工作台 v1.0 · 自动关闭 ############');
+  const fsCLI = await import('node:fs');
+  let minutes = [];
+  let mirrorNote = '';
+  try {
+    const { mirrorDir, parseMirrorName } = await import('../collector/minutes.mjs');
+    const dir = mirrorDir();
+    for (const name of fsCLI.readdirSync(dir)) {
+      if (!name.endsWith('.md')) continue;
+      const p = parseMirrorName(name);
+      if (p) minutes.push({ title: p.title ?? '', at: Date.parse(p.date ?? '') || 0, file: name });
+    }
+    mirrorNote = `听记镜像 ${minutes.length} 场`;
+  } catch (e) {
+    mirrorNote = `听记镜像读不到（${e.message}）⇒ 本轮只按「过当天 24 点」判定`;
+  }
+  // ★ 走台账（`runEngine`）：其余每一步都留一行 engine-runs，本步不走的话，节拍包装里
+  //   "新台账行"这条假绿判据就对本步失效（实测 ledgerNewRows=0，只剩 PASS 行可认）。统一成记账。
+  const { runEngine } = await import('../ledger.mjs');
+  const r = await runEngine('process', async () => {
+    const res = autoCloseOnce({ minutes });
+    return {
+      inCount: res.inCount ?? 0,
+      outCount: (res.closed ?? []).length,
+      why: `${mirrorNote} · 自动关闭 ${(res.closed ?? []).length} 条 · 错误 ${(res.errors ?? []).length}`,
+      closed: res.closed ?? [],
+      errors: res.errors ?? [],
+    };
+  });
+  const closed = r.closed ?? [];
+  const errors = r.errors ?? [];
+  console.log('  ' + mirrorNote);
+  console.log(`  自动关闭 ${closed.length} 条 · 本轮 ${r.inCount ?? 0} 条候选 · 错误 ${errors.length}`);
+  for (const c of closed.slice(0, 10)) console.log(`    · ${c.reason ?? ''} ${c.why ?? ''}`);
+  for (const e of errors.slice(0, 5)) console.log(`    ! ${e}`);
+  console.log(`\nPASS = ${1 + closed.length}   FAIL = ${errors.length}`);
+}

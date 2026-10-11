@@ -45,6 +45,7 @@ export const ENGINES = Object.freeze([
   'filter',           // 筛选引擎
   'analyze',          // 分析引擎
   'process',          // 处理引擎
+  'archive',          // 处理引擎的审计与归档（2026-10-12 加：需求要求"审计后归档，作为产出物"）
   'store',            // 存储引擎
   'dashboard',        // 驾驶舱构建
 ]);
@@ -169,7 +170,12 @@ export function selfTest() {
   // ⑤ 未登记引擎名必须拒绝
   let rejected = false;
   try { /* eslint-disable-next-line */ } catch { rejected = true; }
-  chk('LED-6', 'ENGINES 名单是唯一来源（长度 > 0 且含五引擎+驾驶舱）', ENGINES.length === 6 && ENGINES.includes('collector') && ENGINES.includes('store'));
+  // ★ 2026-10-12：`archive` 引擎登记后本条必须同步 —— 这正是本断言的用意：
+  //   "ENGINES 是唯一来源" ⇒ 加引擎是**有意识的动作**，不能悄悄加。
+  //   改成逐名断言（比只看条数可读，且漏一个就红）。
+  chk('LED-6', 'ENGINES 名单是唯一来源（五引擎 + 驾驶舱 + 审计归档，逐名核对）',
+    ['collector', 'filter', 'analyze', 'process', 'store', 'dashboard', 'archive'].every((e) => ENGINES.includes(e))
+    && ENGINES.length === 7);
 
   const pass = out.filter((x) => x.ok).length;
   return { pass, fail: out.length - pass, details: out };

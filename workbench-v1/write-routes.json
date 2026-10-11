@@ -14,6 +14,7 @@
     { "route": "POST /workdesktop/api/v1/notes", "engine": "process", "reason": "前端新增一条笔记（写入后由分析引擎召回上下文并给出分析建议）" },
     { "route": "POST /workdesktop/api/v1/notes/:id/analyze", "engine": "analyze", "reason": "对笔记重新执行分析（分析笔记动作，可重复触发）" },
     { "route": "POST /workdesktop/api/v1/notes/:id/visualize", "engine": "analyze", "reason": "对笔记执行可视化构建（坐标系 / 工程图 / 建模中心三选一）" },
+    { "route": "POST /workdesktop/api/v1/cockpit/:kind", "engine": "dashboard", "reason": "生成驾驶舱的一块分析（insight 业务洞察 / state 状态分析 / advice 发展建议）：按真实数据切片调模型，没数据则拒绝生成" },
     { "route": "POST /workdesktop/api/v1/system-switch", "engine": "process", "reason": "底部状态栏三个能力开关（实时回复 / 响应功能 / 向量检索）的状态置位" },
     { "route": "GET /workdesktop/api/v1/state", "engine": "store", "reason": "只读：前端一次性取回四类运行态与统计（非写路径，登记以便守卫核对方法）" },
     { "route": "GET /workdesktop/api/v1/detail/:type/:id", "engine": "store", "reason": "只读：详情浮层取单条事件的完整内容（结构化字段/原始消息/相关上下文/可执行操作）；登记以便守卫核对方法" }

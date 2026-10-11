@@ -27,6 +27,8 @@ import { dwsDownloadHook } from './media.mjs';
 import { ingestOnce as minutesIngest } from './minutes.mjs';
 import { ingestOnce as mailIngest } from './mail.mjs';
 import { ingestOnce as weixinIngest } from './weixin.mjs';
+import { ingestOnce as todoIngest } from './dingtalk-todo.mjs';
+import { ingestOnce as calIngest } from './dingtalk-calendar.mjs';
 
 const args = process.argv.slice(2);
 const DRY = args.includes('--dry-run');
@@ -67,6 +69,16 @@ const IMPL = {
   'dd-minutes':      { engine: 'collector', fn: async () => minutesIngest({ dryRun: DRY, since: SINCE }) },
   'dd-mail':         { engine: 'collector', fn: async () => mailIngest({ dryRun: DRY, since: SINCE }) },
   'wx-chat':         { engine: 'collector', fn: async () => weixinIngest({ dryRun: DRY, since: SINCE }) },
+  // 2026-10-12 新增：钉钉待办（轮询落库，产 v1 待办事件）
+  // ★ **故意不传 `since`**（与其他通路不同，这是我的判断，已向用户说明）：
+  //   Q18 的采集起点是给**事件流**用的（消息/听记/邮件：历史无限、回填无意义）；
+  //   而"我的待办列表"是**当前状态**（13 条，有界）——按创建时间过滤会把**今天仍然打开**的
+  //   待办也挡在外面，那么待办页会一直是空的，直到将来出现新待办为止。
+  //   ⇒ 待办/日程这类"状态型"通路不看创建时间；完成状态由钉钉侧 `isDone` 决定。
+  'dd-todo':         { engine: 'collector', fn: async () => todoIngest({ dryRun: DRY }) },
+  // 2026-10-12 新增：钉钉日程（窗口取数 → 产 v1 日程事件）。同样不传 since（日程也是"状态型"，
+  //   窗口本身就把它限制在 前 30 天 ~ 后 7 天，按创建时间过滤没有意义）。
+  'dd-calendar':     { engine: 'collector', fn: async () => calIngest({ dryRun: DRY }) },
 };
 
 let sharedRun = null;

@@ -154,7 +154,7 @@ export async function selfTest() {
   process.env.WB_V1_OUT = tmp;
   const NOW = Date.now();
 
-  const stubRecall = async (q) => ({ ok: true, hits: [{ path: 'Work/顺丰/x.md', text: `与「${q}」相关的材料`, similarity: 0.66 }], floor: 0.55, raw_count: 1, dropped: 0, why: null });
+  const stubRecall = async (q) => ({ ok: true, hits: [{ path: 'Work/示例客户甲/x.md', text: `与「${q}」相关的材料`, similarity: 0.66 }], floor: 0.55, raw_count: 1, dropped: 0, why: null });
   const stubModel = async () => ({ ok: true, text: '判断：值得做\n理由：有历史材料支撑\n下一步：先做小样' });
 
   try {
@@ -168,7 +168,7 @@ export async function selfTest() {
     chk('ANZ-2', '★ 消息/日程只召回不调模型（成本口径）', r1.modelCalls === 1, `modelCalls=${r1.modelCalls}`);
 
     const msg = store.list({ type: 'message' })[0];
-    chk('ANZ-3', '★ 消息写入相关上下文（需求 3.2.1）', (msg.context?.recalled ?? []).length === 1 && msg.context.recalled[0].path === 'Work/顺丰/x.md', JSON.stringify(msg.context).slice(0, 120));
+    chk('ANZ-3', '★ 消息写入相关上下文（需求 3.2.1）', (msg.context?.recalled ?? []).length === 1 && msg.context.recalled[0].path === 'Work/示例客户甲/x.md', JSON.stringify(msg.context).slice(0, 120));
     chk('ANZ-4', '消息的分析标记为仅召回', msg.analysis?.by === 'recall-only');
 
     const note = store.list({ type: 'note' })[0];

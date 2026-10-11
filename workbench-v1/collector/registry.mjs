@@ -1,4 +1,4 @@
-﻿/**
+/**
  * v1/collector/registry.mjs —— **通道注册表**（P1-1）
  *
  * ═══════════════════════════════════════════════════════════════════════════════
@@ -25,6 +25,45 @@
  *   为什么写死在代码里而不是靠人工传参：这是**一次裁定**，写死才不会"某次忘了传参就把旧数据灌进来"。
  */
 export const V1_START = '2026-10-12T00:00:00';
+
+/**
+ * ★ **采集起点的分类判据**（2026-10-12 用户裁定原文）：
+ *   「日程按照起止时间只要有一个在 10 月 12 日 0 点之后就行，待办按照截止时间计算，
+ *     如果没有截止时间的则算 10 月 12 日 0 点之后，消息/听记/邮件/笔记按照发送/创建时间计算。」
+ *
+ * 为什么做成**一处函数**而不是各通路各写一遍：这是用户的一次裁定，分散写必然漂移
+ *   （本项目反复吃过"同一口径六处声明"的亏）。各通路只调它，判据只有这一份。
+ *
+ * @param {'message'|'note'|'todo'|'schedule'} type
+ * @param {object} payload 事件载荷（日程看 start/end，待办看 due）
+ * @param {number|null} at 发送/创建时刻（毫秒；消息/听记/邮件/笔记用）
+ * @returns {{inScope:boolean, why:string}}
+ */
+export function inScope(type, payload = {}, at = null) {
+  const B = Date.parse(V1_START);
+  const ms = (s) => {
+    if (typeof s !== 'string' || s === '') return null;
+    // 契约里的日程/待办时间是**本地** `YYYY-MM-DD` 或 `YYYY-MM-DDTHH:mm`（不带时区）
+    const t = Date.parse(s.length === 10 ? `${s}T00:00:00` : s);
+    return Number.isFinite(t) ? t : null;
+  };
+  if (type === 'schedule') {
+    const s = ms(payload.start); const e = ms(payload.end);
+    if (s === null && e === null) return { inScope: false, why: '日程起止都解析不出来 ⇒ 不判入流（宁可漏，不可乱入）' };
+    // 用户口径：**任一个**在起点之后就收
+    if ((s !== null && s >= B) || (e !== null && e >= B)) return { inScope: true, why: `起止有一端在 ${V1_START} 之后` };
+    return { inScope: false, why: `起止都早于 ${V1_START}（start=${payload.start ?? '-'} end=${payload.end ?? '-'}）` };
+  }
+  if (type === 'todo') {
+    const d = ms(payload.due);
+    // 用户口径：**没有截止时间 ⇒ 算起点之后**（即保留）
+    if (d === null) return { inScope: true, why: '没有截止时间 ⇒ 按口径算作起点之后' };
+    return d >= B ? { inScope: true, why: `截止 ${payload.due} 在起点之后` } : { inScope: false, why: `截止 ${payload.due} 早于 ${V1_START}` };
+  }
+  // 消息 / 笔记（听记、邮件归入消息或笔记）：按发送/创建时间
+  if (!Number.isFinite(at)) return { inScope: false, why: '拿不到发送/创建时间 ⇒ 不判入流' };
+  return at >= B ? { inScope: true, why: `发送/创建时间在起点之后` } : { inScope: false, why: `发送/创建时间早于 ${V1_START}` };
+}
 
 /** 轮询间隔（需求 2.2：每 5 分钟） */
 export const POLL_INTERVAL_SEC = 300;
@@ -66,8 +105,10 @@ export const ROUTES = Object.freeze([
   { key: 'dd-minutes',       channel: 'dingtalk', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '钉钉 · 听记',   scope: 'dws minutes +list-mine', consumedBy: 'collector/minutes.mjs', implemented: true,
     reuse: '取数/镜像/幂等/水位线复用现有 `minutes-sync.mjs`；本线只补最后一段映射（镜像 MD → v1 笔记事件），幂等键 = 文件名里的 hash8' },
   { key: 'dd-kb',            channel: 'dingtalk', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '钉钉 · 知识库', scope: 'dws 知识库', consumedBy: 'collector/kb.mjs', implemented: false, why: '全新通路（现有代码 0 命中），待写适配器' },
-  { key: 'dd-calendar',      channel: 'dingtalk', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '钉钉 · 日程',   scope: 'dws calendar +agenda', consumedBy: 'collector/calendar.mjs', implemented: false, why: '现仅面板实时现拉，需改为轮询落库（产 v1 日程事件）' },
-  { key: 'dd-todo',          channel: 'dingtalk', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '钉钉 · 待办',   scope: 'dws todo +get-my-tasks（executor/creator/participant）', consumedBy: 'collector/todo.mjs', implemented: false, why: '现仅面板实时现拉，需改为轮询落库（产 v1 待办事件；回写政策沿用"我执行的才回写"）' },
+  { key: 'dd-calendar',      channel: 'dingtalk', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '钉钉 · 日程',   scope: 'dws calendar +agenda（窗口取数）+ dws calendar +attendee-list --event（参会人）', consumedBy: 'collector/dingtalk-calendar.mjs', implemented: true,
+    reuse: '取数走 `dws calendar`；本线只做映射与幂等。窗口 = 前 30 天 ~ 后 7 天（与日程页展示口径一致）；幂等键 = `dd-cal-<eventId>`；已取消的日程不进工作台（如实计数）；**事件里没有 location 字段 ⇒ 地点不填，不编**' },
+  { key: 'dd-todo',          channel: 'dingtalk', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '钉钉 · 待办',   scope: 'dws todo +get-my-tasks（列表）+ dws todo +get --taskId（详情）', consumedBy: 'collector/dingtalk-todo.mjs', implemented: true,
+    reuse: '取数走 `dws todo`；本线只做映射与幂等。**权威完成标志实测是详情里的 `isDone`**（不是列表里的 finalStatusStage 数字）；幂等键 = `dd-todo-<taskId>`；钉钉侧已完成 ⇒ 落库即补一条带依据的 done' },
   { key: 'dd-mail',          channel: 'dingtalk', kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '钉钉 · 邮件',   scope: 'dws mail message search', consumedBy: 'collector/mail.mjs', implemented: true,
     reuse: '取数/附件落盘/水位线复用现有 `mail-sync.mjs`；本线只补最后一段映射（收据 → v1 消息事件，source=mail），幂等键 = messageId' },
   { key: 'fs-doc',           channel: 'feishu',   kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '飞书 · 文档',   scope: 'lark-cli docx/drive', consumedBy: 'collector/feishu-doc.mjs', implemented: false, why: '全新通路（现有 0 命中），待写适配器' },

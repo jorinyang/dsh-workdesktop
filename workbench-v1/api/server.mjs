@@ -146,6 +146,38 @@ export function handler(req, res) {
 
     // 动作路径：/{类型}/{id}/{动作} —— 详情浮层上的按钮走这里
     const act = new RegExp(`^${API_PREFIX}/([a-z]+)/([A-Za-z0-9_]+)/([a-z-]+)$`).exec(p);
+    // 驾驶舱的"生成"入口：/cockpit/{kind} —— 只有两段，所以单独匹配（上面那条要求三段）
+    //   走 `narrative()`：先取真实数据切片，**没数据就拒绝调模型**（避免生成"没数据也像模像样"的分析）。
+    //   会等模型返回（实测约 36 秒），前端需显示"生成中"。
+    const ck = new RegExp(`^${API_PREFIX}/cockpit/([a-z]+)$`).exec(p);
+    if (ck) {
+      const kind = ck[1];
+      if (!['insight', 'state', 'advice'].includes(kind)) {
+        return json(res, 400, { error: `未知的驾驶舱块：${kind}`, allowed: ['insight', 'state', 'advice'] });
+      }
+      return (async () => {
+        try {
+          // 可选区间（需求 4.3.2「可自定义筛选时间周期」）：给了就按区间取切片
+          // ★ 两层坑，都踩过：
+          //   ① `readBody` 把解析结果放在 **`.json`** 里（不是摊平在顶层）；
+          //   ② 本项目的写路径既有约定是 `{ payload: {...} }`（客户端与套件都这么发）。
+          //   第一版只读顶层 ⇒ 参数静默丢失、退化成默认窗口（"传了 1970 年却返回缓存内容"，被 API-33 抓到）。
+          //   ⇒ 这里既收 `payload` 里的，也收平铺的，避免调用方写法不同就静默失效。
+          const b = await readBody(req);
+          const raw = b && b.ok !== false ? (b.json ?? {}) : {};
+          const payload = raw.payload && typeof raw.payload === 'object' ? raw.payload : raw;
+          const from = typeof payload.from === 'string' ? payload.from : null;
+          const to = typeof payload.to === 'string' ? payload.to : null;
+          if (from || to) console.error(`[v1] cockpit/${kind} 区间 ${from ?? '-'} ~ ${to ?? '-'}`);
+          const { narrative } = await import('./cockpit.mjs');
+          const r = await narrative(kind, { from, to });
+          if (r.ok !== true) return json(res, r.refused ? 409 : 502, { ok: false, kind, refused: !!r.refused, error: r.why });
+          return json(res, 200, { ok: true, kind, label: r.label, cached: !!r.cached, fp: r.fp, text: r.text });
+        } catch (e) {
+          return json(res, 500, { ok: false, error: '生成失败：' + (e && e.message ? e.message : String(e)) });
+        }
+      })();
+    }
     if (act) {
       const plural = act[1]; const id = act[2]; const action = act[3];
       const t = { messages: 'message', notes: 'note', todos: 'todo', schedules: 'schedule' }[plural];
@@ -250,7 +282,7 @@ export async function selfTest() {
     }
     chk('API-7', '未知页面 ⇒ 404 且列出可用项', (await get('/pages/nope')).code === 404);
     chk('API-8', '★ 未登记的写路径 ⇒ 404 并说明要先登记', (await post('/not-registered', {})).code === 404);
-    chk('API-9', '登记表已加载（13 条写路径）', writeRoutes().length >= 13, String(writeRoutes().length));
+    chk('API-9', '登记表已加载（≥13 条写路径；含驾驶舱生成入口）', writeRoutes().length >= 13, String(writeRoutes().length));
 
     // 真写一条消息（走已登记路径）
     const w = await post('/messages', { channel: 'manual', sender: '我', raw: '手工新增的一条消息', source: 'manual', modality: 'text' });
@@ -299,6 +331,17 @@ export async function selfTest() {
     const na = await post('/notes/' + n.body.id + '/analyze', {});
     chk('API-29', '★ 笔记分析 ⇒ 501 如实说"分析引擎尚未接线"（不假装成功）', na.code === 501 && /分析引擎/.test(na.body.error), JSON.stringify(na.body));
     chk('API-30', '★ 动作路径也受登记守卫（未登记的动作用 404 挡住）', (await post('/messages/' + w.body.id + '/whatever', {})).code === 404);
+
+    // ── 驾驶舱"生成入口"（2026-10-12 接线）────────────────────────────────────
+    chk('API-31', '★ 驾驶舱生成路径已登记（POST /cockpit/:kind）', isRegistered('POST', `${API_PREFIX}/cockpit/state`), JSON.stringify(writeRoutes().filter((r) => r.path && r.path.includes('cockpit'))));
+    chk('API-32', '★ 未知的块 ⇒ 400 且列出允许值', await (async () => {
+      const r = await post('/cockpit/bogus', {});
+      return r.code === 400 && Array.isArray(r.body.allowed) && r.body.allowed.includes('insight');
+    })(), JSON.stringify((await post('/cockpit/bogus', {})).body));
+    chk('API-33', '★ 无数据区间 ⇒ 409 拒绝生成，且**不调模型**（避免"没数据也像模像样"；也避免自检烧 token）', await (async () => {
+      const r = await post('/cockpit/advice', { from: '1970-01-01', to: '1970-01-02' });
+      return r.code === 409 && r.body.refused === true;
+    })(), JSON.stringify((await post('/cockpit/advice', { from: '1970-01-01', to: '1970-01-02' })).body));
   } finally {
     server.close();
     if (prevOut === undefined) delete process.env.WB_V1_OUT; else process.env.WB_V1_OUT = prevOut;

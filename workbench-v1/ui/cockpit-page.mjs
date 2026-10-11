@@ -123,12 +123,19 @@ export function modelBlock(kind, now) {
       + '<div class="cap" style="margin-top:8px;color:var(--c-mute);font-size:12px">生成于 ' + esc(at) + ' · 区间 ' + esc(saved.from + ' ~ ' + saved.to) + ' · 输入指纹 ' + esc(saved.fp) + ' · 事件 ' + esc(JSON.stringify(saved.events)) + '</div>';
   } else {
     head = '<div class="cap" style="font-size:13px;color:var(--c-body)">'
-      + (enough ? '尚未生成（等每日任务，或用生成入口触发）' : '尚未生成（区间内没有事件 ⇒ 本块暂不生成）')
+      + (enough ? '尚未生成（点下面的「生成」，或等每日任务）' : '尚未生成（区间内没有事件 ⇒ 本块暂不生成）')
       + '</div>'
       + '<div class="cap" style="margin-top:6px;color:var(--c-mute);font-size:12px">输入切片：' + esc(sl.label) + ' · 事件 ' + esc(JSON.stringify(sl.events)) + ' · 图谱节点 ' + sl.graphCounts.nodes + '　提问：' + esc(sl.ask) + '</div>';
   }
+  // 生成入口：POST 到 v1 的写路径（已登记 `/cockpit/:kind`）。**相对路径** ⇒ 独立服务与插件 host 都走同一条。
+  const btn = '<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+    + '<button class="btn" data-cockpit-gen="' + esc(kind) + '"' + (enough ? '' : ' disabled') + '>'
+    + (saved && saved.text ? '重新生成' : '生成') + '</button>'
+    + '<span class="cap" data-cockpit-msg="' + esc(kind) + '" style="color:var(--c-mute);font-size:12px">'
+    + (enough ? '约需 30 秒（调模型）' : '没有数据 ⇒ 按钮已禁用，按规矩不调模型')
+    + '</span></div>';
   // ★ 规矩常设可见：无论当前有没有数据、有没有生成，这条约束都写在块里（它是纪律，不是条件提示）
-  return '<div class="card">' + head
+  return '<div class="card">' + head + btn
     + '<div class="cap" style="margin-top:6px;color:var(--c-mute);font-size:12px">规矩：没有真实数据切片时不调用模型 —— 避免生成"没数据也像模像样"的分析。</div>'
     + '</div>';
 }
@@ -149,7 +156,37 @@ export function renderCockpit({ now = Date.now(), from = null, to = null } = {})
     + '<header class="topbar"><div class="brand">' + APP_NAME + '</div><nav class="nav">' + nav + '</nav></header>'
     + '<main data-page="cockpit">' + body + '</main><footer class="spacer"></footer>'
     + '<div class="statusbar"><span>驾驶舱 · 数据统计 / 知识图谱 / 发展趋势 / 业务洞察 / 状态分析 / 发展建议</span><span class="grow"></span><span>' + esc(new Date(now).toLocaleString('zh-CN')) + '</span></div>'
+    + cockpitClientScript()
     + '</body></html>';
+}
+
+/** 驾驶舱页面的客户端脚本（内联，零外链）：只做一件事 —— 点「生成」调**已登记**的写路径 */
+export function cockpitClientScript() {
+  const L = [];
+  L.push('<script>');
+  L.push('(function(){');
+  L.push('  var API = "/workdesktop/api/v1";');
+  L.push('  var btns = document.querySelectorAll("[data-cockpit-gen]");');
+  L.push('  for (var i = 0; i < btns.length; i++) (function(btn){');
+  L.push('    btn.addEventListener("click", function(){');
+  L.push('      var kind = btn.getAttribute("data-cockpit-gen");');
+  L.push('      var msg = document.querySelector("[data-cockpit-msg=\\"" + kind + "\\"]");');
+  L.push('      btn.disabled = true;');
+  L.push('      if (msg) msg.textContent = "生成中…（约 30 秒）";');
+  L.push('      fetch(API + "/cockpit/" + kind, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}) })');
+  L.push('        .then(function(r){ return r.json().then(function(d){ return { code: r.status, d: d }; }); })');
+  L.push('        .then(function(res){');
+  L.push('          if (res.code === 200 && res.d && res.d.ok) { if (msg) msg.textContent = "已生成，正在刷新…"; location.reload(); return; }');
+  L.push('          if (res.code === 409) { if (msg) msg.textContent = "没有数据 ⇒ 拒绝生成（按规矩不调模型）"; btn.disabled = false; return; }');
+  L.push('          if (msg) msg.textContent = "失败（" + res.code + "）：" + ((res.d && res.d.error) || "未知原因");');
+  L.push('          btn.disabled = false;');
+  L.push('        })');
+  L.push('        .catch(function(e){ if (msg) msg.textContent = "请求失败：" + e.message; btn.disabled = false; });');
+  L.push('    });');
+  L.push('  })(btns[i]);');
+  L.push('})();');
+  L.push('</script>');
+  return L.join('\n');
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -176,6 +213,16 @@ export function selfTest() {
   chk('CKP-11', '★ 无外部依赖（不外链脚本/字体/CDN）', !/src="http|href="http|cdn\./.test(html));
   chk('CKP-12', '★ 负向对照：样式不写死颜色（走 token 变量）', (() => { const body = html.slice(html.indexOf('<main')); return !/#[0-9a-fA-F]{6}/.test(body); })());
   chk('CKP-13', 'SVG 用 token 变量上色（不是硬编码色值）', html.includes('fill="var(--c-accent-blue)"'));
+
+  // ── 生成入口（2026-10-12 接线）────────────────────────────────────────────
+  chk('CKP-14', '★ 三块都有「生成」按钮（不再是"等每日任务"的空话）', (html.match(/data-cockpit-gen=/g) ?? []).length === 3, String((html.match(/data-cockpit-gen=/g) ?? []).length));
+  chk('CKP-15', '★ 页面内联客户端脚本，且**相对**接口基址（嵌进插件 host 才走同一条）', html.includes('var API = "/workdesktop/api/v1"') && !/src="http/.test(html));
+  chk('CKP-16', '★ 无数据的那块按钮是禁用的（不让人点了才发现没数据）', (() => {
+    const empty = modelBlock('advice', Date.parse('1970-01-02T00:00:00+08:00'));
+    return empty.includes('disabled') && empty.includes('按规矩不调模型');
+  })());
+  chk('CKP-17', '★ 客户端脚本对 409（无数据）单独给话术，不与普通失败混同', html.includes('409') && html.includes('拒绝生成（按规矩不调模型）'));
+  chk('CKP-18', '★ 负向对照：脚本不外链（页面自包含）', !/<script[^>]+src=/.test(html));
 
   const pass = out.filter((x) => x.ok).length;
   return { pass, fail: out.length - pass, details: out };

@@ -215,7 +215,7 @@ export async function selfTest() {
   const D = (s, hh = '09:00') => Date.parse(`${s}T${hh}:00+08:00`);
 
   try {
-    const msg = (mid, raw, ops = []) => { const e = makeEvent({ type: 'message', payload: { channel: 'dingtalk', sender: '张伟', raw, source: 'im', modality: 'text', summary: raw.slice(0, 20) }, origin: { channel: 'dingtalk', sender: '张伟', messageId: mid }, _at: D('2026-10-10') }).event; e.ops = ops; e.context = { recalled: [{ path: 'Work/顺丰/x.md', similarity: 0.66, text: 't' }] }; return store.upsert(e); };
+    const msg = (mid, raw, ops = []) => { const e = makeEvent({ type: 'message', payload: { channel: 'dingtalk', sender: '张伟', raw, source: 'im', modality: 'text', summary: raw.slice(0, 20) }, origin: { channel: 'dingtalk', sender: '张伟', messageId: mid }, _at: D('2026-10-10') }).event; e.ops = ops; e.context = { recalled: [{ path: 'Work/示例客户甲/x.md', similarity: 0.66, text: 't' }] }; return store.upsert(e); };
     msg('m1', '待处理的一条');
     msg('m2', '已回复的一条', [{ op: 'replied' }]);
     const td = (mid, topic, due, ops = []) => { const e = makeEvent({ type: 'todo', payload: { topic, detail: 'd', due, executor: '我' }, origin: { channel: 'manual', sender: '我', messageId: mid }, _at: D('2026-10-09') }).event; e.ops = ops; return store.upsert(e); };
