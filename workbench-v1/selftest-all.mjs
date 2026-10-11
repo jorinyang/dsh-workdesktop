@@ -67,6 +67,7 @@ await run('P1h', 'P1 iMessage 通路', async () => (await import(base + 'collect
 await run('P1i', 'P1 钉钉知识库通路', async () => (await import(base + 'collector/dingtalk-wiki.mjs')).selfTest());
 await run('P1j', 'P1 飞书云文档通路', async () => (await import(base + 'collector/feishu-drive.mjs')).selfTest());
 await run('P1k', 'P1 取数层命令拼装', async () => (await import(base + 'collector/cli.mjs')).selfTest());
+await run('P1l', 'P1 飞书妙记通路', async () => (await import(base + 'collector/feishu-minutes.mjs')).selfTest());
 await run('P2', 'P2 意图判定', async () => (await import(base + 'processor/intent.mjs')).selfTest());
 await run('P2b', 'P2 链接队列', async () => (await import(base + 'processor/links.mjs')).selfTest());
 await run('P2c', 'P2 筛选主链', async () => (await import(base + 'processor/filter.mjs')).selfTest());

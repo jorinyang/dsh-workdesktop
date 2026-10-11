@@ -130,13 +130,10 @@ export const ROUTES = Object.freeze([
     why: '**缺权限**：记录段实测报 missing scope `base:table:read`（多维表本身已被发现段采到，但**表里的行读不到**）⇒ 需用户授权后即可接 `+table-list` / `+record-list`（顺手记：参数名是 `--base-token`，写 `--app-token` 会被 CLI 纠正）' },
   { key: 'fs-task',          channel: 'feishu',   kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '飞书 · 任务',   scope: 'lark-cli task +get-my-tasks（分派给我的）', consumedBy: 'collector/feishu-task.mjs', implemented: true,
     reuse: '取数走 `lark-cli task`；本线只做映射与幂等。幂等键 = `fs-task-<guid>`；完成标志用 `completed`（**不是**"有 completed_at 就算完"）；飞书侧已完成 ⇒ 落库即补带依据的 done。**实测该视图只给** `guid/summary/completed/completed_at/created_at/due_at/url`：**没有描述、没有发布人、没有执行人** ⇒ 契约必填的 `detail` 用主题兜底（与钉钉同样的写法），`publisher`/`executor` **确实拿不到就不填**（钉钉那边有 creatorInfo/executorIds，所以两边如实不同）' },
-  { key: 'fs-minutes',       channel: 'feishu',   kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '飞书 · 妙记',   scope: 'lark-cli minutes +search（需 minutes 权限）', consumedBy: 'collector/feishu-minutes.mjs', implemented: false,
-    // ★ 2026-10-12 实测结论（把原来的"形状未验证"落成硬证据）：
-    //   `lark-cli minutes +search` ⇒ **missing required scope(s): minutes:minutes.search:read**；
-    //   且 `lark-cli auth status` 的授权串（2497 字符）里 **minutes 相关权限 0 条**。
-    //   ⇒ 这不是形状问题、也不是代码没写，而是**缺一项只有用户能在浏览器里授的权限**。
-    //   **解锁命令（需用户本人执行）**：`lark-cli auth login --domain minutes`
-    why: '缺权限：实测 `minutes +search` 报 missing scope `minutes:minutes.search:read`，且 auth status 里 minutes 权限 0 条 ⇒ 需用户执行 `lark-cli auth login --domain minutes` 授权后方可接线（不是形状未验证）' },
+  { key: 'fs-minutes',       channel: 'feishu',   kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '飞书 · 妙记',   scope: 'lark-cli minutes +search --owner-ids <我的openId>（+detail 待接 artifact 参数）', consumedBy: 'collector/feishu-minutes.mjs', implemented: true,
+    // 2026-10-12：用户授权后本条解锁（原先实测报 missing scope `minutes:minutes.search:read`）。
+    // ⚠️ appId 有两套：本通路走 `lark-cli`（cli_aae5b0cbf3e1dbeb），**不是**面板侧集成的 cli_aa26a37ae638dcee。
+    reuse: '取数走 `lark-cli minutes`；按**笔记**入流（与钉钉听记同族，需求 3.1.4）。幂等键 `fs-min-<token>`；起点按**开始时间**（从 `meta_data.description` 的"开始时间: 2026.09.19 18:01:07"抠，**顶层没有时间字段**）；身份取自 env `WB_V1_LARK_OWNER_ID` 或 `auth status`。**正文未抓**：`+detail` 的逐字稿/摘要要再带 artifact 参数 ⇒ 笔记里**写明**只到标题+关键词+链接这一层，不假装有逐字稿' },
   { key: 'fs-calendar',      channel: 'feishu',   kind: 'poll',   intervalSec: POLL_INTERVAL_SEC, label: '飞书 · 日程',   scope: 'lark-cli calendar +agenda（窗口取数）+ lark-cli calendar event.attendees list（参会人）', consumedBy: 'collector/feishu-calendar.mjs', implemented: true,
     reuse: '取数走 `lark-cli calendar`；本线只做映射与幂等。窗口 = 前 30 天 ~ 后 7 天；幂等键 = `fs-cal-<event_id>`；**飞书这条有 `description`（详情）**，钉钉那条没有；参会人走 `event.attendees list --calendar-id primary --event-id …`，**返回空数组是正常情况**（不是错误）⇒ 没参会人就不填；`place` 不填（agenda 不给地点，`vchat.meeting_url` 不是地点）' },
 ]);
