@@ -1,4 +1,4 @@
-# 依赖与运行时
+﻿# 依赖与运行时
 node_modules/
 *.log
 *.tmp
@@ -22,3 +22,8 @@ build/
 Thumbs.db
 .idea/
 .vscode/
+# ── mi-remote（遥控器插件）：运行时数据与暂存不进仓 ──
+# mapping.json 是用户的按键配置、*.log / *.jsonl 是运行日志，都属于本机数据。
+mi-remote/state/
+mi-remote/tmp/
+mi-remote/**/__pycache__/

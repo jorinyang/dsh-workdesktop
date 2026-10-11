@@ -1,0 +1,9 @@
+# dsh-mi-remote bundle patch
+#
+# 装法：plugin_manager 的 install_bundle（会把本包名追加进 profile 的 bundles 列表，
+# DSH 启动时自动加载）。
+#
+# 运行期参数由宿主半段从环境变量读（见 lib/index.js 顶部注释），不需要 config schema。
+- insert:
+    - id: mi-remote
+      name: 'dsh-mi-remote'

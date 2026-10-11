@@ -1,0 +1,87 @@
+{
+  "name": "dsh-mi-remote",
+  "version": "1.0.0",
+  "private": true,
+  "description": "遥控器控制台：把小米蓝牙遥控器变成 DSH 的输入设备。链路体检（配对 / 无线麦 SayAll / VB-CABLE / 输入法）· 13 键 × 单击/双击/长按 映射到 DSH 动作 · 按键注入引擎 · 语音输入路径切换 · 七条自带的可绑快捷键命令。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "lib",
+    "engine",
+    "tools",
+    "scripts",
+    "docs",
+    "audio",
+    "locale",
+    "assets",
+    "cordis.patch.yml",
+    "README.md",
+    "icon.svg"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "selftest": "node scripts/selftest.mjs --probe && node scripts/verify-render.mjs",
+    "selftest:unit": "node scripts/selftest.mjs",
+    "selftest:render": "node scripts/verify-render.mjs",
+    "selftest:live": "node scripts/verify-live.mjs",
+    "selftest:package": "node tools/diag/_package-verify.mjs",
+    "check": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/check.ps1",
+    "kill-strays": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/kill-strays.ps1",
+    "test-buttons": "python tools/test-buttons.py",
+    "build-engine": "powershell -NoProfile -ExecutionPolicy Bypass -File engine/build.ps1",
+    "fix-bom": "node scripts/fix-bom.mjs"
+  },
+  "icon": "./icon.svg",
+  "meta": {
+    "title": "遥控器",
+    "description": "小米蓝牙遥控器控制台：链路体检、按键映射到 DSH 动作、语音输入路径切换。"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  },
+  "dshMiRemote": {
+    "runtime": {
+      "collector": "engine/rc003-tap.py",
+      "enginePython": "engine/read-engine.py",
+      "engineNative": "engine/KeyBridge.exe",
+      "stateDir": "state",
+      "audioDir": "audio"
+    },
+    "requires": {
+      "python": "3.11+（Frida 采集器与 Python 引擎都跑在它上面）",
+      "frida": "采集器依赖 frida 模块（pip install frida）",
+      "csc": "只有重新构建 C# 引擎时才需要（engine/build.ps1）；用 VS BuildTools 自带的 Roslyn，不需要 dotnet SDK"
+    },
+    "vendor": {
+      "note": "语音链路依赖三个第三方软件，本仓库【不分发】它们（授权 + 体积 + 过期三个理由）。装哪个版本、从哪下、装完怎么验，见 assets/vendor/README.md。",
+      "items": ["VB-CABLE（Driver Pack 45）", "SayAll 无线麦（Windows 0.5.0 x64）", "小米遥控器蓝牙驱动"]
+    },
+    "externalCoupling": [
+      {
+        "what": "左侧栏那一行「遥控器」",
+        "where": "本仓 lib/client.js 的 MI_REMOTE_KIND + WORKSPACES 数组",
+        "why": "它要排在「驾驶舱下方、坐标系上方」。那五行是 workdesktop 一个组件内部渲染的，跨插件插不进它们中间，只能写进它那份数组。workdesktop 缺席时本插件照常工作（只是少了左侧栏那一行）；反过来本插件缺席时那一行会显示但点了没反应，不会崩。"
+      }
+    ]
+  }
+}

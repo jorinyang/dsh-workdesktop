@@ -275,12 +275,12 @@ spawn 上游 CLI —— CI 上只会整片红，红了也证明不了任何事�
 
 ### 5.2 坐标系（Coords）· 2026-10-03 并入本仓
 
-本仓库现在是**一个仓、两个包**：
-
+本仓库现在是**一个仓、三个包**：
 | 包 | 目录 | 包里是什么 | profile 里那条 bundles 条目 |
 |---|---|---|---|
 | `dsh-workdesktop` | 仓库根 | 工作台（13 张卡）+ 工程图席位 + `pg-helper/` | `dsh-workdesktop`（根 `cordis.patch.yml`） |
 | `dsh-coords` | `coords/` | 坐标系插件（host 路由 + 官方右栏 tab） | `dsh-coords`（`coords/cordis.patch.yml`） |
+| `dsh-mi-remote` | `mi-remote/` | 遥控器插件（链路体检 + 按键映射 + 按键注入引擎 + 语音输入路径 + 七条可绑快捷键命令） | `dsh-mi-remote`（`mi-remote/cordis.patch.yml`） |
 
 > ⚠️ 两半的 `lib/` **来历不同**，别按同一套办法改：根目录的 `lib/index.js` · `lib/client.js` 是
 > "从插件源**复制 + 脱敏**"的产物（见 §11），改它要走发布流水线；`coords/lib/` 是 `coords/src/` 的
@@ -324,6 +324,37 @@ dsh plugin --profile web add <本仓库>/coords     # 装 coords/ 那个包（ds
 > 一个带 token 的**在用**实例、以及从别处借来的 Playwright（本插件不装浏览器依赖），换台机器定位就得重写。
 > `coords/package.json` 的 `scripts` 里**没有**指向这些文件的条目（免得 `npm run` 指向空气）；
 > `coords/README.md` 保留了这些套件的设计意图与当时的读数（含"未复跑"这类如实标注）。
+
+### 5.3 遥控器（Mi Remote）· 2026-10-11 并入本仓
+
+第三个包。把小米蓝牙遥控器（RC003）变成 DSH 的输入设备。
+
+| 面 | 内容 |
+|---|---|
+| 席位 | 官方右侧栏的 tab 类型 `dsh-mi-remote:panel`；左侧栏那一行「遥控器」由**工作台**统一渲染（同 `coords` 的模式） |
+| host 路由 | `/mi-remote/api/*`：`link` · `voice/*` · `mapping` · `bridge*`（设备枚举/学习/启停/自测） |
+| agent 工具 | 无（本插件不注册 DSH 工具） |
+| 键注入 | `engine/rc003-tap.py`（Frida 采集器，挂在蓝牙驱动宿主上读 HID 报告）→ `engine/read-engine.py`（Python 引擎）或 `engine/KeyBridge.exe`（C# 引擎）→ `SendInput` |
+| 落盘 | `mi-remote/state/`（`DSH_MIREMOTE_STATE_DIR` 可覆盖）：`mapping.json` 是按键方案的**单一真相源** |
+| 运行期变量 | `DSH_MIREMOTE_PYTHON` · `DSH_MIREMOTE_STATE_DIR` · `DSH_MIREMOTE_SCRIPT_DIR` · `DSH_MIREMOTE_ENGINE` · `DSH_MIREMOTE_CACHE_MS` · `DSH_MIREMOTE_DEADLINE_MS` |
+| 自带自证 | `cd mi-remote && npm run selftest:unit`（host **108 条**）· `npm run selftest:render`（渲染 **60 条**）· `npm run selftest:package`（结构 **45 条**）—— 都只依赖仓内文件 |
+
+**七个自带的可绑快捷键命令**（装上就能用，不用先去 DSH 里绑）：打开工作台 `Ctrl+Alt+1` ·
+打开驾驶舱 `Ctrl+Alt+2` · 打开工程图 `Ctrl+Alt+3` · 打开坐标系 `Ctrl+Alt+4` ·
+打开建模中心 `Ctrl+Alt+5` · 聚焦聊天输入框 `Ctrl+Alt+F` · 打开第一条会话 `Ctrl+Alt+Q`。
+
+> ⚠️ **`assets/vendor/` 里不含第三方安装包。** 语音链路依赖 VB-CABLE / SayAll 无线麦 /
+> 小米遥控器驱动，但它们是**别人家的商业软件**，本仓库不分发 —— 理由（授权、体积、过期）
+> 与下载地址写在 `mi-remote/assets/vendor/README.md`。
+>
+> ⚠️ **`engine/` 里有一个编译好的 `KeyBridge.exe`**（50 KB，.NET Framework 4.8，Win11 自带）。
+> 源码 `KeyBridge.cs` 同目录，`engine/build.ps1` 用 VS BuildTools 自带的 Roslyn 重编，
+> **不需要 dotnet SDK**。不信任预编译二进制的，删掉 exe 自己跑一次 build 即可 ——
+> 插件在找不到它时会自动改用 Python 版引擎。
+>
+> **两个引擎实现并存是刻意的**：360 之类的安全软件会把未签名的自编译 exe 压到 Low 完整性，
+> 而 UIPI 规定低完整性进程无法向高完整性窗口注入（`SendInput` 仍返回成功，**静默失败**）。
+> 插件启动时会探一次完整性级别，不够就自动切到 Python 版（`python.exe` 一般是 High）。
 
 ## 6. 数据从哪来（重要）
 
@@ -399,7 +430,60 @@ node selftest.mjs           # 自证（见 §8）
 
 ---
 
-## 10. 更新概览 · v0.9.7（当前）
+## 10. 更新概览 · v0.11.0（当前）
+
+一句话：**本仓从两个包变三个包 —— 收进「遥控器」插件，它成为一个可独立安装的目录。**
+
+**新增**
+
+- **第三个包 `dsh-mi-remote`**（`mi-remote/`）。把小米蓝牙遥控器（RC003）变成 DSH 的输入设备：
+  13 键 × 单击/双击/长按 映射到 DSH 动作 · 按键注入引擎（两个实现，自动挑能用的那个）·
+  语音输入路径切换 · 链路体检 · **七个自带的可绑快捷键命令**。详见 §5.3。
+
+**同仓三个包的挂载方式**（与 `coords` 完全一致，§5.2 已解释过原理）
+
+```bash
+dsh plugin --profile web add <本仓库>              # 装根目录那个包（dsh-workdesktop）
+dsh plugin --profile web add <本仓库>/coords       # 装 coords/ 那个包（dsh-coords）
+dsh plugin --profile web add <本仓库>/mi-remote    # 装 mi-remote/ 那个包（dsh-mi-remote）
+```
+
+**根目录那份 `cordis.patch.yml` 仍然只插 `dsh-workdesktop` 一行** —— 理由见 §5.2：
+`insert[].name` 是裸说明符，由 profile 的 `node_modules` 解析；没装的包写进去，boot 会去解析一个不存在的包。
+
+**本仓不含的东西**（如实列出）
+
+- `mi-remote/assets/vendor/` **只有一份 README**，没有安装包。遥控器的语音链路依赖
+  VB-CABLE / SayAll 无线麦 / 小米驱动，它们是**别人家的商业软件**，本仓库不分发。
+- `mi-remote/state/`（按键配置与运行日志）与 `mi-remote/tmp/`（运行时暂存）**不进仓库**，
+  已在 `.gitignore` 里排除。
+
+**脱敏说明（重要，别当成已完成）**
+
+`mi-remote/` 这一份**没有走 §11 那套完整流水线**。原因：§11 明确写着"权威脱敏词表与全套
+流水线脚本都留在仓库外"，而这次执行时**拿不到那两样东西**。
+
+**实际做的是**：按八条规则自查了一遍（本机绝对路径 / 用户名 / 客户名 / 凭据字面量 /
+长十六进制串 / 本机 venv 与 uv 路径前缀），命中的逐处修掉：
+
+| 命中 | 处数 | 处理 |
+|---|---|---|
+| `lib/index.js` 里作者本机的 venv python 路径 | 1 | 去掉本机项，只留 `python` / `python3` / `py` 交给 PATH |
+| README 与 docs 里"先 cd 到插件目录"的命令示例（写死了盘符与用户名） | 2 | 改成占位符 `<本插件目录>` |
+| 诊断脚本里写死的插件根 | 6 | 改成从脚本位置推导（`import.meta.url` 往上三层） |
+| 会话期的一次性脚本（改路径/审查/扫描器，扫描器里还带着客户名列表） | 13 | **不进仓库** |
+| 第三方安装包的 `SHA256SUMS.txt` | 1 | 随 vendor 目录一起不进仓库 |
+
+修完自查 **0 命中**。**但这不等于脱敏完成** —— 权威词表不在本机，反扫没法做。
+下次同步时请按 §11 重跑一遍完整流程。
+
+**⚠️ 另外 0.10.0 与 0.10.1 两版没有按发布清单第 3 条更新本节**（那两次提交只动了
+`lib/` · `package.json` · `pg-helper/`，没碰 README）。所以下面 10.1 起的条目里
+**没有 0.10.x 的记录** —— 这是缺口，不是"那两版没改动"。
+
+---
+
+### 10.0 v0.9.7 · 脱敏补完 · coords 收尾 · 身份统一（第二轮的记录，标题为原文）
 
 一句话：**把"统一"补完，并把整条历史重写了一次**。没有新功能。
 
@@ -649,7 +733,31 @@ node selftest.mjs           # 自证（见 §8）
 > 不会出现"改了包名、忘了环境变量"这种半截状态。
 > 历史（哪几版带着什么、怎么改的）不在这份公开 README 里展开，记在内部交接说明。
 
-对应本仓库版本 **0.9.7**（**五个工作台** · 对外 MCP server（42 条工具）· 13 张卡 · 三带布局 · 面板在 DSH **自带右侧栏**的席位 + 左侧栏入口 · **首屏载入画面** · 名称「弈枢」+ 水墨名称图（CSS 遮罩，随主题令牌变色）· **详情页"人话在前"**（机器字段收进「技术细节」折叠）· 卡片尺寸两档 + 拖动跟手/松手吸附动画 + 卡内小卡片按宽度 1/2/3/4 自适应 · 听记 → 事务草稿 · 纸墨外观 · 长按拖动排序 + `ui-prefs` 覆盖层 · 卡内只读透传 + 三条"不许静默"出口 · 工程图画布（选中/移动/框选/连线/分区/撤销/层序）· 工程图文档容器层（`pg_document` / `pg_locate` / `pg_move_node` / `pg_set_details`）· 同仓第二个包 `dsh-coords`）。**README 里的卡片数与顺序对应当前同步进来的这份源码**（`CARD_ORDER` 13 键）；**发布仓与源项目此后会各自演进**：再次同步请重跑上面的固定流程，不要手工编辑本仓库的 `lib/`。
+对应本仓库版本 **0.11.0**（**五个工作台** · 对外 MCP server（42 条工具）· 13 张卡 · 三带布局 · 面板在 DSH **自带右侧栏**的席位 + 左侧栏入口 · **首屏载入画面** · 名称「弈枢」+ 水墨名称图（CSS 遮罩，随主题令牌变色）· **详情页"人话在前"**（机器字段收进「技术细节」折叠）· 卡片尺寸两档 + 拖动跟手/松手吸附动画 + 卡内小卡片按宽度 1/2/3/4 自适应 · 听记 → 事务草稿 · 纸墨外观 · 长按拖动排序 + `ui-prefs` 覆盖层 · 卡内只读透传 + 三条"不许静默"出口 · 工程图画布（选中/移动/框选/连线/分区/撤销/层序）· 工程图文档容器层（`pg_document` / `pg_locate` / `pg_move_node` / `pg_set_details`）· 同仓第二个包 `dsh-coords` · **同仓第三个包 `dsh-mi-remote`（遥控器，2026-10-11 并入）**）。**README 里的卡片数与顺序对应当前同步进来的这份源码**（`CARD_ORDER` 13 键）；**发布仓与源项目此后会各自演进**：再次同步请重跑上面的固定流程，不要手工编辑本仓库的 `lib/`。
+
+#### 本轮同步记录（2026-10-11 · 第三个包 `dsh-mi-remote`）
+
+| 源（库内插件） | 本仓产物 | 说明 |
+|---------------|---------|------|
+| `plugins/dsh-mi-remote/lib/{index,client}.js` | `mi-remote/lib/{index,client}.js` | 复制 + 八条规则自查（**未走 §11 权威词表**，理由见 §10） |
+| `plugins/dsh-mi-remote/engine/*` | `mi-remote/engine/*` | 采集器 + 两个引擎实现 + 构建脚本（含编译好的 `KeyBridge.exe`） |
+| `plugins/dsh-mi-remote/{tools,scripts,docs,audio,locale}` | 同名目录 | 工具与自检；`tools/diag/` 剔除了 13 个会话期一次性脚本 |
+| `plugins/dsh-mi-remote/assets/vendor/*` | `mi-remote/assets/vendor/README.md` | **安装包不进仓**（第三方商业软件），只留一份下载指引 |
+| `plugins/dsh-mi-remote/state/*` | — | **不进仓**（按键配置与运行日志） |
+
+**本包的三条自证都是离线、只依赖仓内文件**，克隆下来就能跑：
+
+```bash
+cd mi-remote
+npm run selftest:unit      # host 半段 + 纯函数，108 条
+npm run selftest:render    # 面板真渲染（自造 React 桩），60 条
+npm run selftest:package   # 目录结构与引用完整性，45 条
+```
+
+> ⚠️ **`selftest.mjs` 会真的写一次 `mapping.json` 再恢复**（验 vkeys 路由），
+> 备份与恢复读写的是**同一个文件**（`state/mapping.json`）。早期版本这两处路径不一致，
+> 恢复等于没做、把测试值留在了用户配置里 —— 2026-10-11 修掉并在注释里记了来由。
+
 
 ### 发布清单（照这个顺序做，**只打 tag 不算发布**）
 

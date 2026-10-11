@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>按键诊断 —— 浏览器实际收到的字段</title>
+<style>
+  body { margin:0; background:#111; color:#eee; font:16px/1.6 Consolas,monospace; padding:24px }
+  h1 { font-size:20px; margin:0 0 12px; color:#7dd3fc }
+  .row { display:flex; gap:14px; align-items:baseline; margin:6px 0 }
+  .k { width:120px; color:#94a3b8 }
+  .v { font-size:22px; font-weight:700; color:#fbbf24 }
+  .big { font-size:52px; font-weight:800; color:#4ade80; letter-spacing:2px }
+  .hint { color:#64748b; margin-top:18px; font-size:14px }
+  .warn { color:#f87171; font-weight:700 }
+  table { border-collapse:collapse; margin-top:14px; font-size:14px }
+  td,th { border:1px solid #334155; padding:4px 10px; text-align:left }
+  th { color:#7dd3fc }
+</style>
+</head>
+<body>
+<h1>按键诊断 —— 浏览器实际收到了什么</h1>
+<div class="row"><span class="k">event.code</span><span class="v big" id="code">（还没按键）</span></div>
+<div class="row"><span class="k">event.key</span><span class="v" id="key">—</span></div>
+<div class="row"><span class="k">ctrlKey</span><span class="v" id="ctrl">—</span></div>
+<div class="row"><span class="k">altKey</span><span class="v" id="alt">—</span></div>
+<div class="row"><span class="k">shiftKey</span><span class="v" id="shift">—</span></div>
+<div class="row"><span class="k">metaKey</span><span class="v" id="meta">—</span></div>
+<div class="row"><span class="k">isTrusted</span><span class="v" id="trusted">—</span></div>
+<div class="row"><span class="k">keyCode</span><span class="v" id="kc">—</span></div>
+<div class="hint">
+  <b>看 event.code</b>：DSH 的快捷键就是按这个字段匹配的（如 <code>KeyB</code> / <code>Enter</code>）。
+  如果注入的按键让这一格显示 <span class="warn">空 / Unidentified</span>，DSH 就永远匹配不上。
+</div>
+<table id="log"><thead><tr><th>#</th><th>type</th><th>code</th><th>key</th><th>ctrl</th><th>alt</th><th>shift</th></tr></thead><tbody></tbody></table>
+<script>
+  var n = 0;
+  function show(e) {
+    document.getElementById('code').textContent = e.code === '' ? '(空字符串)' : e.code;
+    document.getElementById('key').textContent = e.key === '' ? '(空)' : e.key;
+    document.getElementById('ctrl').textContent = e.ctrlKey;
+    document.getElementById('alt').textContent = e.altKey;
+    document.getElementById('shift').textContent = e.shiftKey;
+    document.getElementById('meta').textContent = e.metaKey;
+    document.getElementById('trusted').textContent = e.isTrusted;
+    document.getElementById('kc').textContent = e.keyCode;
+    n = n + 1;
+    if (n <= 40) {
+      var tr = document.createElement('tr');
+      [n, e.type, e.code || '(空)', e.key || '(空)', e.ctrlKey, e.altKey, e.shiftKey].forEach(function (v) {
+        var td = document.createElement('td'); td.textContent = String(v); tr.appendChild(td);
+      });
+      document.getElementById('log').querySelector('tbody').appendChild(tr);
+    }
+  }
+  window.addEventListener('keydown', show, true);
+  window.addEventListener('keyup', show, true);
+  window.focus();
+</script>
+</body>
+</html>

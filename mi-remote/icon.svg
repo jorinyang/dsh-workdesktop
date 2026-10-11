@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="小米遥控器">
+  <defs>
+    <linearGradient id="dsmr-plate" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3f7bd8"/>
+      <stop offset="1" stop-color="#2a5aa8"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="30" height="30" rx="9" fill="url(#dsmr-plate)"/>
+  <g fill="none" stroke="#ffffff" stroke-width="1.7" stroke-linecap="round">
+    <rect x="10.5" y="4.5" width="11" height="23" rx="4"/>
+    <circle cx="16" cy="9.5" r="1.5"/>
+    <circle cx="13" cy="13.5" r="1"/>
+    <circle cx="19" cy="13.5" r="1"/>
+    <circle cx="13" cy="17.5" r="1"/>
+    <circle cx="19" cy="17.5" r="1"/>
+    <circle cx="13" cy="21.5" r="1"/>
+    <circle cx="19" cy="21.5" r="1"/>
+  </g>
+</svg>
