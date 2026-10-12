@@ -27,7 +27,18 @@ export function clientScript(apiBase) {
   L.push('  if (!main) return;');
   L.push('  var page = main.getAttribute("data-page") || "overview";');
   L.push('  var TYPE = { messages: "messages", todos: "todos", schedules: "schedules", notes: "notes" }[page];');
-  L.push('  var list = main.querySelector(".list");');
+  // ★ 类型归一表（**只有这一张**）：单数 ↔ 复数。
+  //   为什么必须有：服务端路由只认**复数**（`/detail/schedules/x` = 200，`/detail/schedule/x` = 404），
+  //   而"从总览跳过来"时地址里带的类型是**单数**（`data-go="schedule"`）。
+  //   ⇒ 凡是拿类型去拼路径或比对的地方，都先过这张表。
+  //   ⚠️ 同一条信息散在多处就会漂（本项目栽过：登记表两份、卡名表两份都出过事）⇒ 只留这一份。
+  L.push('  var CANON = { message: "messages", todo: "todos", schedule: "schedules", note: "notes", messages: "messages", todos: "todos", schedules: "schedules", notes: "notes" };');
+  // ★★ 2026-10-12 修（**用户报"列表点不动"的最终根因**）：
+  //   原来取 `.list` 的**第一个**，而页面上还有别的 `.list`（热力图下面那段「动态分析」）
+  //   且它排在前面 ⇒ 监听绑到了分析文字上，用户点真正的行毫无反应。
+  //   ⇒ 改取**专用标识** `jl-list`（由 `shell.mjs#listBlock` 只给数据列表加）。
+  //     留 `.list` 兜底：万一某页只有旧的 `.list` 且里面有可点行，仍能绑上。
+  L.push('  var list = main.querySelector(".jl-list") || main.querySelector(".list");');
   L.push('');
   L.push('  function el(tag, cls, text) { var d = document.createElement(tag); if (cls) d.className = cls; if (text !== undefined) d.textContent = text; return d; }');
   L.push('');
@@ -101,6 +112,14 @@ export function clientScript(apiBase) {
   L.push('  }');
   L.push('');
   L.push('  function openDetail(type, id) {');
+  // ★ 2026-10-12 修：**类型一律先归一成复数**再拼路径。
+  //   为什么必须：服务端路由是 `^/detail/([a-z]+)/([A-Za-z0-9_]+)$`，而**只有复数能取到**
+  //   （`/detail/schedules/x` = 200，`/detail/schedule/x` = 404）。
+  //   而"跨页跳转"那一路是从总览的 `data-go` 拿的类型，那是**单数**（`schedule`）
+  //   ⇒ 落页后自动开详情时请求单数路径 ⇒ 404 ⇒ 走 `det.error` 分支弹 alert、**浮层永远不出现**。
+  //   诊断实测就是这么抓到的（点列表项"没反应"，控制台一条 404）。
+  //   ⇒ 统一在这里归一：单数 → 复数，认不出就原样（交给服务端判，它 404 时会列出可用类型）。
+  L.push('    type = CANON[type] || type;');
   L.push('    fetch(API + "/detail/" + type + "/" + id).then(function (r) { return r.json(); }).then(function (det) {');
   L.push('      if (det && det.error) { alert("取详情失败：" + det.error); return; }');
   L.push('      var seen = det.structured || {}; var orig = det.original || {};');
@@ -132,6 +151,11 @@ export function clientScript(apiBase) {
   L.push('  }');
   L.push('');
   L.push('  if (list && TYPE) {');
+  // ★ 诊断锚点（2026-10-12 加，**用户报"点列表项没反应"时用来定位**）：
+  //   这一行会在页面脚本执行时把"容器找到没有、页面类型、可点行数"写到控制台。
+  //   为什么留着：这个毛病（监听没绑上 ⇒ 点了毫无反应、连报错都没有）**从现象上完全看不出来**，
+  //   没有这条锚点就只能靠猜。它只输出一行，不影响任何行为。
+  L.push('    console.log("[工作台] 列表监听已绑 · page=" + page + " · 容器=" + (list.className || list.tagName) + " · 可点行=" + list.querySelectorAll("li[data-id]").length);');
   L.push('    list.addEventListener("click", function (ev) {');
   L.push('      var li = ev.target.closest ? ev.target.closest("li") : null;');
   L.push('      if (!li) return;');
@@ -146,7 +170,24 @@ export function clientScript(apiBase) {
   L.push('');
   // ★ 总览的三类提醒：点一条 ⇒ 跳到对应页面并把那一条的详情打开（需求 3.3.2 原话：
   //   "点击可跳转到对应的页面（待办/笔记/日程/信息）并打开详情页"）。
-  //   同一页面内点 ⇒ 直接开浮层；跨页面 ⇒ 走 `#页?open=类型:id`，由目标页的脚本接手。
+  //   同一页面内点 ⇒ 直接开浮层；跨页面 ⇒ **真的换地址**，由目标页的脚本接手。
+  //
+  // ★★ 2026-10-12 修（**用户报"点击无反应"之后才发现的真错**）：
+  //   原实现是
+  //       location.hash = "#" + dest + "?open=" + kind + ":" + id;  location.reload();
+  //   —— 它在**当前页**挂一个片段（`#schedules?open=…`），然后 reload **同一个地址**。
+  //   那个 `#` 后面不是路径，浏览器只会做"页内锚点"处理 ⇒ **永远跳不过去**，
+  //   用户看到的就是"点了没反应"。诊断实测：点「日程」统计后地址停在同一页、只多了个 `#`。
+  //   ⇒ 改成**按当前地址推出的相对文件名**跳转，两种场景都对：
+  //       面板内嵌：/workdesktop/api/yishu/overview  →  schedules?open=…   （该路由**不认 .html 后缀**，实测带后缀只回 182B 空页）
+  //       本地直开：./overview.html                 →  schedules.html?open=…
+  //     判定办法：看当前地址**最后一段**是否以 `.html` 结尾 —— 是就带后缀，不是就不带。
+  //     同时也对上"目标页优先读 `?open=` 查询串"（见下面目标页接手那段）。
+  L.push('  function pageUrl(dest) {');
+  L.push('    var here = location.pathname.split("/").pop() || "";');
+  L.push('    var tail = /\\.html$/i.test(here) ? dest + ".html" : dest;');
+  L.push('    return tail;');
+  L.push('  }');
   L.push('  if (page === "overview" && list) {');
   L.push('    list.addEventListener("click", function (ev) {');
   L.push('      var li = ev.target.closest ? ev.target.closest("li") : null;');
@@ -155,14 +196,71 @@ export function clientScript(apiBase) {
   L.push('      if (!id || !kind) return;');
   L.push('      var dest = PAGE_OF[kind];');
   L.push('      if (!dest) { openDetail(kind, id); return; }');
-  L.push('      location.hash = "#" + dest + "?open=" + kind + ":" + id;');
-  L.push('      location.reload();');
+  L.push('      location.assign(pageUrl(dest) + "?open=" + dest + ":" + id);');
   L.push('    });');
   L.push('  }');
   L.push('');
-  // 目标页接手：地址里带 `?open=类型:id` ⇒ 落页后自动开那一条的详情
-  L.push('  var hm = /[?&]open=([a-z]+):([A-Za-z0-9_]+)/.exec(location.hash || "");');
-  L.push('  if (hm && TYPE && PAGE_OF[hm[1]] === page) { setTimeout(function () { openDetail(hm[1], hm[2]); }, 0); }');
+  // 目标页接手：**优先读查询串** `?open=类型:id`（跳转带过来的），
+  // 兼容旧的片段写法 `#页?open=…`（历史地址，读到也不至于失效）。
+  L.push('  var hm = /[?&]open=([a-z]+):([A-Za-z0-9_]+)/.exec(location.search || "")');
+  L.push('    || /[?&]open=([a-z]+):([A-Za-z0-9_]+)/.exec(location.hash || "");');
+  L.push('  if (hm) { hm[1] = CANON[hm[1]] || hm[1]; }');
+  L.push('  if (hm && (!TYPE || TYPE === hm[1])) { setTimeout(function () { openDetail(hm[1], hm[2]); }, 0); }');
+  // ★ 2026-10-12 修（**"跨页跳转后详情不自动开"**）：
+  //   原来判的是 `TYPE === hm[1]`，而地址里带的类型可能是**单数**（`schedule`）、
+  //   而 `TYPE` 是从 `data-page` 算出来的**复数**（`schedules`）⇒ **永远不相等**、浮层永远不开。
+  //   ⇒ 两边都过一遍同一张 `CANON` 表再比；同时**跳转那头改成带复数**（见上面 `location.assign`），
+  //     两头都规范，就不再靠"猜"。用同一张表，避免出现第三份映射（本项目栽过这种重复映射的跟头）。
+  L.push('');
+  // ★★ 顶部导航的链接改写（2026-10-12 修，**用户报"点 tab 切不动"**）：
+  //   导航是**服务端生成**的（`shell.mjs#topbar`），写死成 `./schedules.html` 这种带 `.html` 的形式。
+  //   可两种打开方式对后缀的要求正好相反：
+  //     · 面板内嵌：`/workdesktop/api/yishu/overview` —— 该路由**不认 `.html`**
+  //       （实测 `/yishu/schedules.html` 只回 **182 字节空页**）⇒ 点导航 = 白屏，看着就是"切不动"；
+  //     · 本地文件直开：`./overview.html` —— 又**必须带** `.html` 才找得到文件。
+  //   ⇒ 一个写死的后缀，必然有一种场景是坏的。这里在客户端按**当前地址的形态**改写链接，
+  //     两种场景都对；服务端模板保持原样（离线直开时它本身仍然可用）。
+  L.push('  (function () {');
+  L.push('    var here = location.pathname.split("/").pop() || "";');
+  L.push('    var served = !/\\.html$/i.test(here);   // 不带后缀 ⇒ 是面板路由在供页');
+  L.push('    var links = document.querySelectorAll("a[href]");');
+  L.push('    for (var i = 0; i < links.length; i++) {');
+  L.push('      var a = links[i]; var href = a.getAttribute("href") || "";');
+  L.push('      if (served) { if (/\\.html$/i.test(href)) a.setAttribute("href", href.replace(/\\.html$/i, "")); }');
+  L.push('      else { if (/^\\.\\/[a-z][a-z-]*$/i.test(href)) a.setAttribute("href", href + ".html"); }');
+  L.push('    }');
+  L.push('  })();');
+  L.push('');
+  // ★★ 消息页五个 Tab 的筛选（2026-10-12 加，**用户报"Tab 点了没反应"**）：
+  //   为什么放客户端：面板那条路由（`/yishu/<页>`）是**读静态文件**返回的，**不跑渲染**；
+  //   本地直开同样是静态文件 ⇒ **两条路都不会按 `?tab=` 重渲染**。
+  //   而页面里本来就带着**全部**消息（每行有 `data-state`）⇒ 端上按状态隐藏即可。
+  //   链接带 `?tab=`：既补上地址（可分享、可刷新），又据此筛行。
+  //   点的时候 `preventDefault()` —— 静态场景下点链接会重新加载同一个文件、白白闪一下。
+  L.push('  (function () {');
+  L.push('    var links = document.querySelectorAll("[data-tab]");');
+  L.push('    if (!links.length) return;');
+  L.push('    function activeTab() { var m = /[?&]tab=([a-z-]+)/.exec(location.search || ""); return m ? m[1] : "all"; }');
+  L.push('    function applyTab(t) {');
+  L.push('      var lis = document.querySelectorAll(".jl-list li[data-state]");');
+  L.push('      for (var i = 0; i < lis.length; i++) {');
+  L.push('        lis[i].style.display = (t === "all" || lis[i].getAttribute("data-state") === t) ? "" : "none";');
+  L.push('      }');
+  L.push('      for (var j = 0; j < links.length; j++) {');
+  L.push('        if (links[j].getAttribute("data-tab") === t) links[j].setAttribute("aria-current", "page");');
+  L.push('        else links[j].removeAttribute("aria-current");');
+  L.push('      }');
+  L.push('    }');
+  L.push('    for (var k = 0; k < links.length; k++) {');
+  L.push('      links[k].addEventListener("click", function (ev) {');
+  L.push('        ev.preventDefault();');
+  L.push('        var t = this.getAttribute("data-tab");');
+  L.push('        if (history.replaceState) history.replaceState(null, "", location.pathname + "?tab=" + t);');
+  L.push('        applyTab(t);');
+  L.push('      });');
+  L.push('    }');
+  L.push('    applyTab(activeTab());');
+  L.push('  })();');
   L.push('');
   L.push('  var addBtn = document.getElementById("btn-add");');
   L.push('  if (addBtn && TYPE) {');

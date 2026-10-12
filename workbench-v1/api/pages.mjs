@@ -78,7 +78,7 @@ export function messages({ tab = 'all', limit = 200, now = Date.now() } = {}) {
  *  ★ 口径（修过一个会丢事的 bug）：**逾期项并入"今日"桶**，并单列 overdue 计数。
  *    早先 `today` 只收"今天到期"、`week` 只收"今天到未来7天" ⇒ **已逾期的任务掉进两桶缝隙、列表里彻底消失** ——
  *    而它恰恰最急。凡"该被处理但没被处理"的东西，列表里必须有它的位置。 */
-export function todos({ bucket = 'today', now = Date.now() } = {}) {
+export function todos({ bucket = 'all', now = Date.now() } = {}) {
   const rows = store.list({ type: 'todo' });
   const open = rows.filter((e) => e.lifecycle !== 'archived' && !(e.ops ?? []).some((o) => o.op === 'done'));
   const done = rows.filter((e) => (e.ops ?? []).some((o) => o.op === 'done'));
@@ -86,11 +86,20 @@ export function todos({ bucket = 'today', now = Date.now() } = {}) {
   const overdue = open.filter((e) => Number.isFinite(dueMs(e)) && dueMs(e) < dayStart(now));
   const dueToday = open.filter((e) => Number.isFinite(dueMs(e)) && dueMs(e) <= dayEnd(now) && dueMs(e) >= dayStart(now));
   const in7 = open.filter((e) => Number.isFinite(dueMs(e)) && dueMs(e) >= dayStart(now) && dueMs(e) <= dayStart(now) + 7 * DAY);
+  const undecided = open.filter((e) => !e.payload.due);
+  // ★ 2026-10-12 修（**用户报"待办页点不了"之后查出来的真 bug**）：
+  //   默认桶原来是 `today`（"逾期 + 今天到期"）—— 而**绝大多数待办没有截止时间**，
+  //   它们落在 `undecided` 桶里。于是"今日 0 条"时列表**整块是空态**（`listBlock` 空 ⇒ 渲染「暂无」），
+  //   而统计卡里明明白白写着「待定 4」—— 数字说有、列表说没有，**页面自相矛盾**，
+  //   用户看到的就是"待办页点不了"（列表里根本没有行）。
+  //   ⇒ 补一个 `all`（四桶并集）并**改默认**：页面默认把全部待办列出来，
+  //     单桶仍可单独取（总览要的是"今日/逾期"那两桶，不受影响）。
   const buckets = {
     today: [...overdue, ...dueToday].sort((a, b) => dueMs(a) - dueMs(b)),   // 今天要处理的 = 逾期 + 今天到期
     week: in7,
-    undecided: open.filter((e) => !e.payload.due),
+    undecided,
     done,
+    all: [...open, ...done],
   };
   const list = (buckets[bucket] ?? []).map((e) => ({
     id: e._id, topic: e.payload.topic, detail: e.payload.detail ?? '',
@@ -103,7 +112,7 @@ export function todos({ bucket = 'today', now = Date.now() } = {}) {
     closeConditions: e.payload.closeConditions ?? null,   // P5 自动关闭用（需求 3.3.4）
   })).sort((a, b) => String(a.due ?? '9999').localeCompare(String(b.due ?? '9999')));
   return {
-    counts: { today: buckets.today.length, week: in7.length, undecided: buckets.undecided.length, done: done.length, overdue: overdue.length, total: rows.length },
+    counts: { today: buckets.today.length, week: in7.length, undecided: undecided.length, done: done.length, overdue: overdue.length, total: rows.length },
     bucket, list,
   };
 }

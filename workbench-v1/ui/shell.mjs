@@ -74,6 +74,10 @@ export function stylesheet() {
   s.push('.card .cap { font-size: 13px; color: var(--c-mute); margin-top: var(--s-xs); }');
   s.push('.section { margin-top: var(--s-xl); }');
   s.push('.section h2 { font-size: 15px; margin-bottom: var(--s-sm); }');
+  // Tab 导航（消息页五个 Tab）——2026-10-12 新增：原先借数据列表那条通道，被 `esc()` 转义成了纯文本。
+  s.push('.tabs { list-style: none; padding: 0; margin: 0 0 var(--s-md); display: flex; flex-wrap: wrap; gap: var(--s-md); border-bottom: 1px solid var(--c-hairline); }');
+  s.push('.tabs a { display: inline-block; padding: var(--s-xs) 0; color: var(--c-mute); text-decoration: none; font-size: 14px; border-bottom: 2px solid transparent; }');
+  s.push('.tabs a[aria-current="page"] { color: var(--c-ink); font-weight: var(--w-medium); border-bottom-color: var(--c-ink); }');
   s.push('.list { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--c-hairline); }');
   s.push('.list li { display: flex; gap: var(--s-md); padding: var(--s-sm) 0; border-bottom: 1px solid var(--c-hairline); font-size: 14px; }');
   s.push('.list .when { color: var(--c-mute); min-width: 92px; }');
@@ -113,7 +117,14 @@ export function stylesheet() {
 function topbar(active) {
   let links = '';
   for (const p of PAGE_DEFS) {
-    links += '<a href="#' + p.key + '"' + (p.key === active ? ' aria-current="page"' : '') + '>' + esc(p.label) + '</a>';
+      // ★★ 2026-10-12 修（**用户报"点 tab 无响应、切不了页"**）：
+    //   原来写的是 `href="#<key>"` —— 那是**页内锚点**，点了只会给地址挂一个 `#todos` 片段，
+    //   **永远不会换页**。而六个页面是**六个独立文件**（不是单页应用），
+    //   链接必须指向文件：`./todos.html`。
+    //   ⚠️ 面板内嵌时那个路由**不认 `.html`**（实测只回 182 字节空页）⇒
+    //     由客户端脚本按当前地址形态改写（见 `client.mjs` 里"顶部导航链接改写"那段），
+    //     两种打开方式都对；服务端这边保持"文件链接"这个**离线直开也成立**的形态。
+    links += '<a href="./' + p.key + '.html"' + (p.key === active ? ' aria-current="page"' : '') + '>' + esc(p.label) + '</a>';
   }
   return '<header class="topbar"><div class="brand">' + APP_NAME + '</div><nav class="nav">' + links + '</nav></header>';
 }
@@ -151,9 +162,19 @@ function listBlock(title, rows, cls) {
     const idAttr = r.id ? ' data-id="' + esc(r.id) + '"' : '';
     // `data-go` = 这条提醒属于哪一类（日程/待办/消息）⇒ 总览页据此跳到对应页面（需求 3.3.2）
     const goAttr = r.go ? ' data-go="' + esc(r.go) + '"' : '';
-    items += '<li' + idAttr + goAttr + '><span class="when">' + esc(r.col1 || '') + '</span><span class="who">' + esc(r.col2 || '') + '</span><span class="' + cls + '">' + esc(r.col3 || '') + '</span></li>';
+    // `data-state` = 消息页五个 Tab 的归属（待处理/已转待办/已转日程/已回复）⇒ **客户端据此筛行**。
+    //   2026-10-12 加：面板路由是读静态文件，服务端筛不生效（见 pageMessages 的注释）⇒ 筛选必须在端上做。
+    const stAttr = r.state ? ' data-state="' + esc(r.state) + '"' : '';
+    items += '<li' + idAttr + goAttr + stAttr + '><span class="when">' + esc(r.col1 || '') + '</span><span class="who">' + esc(r.col2 || '') + '</span><span class="' + cls + '">' + esc(r.col3 || '') + '</span></li>';
   }
-  return '<div class="section"><h2>' + esc(title) + '</h2><ul class="list">' + items + '</ul></div>';
+  // ★★ 2026-10-12 修（**用户报"列表点不动"的最终根因**）：
+  //   原来这里给**所有**列表都写 `class="list"`，包括热力图下面那段「动态分析」——
+  //   而客户端脚本用 `main.querySelector(".list")` 取**第一个**，取到的就是那段分析文字。
+  //   ⇒ 监听绑在了分析列表上；用户点真正的日程/待办行，**毫无反应、连报错都没有**。
+  //   实测证据：脚本自报"容器=list · 可点行=**0**"，而同一页面上 `li[data-id]` 其实有 6 个。
+  //   ⇒ 数据列表另给一个专用标识 `jl-list`（"接列表"），脚本按它取，不再与别处的 `.list` 撞。
+  //     保留 `list` 这个类是为了不破坏既有样式与别处引用。
+  return '<div class="section"><h2>' + esc(title) + '</h2><ul class="list jl-list">' + items + '</ul></div>';
 }
 
 export function pageOverview(snap) {
@@ -174,15 +195,33 @@ export function pageOverview(snap) {
 const TAB_LABEL = { all: '全部', pending: '待处理', 'to-todo': '已转待办', 'to-schedule': '已转日程', replied: '已回复' };
 
 export function pageMessages(snap) {
-  const m = (snap && snap.messages) || messages();
+  // ★ 2026-10-12 修：**从地址里读 `?tab=` 再传给聚合**。
+  //   为什么必须：`messages()` 早就支持按 tab 筛（`PG-2` 还守着它），
+  //   但页面渲染时**从来没传过 tab** ⇒ 无论点哪个 Tab 都渲染"全部"，五个 Tab 形同虚设。
+  //   `snap.query` 由 `renderPage` 注入（服务端渲染时拿到的是**页面 URL 的查询串**）。
+  const tab = (snap && snap.query && snap.query.tab) || 'all';
+  const m = (snap && snap.messages) || messages({ tab });
   const c = m.counts;
   const cards = statCards([['待处理', c.pending], ['已转待办', c.toTodo], ['已转日程', c.toSchedule], ['已回复', c.replied]]);
   let tabs = [];
   for (const t of ['all', 'pending', 'to-todo', 'to-schedule', 'replied']) {
-    tabs.push('<a href="#messages?tab=' + t + '"' + (t === m.tab ? ' aria-current="page"' : '') + '>' + TAB_LABEL[t] + '</a>');
+    // ★★ 2026-10-12 修（**消息页五个 Tab 点了没反应**）：
+    //   原来写的是 `href="#messages?tab=<t>"` —— 页内锚点，点了既不筛列表也不跳页。
+    //   现在链接**带查询串**去请求同一个文件；`?tab=` 由**客户端脚本**用来隐藏不匹配的行
+    //   （见 `client.mjs` 里"Tab 筛选"那段）。
+    //   ⚠️ 为什么不靠服务端按 `?tab=` 重渲染：面板那条路由是**读静态文件**返回的
+    //      （`lib/index.js` 的 `/yishu/<页>`），它根本不跑渲染 ⇒ 服务端筛不生效；
+    //      而本地直开是静态文件、同样不跑渲染。**两条路都不跑渲染** ⇒ 只能放客户端做。
+    tabs.push('<a href="./messages.html?tab=' + t + '" data-tab="' + t + '"' + (t === m.tab ? ' aria-current="page"' : '') + '>' + TAB_LABEL[t] + '</a>');
   }
-  const rows = m.list.map(function (r) { return { id: r.id, col1: fmtTime(r.at), col2: r.source, col3: r.summary }; });
-  return '<div class="stats">' + cards + '</div>' + listBlock(tabs.join(' · '), rows);
+  // ★★ 2026-10-12 修（**消息页五个 Tab 点不了的真根因**）：
+  //   原来把这一串 `<a>` 塞进 `listBlock(tabs.join(' · '), rows)` —— 而 `listBlock` 的第三列
+  //   会走 `esc()`（防注入），于是页面上显示的是**字面文本** `<a href="./messages.html?tab=all">全部</a>`，
+  //   **根本不是链接**。实测：源码里 5 个 `data-tab`，DOM 里 0 个。
+  //   ⇒ 自建一小段导航区块（`<ul class="tabs">`），别再借数据列表那条会转义的通道。
+  const navTabs = '<ul class="tabs">' + tabs.join('') + '</ul>';
+  const rows = m.list.map(function (r) { return { id: r.id, col1: fmtTime(r.at), col2: r.source, col3: r.summary, state: r.state }; });
+  return '<div class="stats">' + cards + '</div>' + navTabs + listBlock('消息列表', rows);
 }
 
 export function pageTodos(snap) {
@@ -240,7 +279,25 @@ export const PAGES = Object.freeze({ overview: pageOverview, messages: pageMessa
  *  opt.api 给了就注入客户端脚本（详情浮层 / 新增）—— 不接 API 时页面仍是纯静态可读的。 */
 export function renderPage(pageKey, opt) {
   opt = opt || {};
-  const snap = opt.snap || {};
+  // ★ 2026-10-12 补：把**页面的查询参数**一并交给内容渲染（目前只有消息页的 `?tab=` 用）。
+  //   为什么要走这条路：Tab 切换是"换地址 + 重渲染"，而渲染发生在服务端（面板路由按 URL 出页）；
+  //   所以渲染时必须知道当前 URL 带了什么，否则永远只能出"全部"那一版。
+  //   取值优先级：`opt.query`（调用方显式给） > `opt.url`（从整条 URL 里现解）。
+  let query = (opt.query && typeof opt.query === 'object') ? opt.query : null;
+  if (!query && typeof opt.url === 'string') {
+    query = {};
+    try {
+      const qs = opt.url.includes('?') ? opt.url.slice(opt.url.indexOf('?') + 1).split('#')[0] : '';
+      for (const kv of qs.split('&')) {
+        if (!kv) continue;
+        const i = kv.indexOf('=');
+        const k = decodeURIComponent(i < 0 ? kv : kv.slice(0, i));
+        const v = i < 0 ? '' : decodeURIComponent(kv.slice(i + 1));
+        query[k] = v;
+      }
+    } catch { query = {}; }
+  }
+  const snap = Object.assign({}, opt.snap || {}, query ? { query } : {});
   const key = PAGES[pageKey] ? pageKey : 'overview';
   let label = '今日总览';
   for (const p of PAGE_DEFS) if (p.key === key) label = p.label;
