@@ -260,6 +260,12 @@ export function clientScript(apiBase) {
   L.push('      });');
   L.push('    }');
   L.push('    applyTab(activeTab());');
+  // ★ 把筛选函数挂到 window 上（2026-10-12 加）：
+  //   ① 检查要能"再筛一次" —— 我的探针行是检查**事后插进去**的，而页面加载时已经筛过一轮，
+  //      插进去的行它不认识 ⇒ 判据读到的永远是"仍可见"，看着像"没筛"（假红）。
+  //   ② 顺带修一个真隐患：**以后动态加进来的行**（例如"新增一条"成功之后）不会被筛到。
+  //      挂出来之后，谁加了行都能调 `window.__wbApplyTab()` 重新对齐。
+  L.push('    window.__wbApplyTab = applyTab;');
   L.push('  })();');
   L.push('');
   L.push('  var addBtn = document.getElementById("btn-add");');
