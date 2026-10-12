@@ -257,9 +257,25 @@ export function fetchBodiesOnce({ files = [], kbRoot = null, run = defaultRun, d
     if (!dryRun) {
       const dest = path.join(root, DOCS_DIR, name);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
-      fs.writeFileSync(dest, text, 'utf8');
-      cache[key] = { revisionId: body.revisionId, saved: `${DOCS_DIR}/${name}`, bytes: text.length, truncated, at: new Date(now).toISOString() };
-      savedFiles.push(`${DOCS_DIR}/${name}`);
+      // ★★ 2026-10-12 加（**和钉钉知识库正文同一类问题：同名覆盖、内容无声消失**）：
+      //   命名规则是"日期 + 主题"（需求 3.1.2 要的就是这个），可**同一天里同名文档是常事**
+      //   （实测钉钉那边一次就撞上三篇都叫「工具方法论」，后写的把先写的盖掉，
+      //     目录里最后只剩一个文件，另外两篇内容没了、而且没有任何提示）。
+      //   这条路原来也是直接 `writeFileSync(dest)` ⇒ 同样的隐患。
+      //   ⇒ 落盘前先让名：已存在就用 **file_token 前 8 位**区分（token 才是身份，文件名不是）。
+      //     宁可名字多一截，也不丢内容。
+      let finalDest = dest;
+      if (fs.existsSync(finalDest)) {
+        const short = String(f.file_token ?? f.token ?? key ?? '').slice(0, 8) || String(Date.now()).slice(-8);
+        const withId = dest.replace(/\.md$/i, `-${short}.md`);
+        finalDest = withId;
+        let n = 2;
+        while (fs.existsSync(finalDest)) finalDest = withId.replace(/\.md$/i, `-${n++}.md`);
+      }
+      fs.writeFileSync(finalDest, text, 'utf8');
+      const relName = path.basename(finalDest);
+      cache[key] = { revisionId: body.revisionId, saved: `${DOCS_DIR}/${relName}`, bytes: text.length, truncated, at: new Date(now).toISOString() };
+      savedFiles.push(`${DOCS_DIR}/${relName}`);
     }
     fetched += 1;
   }
@@ -387,6 +403,30 @@ export async function selfTest() {
       const nBefore = fs.readdirSync(destDir).length;
       fetchBodiesOnce({ files: [F('T9', '干跑不该写', 'docx', SEC)], kbRoot: tmp, run: bodyRun, dryRun: true, now: NOW });
       chk('FDB-6', '干跑不落盘', fs.readdirSync(destDir).length === nBefore);
+
+      // ★★ 2026-10-12 加（**同名覆盖，内容无声消失** —— 这一类在三条路上都出现过）：
+      //   命名是"日期 + 主题"，同一天两篇同名文档是常事 ⇒ 直接 writeFileSync 会让后写的盖掉先写的。
+      //   这条检查就是钉住"同名不覆盖"：喂两篇**同一天、同名字**的文档，磁盘上必须**两个文件都在**，
+      //   而且**内容各自还在**（只数文件个数不够 —— 覆盖了也可能因为名字不同而显得多）。
+      //   ⚠️ 我第一版试数据没造对，白红了一次，记下来：让名用的是 **`token`**，
+      //     而我只给了 `revision_id` 没给 `token` ⇒ 两次算出的短号都退到同一个兜底值，
+      //     两篇的正文变得一模一样，"互不覆盖"这条自然不成立。**试数据必须让每个样本都能被区分开。**
+      const twinRun = (args) => {
+        const tok = /--doc\s+(\S+)/.exec(args.join(' '))?.[1] ?? 'x';
+        return { ok: true, json: { ok: true, data: { document: { content: `# 正文-${tok}\n\n这是 ${tok} 的内容。`, revision_id: `rev-${tok}` } } } };
+      };
+      const nTwin = fs.readdirSync(destDir).length;
+      fetchBodiesOnce({
+        files: [F('T7a', '同名文档', 'docx', SEC), F('T7b', '同名文档', 'docx', SEC)],
+        kbRoot: tmp, run: twinRun, now: NOW,
+      });
+      const twinFiles = fs.readdirSync(destDir);
+      const twinNew = twinFiles.filter((f) => /同名文档/.test(f));
+      const twinContents = twinNew.map((f) => fs.readFileSync(path.join(destDir, f), 'utf8'));
+      chk('FDB-7', '★★ 同一天两篇同名文档 ⇒ **两个文件都在，内容互不覆盖**',
+        twinNew.length === 2 && twinFiles.length === nTwin + 2
+        && twinContents.some((t) => /T7a/.test(t)) && twinContents.some((t) => /T7b/.test(t)),
+        JSON.stringify({ 新增文件: twinNew, 总文件: twinFiles.length, 内容: twinContents.map((t) => t.slice(0, 24)) }));
     }
 
     // ⑨ 干跑不写盘

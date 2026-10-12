@@ -19,6 +19,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';   // 用于同名让名时按 URL 取短摘要（见落盘那段注释）
 import { fileURLToPath } from 'node:url';
 import { KB_ROOT as ROOT, KB_ROOT, hasKbRoot } from '../paths.mjs';   // 路径收口（见 paths.mjs 顶部说明：原先按本文件深度往上数，包一挪就错）
 
@@ -204,8 +205,24 @@ export async function fetchOnce({ fetchFn = defaultFetch, dryRun = false, maxIte
     if (!dryRun) {
       const dest = path.join(root, LINKS_DIR, name);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
-      fs.writeFileSync(dest, body);
-      r.status = 'done'; r.saved = `${LINKS_DIR}/${name}`; r.bytes = size; r.contentType = got.contentType ?? ''; r.at = new Date(now).toISOString();
+      // ★★ 2026-10-12 加（**和钉钉知识库正文、飞书文档同一类问题：同名覆盖、内容无声消失**）：
+      //   文件名是"日期 + 主题"，而主题是从 URL 猜的 ⇒ **同一天两条不同链接猜出同一个主题**就会撞名，
+      //   后抓的把先抓的盖掉，目录里只剩一条内容（钉钉那边实测撞上过三篇同名，这条路的隐患完全一样）。
+      //   ⇒ 落盘前先让名，用 **URL 的短摘要**区分（URL 才是身份，主题只是给人看的）。
+      //   ⚠️ 为什么这里可以简单判"存在就让名"：队列里**做完就出队**，同一条不会重复处理；
+      //     所以只要目标已存在，就一定是**别的来源**占了这个名字 —— 不存在"重抓自己要覆盖"的情形。
+      let finalDest = dest;
+      if (fs.existsSync(finalDest)) {
+        const short = createHash('sha1').update(String(r.url)).digest('hex').slice(0, 8);
+        const withId = dest.replace(/(\.[A-Za-z0-9]{1,6})$/, `-${short}$1`);
+        finalDest = withId;
+        let n = 2;
+        while (fs.existsSync(finalDest)) finalDest = withId.replace(/(\.[A-Za-z0-9]{1,6})$/, `-${n++}$1`);
+      }
+      fs.writeFileSync(finalDest, body);
+      const finalName = path.basename(finalDest);
+      r.status = 'done'; r.saved = `${LINKS_DIR}/${finalName}`; r.bytes = size; r.contentType = got.contentType ?? ''; r.at = new Date(now).toISOString();
+      name = finalName;   // 让下面的 `savedFiles` 也报最终名（不然报的名字和磁盘上的对不上）
     }
     saved += 1; savedFiles.push(`${LINKS_DIR}/${name}`);
   }
@@ -313,6 +330,29 @@ export async function selfTest() {
       const d = q1.find((x) => x.url === 'https://example.com/doc/plan');
       return d?.status === 'done' && d.saved === `${LINKS_DIR}/2026-10-12-页面甲.md` && d.bytes > 0;
     })());
+
+    // ★★ 2026-10-12 加（**同名覆盖，内容无声消失** —— 这一类在三条路上都出现过：钉钉正文、飞书文档、这里）。
+    //   文件名是"日期 + 主题"，而主题是从 URL 猜的 ⇒ **同一天两条不同链接猜出同一个主题**就会撞名。
+    //   实测钉钉那边撞上过三篇同名、只剩一篇；这条检查就是钉住"同名不覆盖"：
+    //   喂两条**能猜出同一个主题**的链接（`…/doc/plan` 与 `…/doc/plan2` 都猜成"页面甲"），
+    //   磁盘上必须**两个文件都在**、**内容各自还在**（只数文件数不够：名字不同也可能显得多）。
+    saveQueue([]);
+    enqueue(['https://example.com/doc/plan'], { fromId: 'm5', from: '钉钉·张伟' });
+    enqueue(['https://example.com/doc/plan2'], { fromId: 'm6', from: '钉钉·张伟' });
+    const rTwin = await fetchOnce({
+      fetchFn: async () => ({ ok: true, status: 200, contentType: 'text/html; charset=utf-8', bytes: Buffer.from('<title>页面甲</title><p>正文内容乙</p>') }),
+      kbRoot: tmp, maxItems: 10, now: Date.parse('2026-10-12T11:00:00+08:00'),
+    });
+    chk('LF-10', '★★ 同一天两条链接猜出同名 ⇒ **两个文件都在，内容互不覆盖**', (() => {
+      const all = fs.readdirSync(path.join(tmp, LINKS_DIR)).filter((f) => /页面甲/.test(f));
+      const bodies = all.map((f) => fs.readFileSync(path.join(tmp, LINKS_DIR, f), 'utf8'));
+      const q = loadQueue();
+      const savedPaths = q.filter((x) => x.status === 'done' && /页面甲/.test(String(x.saved))).map((x) => x.saved);
+      return rTwin.saved === 2 && all.length >= 2
+        && bodies.filter((t) => /正文内容/.test(t)).length >= 1     // 第一篇还在
+        && bodies.some((t) => /正文内容乙/.test(t))                  // 第二篇也在
+        && new Set(savedPaths).size === savedPaths.length;          // 两条记录指向**不同**文件
+    })(), JSON.stringify({ 落盘: rTwin.savedFiles, 目录: fs.readdirSync(path.join(tmp, LINKS_DIR)).filter((f) => /页面甲/.test(f)) }));
 
     // 幂等 + 干跑 + 上限
     calls = 0;
