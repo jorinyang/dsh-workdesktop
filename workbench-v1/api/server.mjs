@@ -141,7 +141,7 @@ const EVENT_FOR = { messages: 'message', notes: 'note', todos: 'todo', schedules
  * 若不做这个口子，这个自检要么真烧 token、要么只能不测 —— 两条都不要。
  * 注意它**只**在本文件的导出上（可写），与生产行为无关：不注入就一字不差走原路。
  */
-export const _deps = { reanalyzeNote: null, buildVisualForNote: null };
+export const _deps = { reanalyzeNote: null, buildVisualForNote: null, recall: null };
 
 export function handler(req, res) {
   const u = new URL(req.url, 'http://127.0.0.1');
@@ -396,7 +396,27 @@ export function handler(req, res) {
       if (b.ok === false) return json(res, 400, { error: b.why });
       const r = createEvent(type, b.json?.payload ?? b.json ?? {});
       if (r.ok === false) return json(res, r.code, { error: '校验未通过', errors: r.errors });
-      return json(res, 200, { ok: true, id: r.id, action: r.action, note: '已落运行态，将由筛选引擎结构化并双写知识库' });
+      // ★ 需求 3.3.3 原话："在消息页面可以新增一条新消息，**在记录的时候同时可以检索知识库召回相关上下文**"。
+      //   ⇒ 新增消息后就地做一次召回（与"分析引擎只召回不调模型"同一条成本口径：**不调模型**）。
+      //   召回失败**不影响消息落库**，只如实记进 `context.recallError`（分清"查不到"与"桥断了"）。
+      if (type !== 'message') return json(res, 200, { ok: true, id: r.id, action: r.action, note: '已落运行态，将由筛选引擎结构化并双写知识库' });
+      return (async () => {
+        const { recall } = await import('../processor/recall.mjs');
+        const q = String(r.event?.payload?.summary ?? r.event?.payload?.raw ?? '').slice(0, 200);
+        let hits = []; let recallError = null;
+        if (q !== '') {
+          // 自检可注入候选（见 `_deps` 的注释：ESM 命名空间只读，猴子补丁不可用）
+          const rr = await (_deps.recall ?? recall)(q);
+          if (rr.ok === true) hits = rr.hits;
+          else recallError = rr.why;
+        }
+        store.patch('message', r.id, { context: { recalled: hits, at: new Date().toISOString(), recallError } }, { op: 'recalled-on-create', by: 'api', evidence: { hits: hits.length, recallError } });
+        return json(res, 200, {
+          ok: true, id: r.id, action: r.action,
+          context: { recalled: hits, recallError },
+          note: recallError ? '已落运行态；召回不可用（已如实记下原因，不是"没有相关材料"）' : '已落运行态，并已召回相关上下文',
+        });
+      })().catch((e) => json(res, 200, { ok: true, id: r.id, action: r.action, context: { recalled: [], recallError: `召回异常：${e.message}` }, note: '已落运行态；召回异常已记录' }));
     });
   }
 
@@ -459,8 +479,11 @@ export async function selfTest() {
     chk('API-9', '登记表已加载（≥13 条写路径；含驾驶舱生成入口）', writeRoutes().length >= 13, String(writeRoutes().length));
 
     // 真写一条消息（走已登记路径）
+    // ★ 新增消息时就地召回（需求 3.3.3）；自检注入桩 —— 不去打真实向量服务，判据才不会随服务状态飘
+    _deps.recall = async () => ({ ok: true, hits: [{ path: 'Work/示例客户甲/x.md', text: '材料', similarity: 0.66 }], floor: 0.55, raw_count: 1, dropped: 0, why: null });
     const w = await post('/messages', { channel: 'manual', sender: '我', raw: '手工新增的一条消息', source: 'manual', modality: 'text' });
     chk('API-10', '★ 新增消息落在运行态（200 + id）', w.code === 200 && w.body.ok === true, JSON.stringify(w.body));
+    chk('API-10c', '★ 新增消息即召回相关上下文（需求 3.3.3 原话）', Array.isArray(w.body.context?.recalled) && w.body.context.recalled.length === 1, JSON.stringify(w.body.context));
     chk('API-11', '新消息立刻出现在页面数据里', (await get('/pages/messages')).body.counts.total === 1);
     chk('API-12', '★ 写只落运行态：知识库此刻**没有**被直接写（双写归筛选引擎）', !fsx.existsSync(path.join(process.env.WB_V1_KB_ROOT, 'Other')), '临时知识库根下无 Other/');
 
@@ -509,7 +532,7 @@ export async function selfTest() {
     //   桩：把 `reanalyzeNote` 与控制台真正的 `globalThis.fetch` 都换掉 —— **本自检不出网、不碰真工具**。
     const analyzeMod = await import('../processor/analyze.mjs');
     const vizMod = await import('../processor/visual.mjs');
-    const prevDeps = { reanalyzeNote: _deps.reanalyzeNote, buildVisualForNote: _deps.buildVisualForNote };
+    const prevDeps = { reanalyzeNote: _deps.reanalyzeNote, buildVisualForNote: _deps.buildVisualForNote, recall: _deps.recall };
     _deps.reanalyzeNote = async (evt) => {
       // ★ 桩也要**把建议落进状态**（与真实现同形）：否则下一条断言拿到的笔记没有 suggested，
       //   会以为"负向"通过 —— 那是最典型的假绿（夹具与实现不同形）。实测踩到过。
@@ -582,6 +605,7 @@ export async function selfTest() {
     } finally {
       _deps.reanalyzeNote = prevDeps.reanalyzeNote;
       _deps.buildVisualForNote = prevDeps.buildVisualForNote;
+      _deps.recall = prevDeps.recall;
       globalThis.fetch = realFetch;
       void analyzeMod; void vizMod;
     }

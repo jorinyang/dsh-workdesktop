@@ -36,9 +36,11 @@ import path from 'node:path';
 
 import { makeEvent } from '../schema.mjs';
 import * as store from '../store.mjs';
-import { v1Out } from '../paths.mjs';
+import { v1Out, KB_ROOT } from '../paths.mjs';
 import { inScope } from './registry.mjs';
 import { buildCommand } from './cli.mjs';
+// 文档落盘命名只有一份实现（需求 3.1.2 的"日期+主题"）—— 从 links 借用，**不复制**
+import { suggestDocName } from '../processor/links.mjs';
 
 export const KEY = 'dd-kb';
 export const INTERVAL_SEC = 300;
@@ -58,17 +60,18 @@ export function saveSeen(doc) {
 }
 
 /** 取数：经 PowerShell 调 `dws`（Windows 上它是 .cmd 垫片，直接 spawn 会 ENOENT） */
-export function defaultRun(args) {
+export function defaultRun(args, { timeoutMs = 60000 } = {}) {
   const PS = 'powershell.exe';
   const cmd = buildCommand('dws', args);   // 统一走 collector/cli.mjs（引号规则只有一份）
   const r = spawnSync(PS, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', cmd], {
-    encoding: 'utf8', timeout: 60000, windowsHide: true, maxBuffer: 8 * 1024 * 1024,
+    // 超时可调：正文导出是异步任务（实测要等），给它更长的窗口；查询类保持 60s
+    encoding: 'utf8', timeout: timeoutMs, windowsHide: true, maxBuffer: 8 * 1024 * 1024,
   });
   const out = String(r.stdout ?? '').trim();
   const err = String(r.stderr ?? '').trim();
   if (r.error) return { ok: false, why: `调用失败：${r.error.message}` };
   if (r.status !== 0) return { ok: false, why: `dws 退出码 ${r.status}：${(err || out).slice(0, 240)}` };
-  try { return { ok: true, json: JSON.parse(out) }; } catch (e) { return { ok: false, why: `输出不是 JSON：${e.message}（前 120 字：${out.slice(0, 120)}）` }; }
+  try { const parsed = JSON.parse(out); return { ok: true, json: parsed, parsed }; } catch (e) { return { ok: false, why: `输出不是 JSON：${e.message}（前 120 字：${out.slice(0, 120)}）` }; }
 }
 
 /** 知识库清单 */
@@ -177,6 +180,9 @@ export function ingestOnce({ run = defaultRun, dryRun = false, limit = MAX_PAGE,
   const errors = [];
   const kinds = { doc: 0, file: 0, folder: 0, member: 0, unknown: 0 };
   let inCount = 0; let outCount = 0; let refreshed = 0; let skipped = 0; let outOfScope = 0; let quarantined = 0; let spacesScanned = 0; let truncatedSpaces = 0; let feedTimeUsed = 0;
+  // ★ `seen` 台账（幂等依据）：记下"已经采到过的节点 + 它是什么"，
+  //   同时给**正文抓取**提供候选（kind=doc 且 ext=adoc 才值得抓）。
+  const seen = loadSeen();
 
   const sp = fetchSpaces({ run });
   if (sp.ok !== true) return { inCount: 0, outCount: 0, refreshed: 0, skipped: 0, outOfScope: 0, quarantined: 0, spacesScanned: 0, kinds, errors: [sp.why], dataAsOf: null, why: `知识库清单取不到：${sp.why}` };
@@ -200,7 +206,9 @@ export function ingestOnce({ run = defaultRun, dryRun = false, limit = MAX_PAGE,
         const uuid = String(item?.dentryUuid ?? '');
         if (!uuid) { quarantined += 1; errors.push(`知识库「${s.name}」有条 ${a.kind} 没有 dentryUuid，跳过（不猜）`); continue; }
         const prev = byDoc.get(uuid);
-        if (!prev || (a.feedTime ?? 0) > (prev.feedTime ?? 0)) byDoc.set(uuid, { doc: item, feedTime: a.feedTime, type: a.type, kind: a.kind });
+        // `ext` 一起带上：正文抓取要靠它分辨"真文档（adoc）"与"AI 表格（able）"，
+        // 后者喂给 `doc +export` 会被明确拒绝（实测原话见文件末尾正文抓取那一节）。
+        if (!prev || (a.feedTime ?? 0) > (prev.feedTime ?? 0)) byDoc.set(uuid, { doc: item, feedTime: a.feedTime, type: a.type, kind: a.kind, ext: String(item?.extension ?? item?.ext ?? '') });
       }
     }
 
@@ -208,6 +216,14 @@ export function ingestOnce({ run = defaultRun, dryRun = false, limit = MAX_PAGE,
       const mapped = mapDoc(it.doc, { feedTime: it.feedTime, type: it.type, kind: it.kind });
       if (mapped.ok !== true) { quarantined += 1; errors.push(`知识库「${s.name}」有条 ${it.kind} 映射失败：${mapped.errors.join('；')}`); continue; }
       if (mapped.usedFeedTime) feedTimeUsed += 1;
+      // ★ 先记 seen（**不分界内界外**）：`kind`/`ext`/`name` 是正文抓取的候选依据，
+      //   而界外项占了绝大多数（今天实测 66/66）—— 只在界内记，等于候选永远是空的。
+      //   这边登记的是"这个节点是什么"，与"它的内容该不该在采集起点之后入流"是两件事。
+      seen[String(it.doc?.dentryUuid ?? '')] = {
+        at: new Date().toISOString(), kind: it.kind,
+        name: String(it.doc?.name ?? ''), ext: String(it.ext ?? ''),
+        feedTime: it.feedTime ?? null,
+      };
       const scope = inScope('message', mapped.payload, mapped._at);
       if (!scope.inScope) { skipped += 1; outOfScope += 1; continue; }
       if (dryRun) { outCount += 1; continue; }
@@ -218,11 +234,13 @@ export function ingestOnce({ run = defaultRun, dryRun = false, limit = MAX_PAGE,
       const r = store.upsert(made.event);
       if (r.action === 'rejected') { quarantined += 1; errors.push(`落库被拒：${r.reason}`); continue; }
       if (r.action === 'added') outCount += 1; else if (r.action === 'updated') refreshed += 1;
+      seen[String(it.doc?.dentryUuid ?? '')].eventId = made.event._id;
     }
   }
 
+  if (!dryRun) saveSeen(seen);
   return {
-    inCount, outCount, refreshed, skipped, outOfScope, quarantined, spacesScanned, truncatedSpaces, kinds, feedTimeUsed, errors,
+    inCount, outCount, refreshed, skipped, outOfScope, quarantined, spacesScanned, truncatedSpaces, kinds, feedTimeUsed, errors, seen,
     dataAsOf: new Date().toISOString(),
     why: `知识库 ${spacesScanned} 个 · 动态 ${inCount} 条（文档 ${kinds.doc} · 文件 ${kinds.file} · 文件夹 ${kinds.folder}（不采） · 成员 ${kinds.member}（不采） · 认不出 ${kinds.unknown}）`
       + ` → 去重后新采 ${outCount} · 刷新 ${refreshed} · 跳过 ${skipped}（其中出界 ${outOfScope}） · 隔离 ${quarantined}`
@@ -232,8 +250,154 @@ export function ingestOnce({ run = defaultRun, dryRun = false, limit = MAX_PAGE,
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 自检（注入假 run）
+// 正文抓取（需求 3.1.1 / 3.1.2 的"内容"层；2026-10-12 补）
+//
+// 实证（全部量出来的，不是猜的）：
+//   · 命令：`dws doc +export --node <dentryUuid> --export-format markdown --max-polls 30 --output <目录>/`
+//   · **`--node` 认的就是 `dentryUuid`**（实测：换别的键会被判节点不存在）
+//   · 返回：`{ok:true, data:{jobId, localPath, sizeBytes}, steps:[submit,poll,download]}`
+//   · **导出是异步任务**：第一次实测撞到 `status=INIT / Export job is still processing`
+//     ⇒ **不能塞进 5 分钟节拍**（一轮等几十秒会把节拍拖垮）⇒ 单独入口，由低频定时任务跑。
+//   · `--output` 给目录时**固定落成 `document.md`**（同名会覆盖）⇒ **每条一个临时目录**，
+//     再按"日期+主题"挪进知识库（复用 `links.mjs#suggestDocName`，**不复制一份命名规则**）。
+//   · ⚠️ `--output` 必须是**工作目录内相对路径**（CLI 自己限制）。
+//   · 钉钉 AI 表格（扩展名 `able`）**不是文档**：喂给 `+export` 会被明确拒绝（实测原话：
+//     "当前节点是钉钉AI表格…不是钉钉在线文档…无法使用文档相关工具操作"）⇒ 只抓真文档，其余如实跳过。
+//
+// 纪律：抓不到**不算失败**（标 `failed` + 写原因，正文留空，**绝不假装有**）；按节点幂等，不重复导出。
 // ══════════════════════════════════════════════════════════════════════════════
+
+/** 一次最多抓几条（低频任务，别一口吃太多） */
+export const BODY_MAX_PER_RUN = 5;
+/** 单条导出的最大轮询次数（提交→轮询→下载由 CLI 一条命令走完） */
+export const BODY_MAX_POLLS = 30;
+/** 单条导出的取数超时（毫秒）：异步任务，实测 3 秒回来，但排队时要等 */
+export const BODY_EXPORT_TIMEOUT_MS = 240000;
+/** 连败这个次数后不再反复撞（留痕即可，别每轮都去磨）
+ *  ★ 实测校准（2026-10-12 真跑）：导出是**服务端异步队列** —— 同一条命令，
+ *    有的 3 秒回来、有的十分钟还在 `status=INIT / Export job is still processing`。
+ *    ⇒ 失败**绝大多数是"排队中"，不是"抓不到"**，所以：
+ *      · 上限放到 8 次（按每日一轮算，约一周窗口，够把它排完）；
+ *      · 失败照实记 `why`，下次自然重试；成功后才永久跳过。 */
+export const BODY_MAX_TRIES = 8;
+/** 正文落库目录（与飞书文档正文同一个落点） */
+export function bodyDir() { return path.join(KB_ROOT, 'Other', 'Inflow', '文档'); }
+/** 正文抓取进度（按 dentryUuid 记，幂等） */
+export function bodyStateFile() { return path.join(v1Out(), 'dd-kb-bodies.json'); }
+export function loadBodyState() { try { return JSON.parse(fs.readFileSync(bodyStateFile(), 'utf8')) ?? {}; } catch { return {}; } }
+export function saveBodyState(doc) {
+  fs.mkdirSync(v1Out(), { recursive: true });
+  const tmp = `${bodyStateFile()}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(doc, null, 1), 'utf8');
+  fs.renameSync(tmp, bodyStateFile());
+}
+
+/** 导出正文：一条命令走完提交→轮询→下载（不自己拼轮询） */
+export function exportBody({ nodeId, relOut, run = defaultRun, maxPolls = BODY_MAX_POLLS } = {}) {
+  const args = ['doc', '+export', '--node', String(nodeId), '--export-format', 'markdown', '--max-polls', String(maxPolls), '--output', String(relOut)];
+  // ★ 导出是异步任务（提交→轮询→下载），可能远超查询类的 60s ⇒ 单独给 240s 窗口。
+  //   80% 的情况 3 秒就回来了（实测），放宽只是兜底，不是常态等待。
+  const r = run(args, { timeoutMs: BODY_EXPORT_TIMEOUT_MS });
+  if (r.ok !== true) return { ok: false, why: r.why ?? '导出失败' };
+  const p = r.parsed ?? null;
+  const d = p?.data ?? null;
+  if (!d || typeof d.localPath !== 'string') return { ok: false, why: `返回里没有 localPath：${JSON.stringify(p).slice(0, 200)}` };
+  return { ok: true, localPath: d.localPath, sizeBytes: Number(d.sizeBytes ?? 0), jobId: d.jobId ?? null };
+}
+
+/**
+ * 抓一批正文（跑一轮；按节点幂等）。
+ * @returns {{inCount:number, fetched:number, failed:number, total:object, rows:Array, why:string|null}}
+ */
+export function fetchBodiesOnce({ run = defaultRun, dryRun = false, max = BODY_MAX_PER_RUN, now = Date.now() } = {}) {
+  const st = loadBodyState();
+  const seen = loadSeen();
+  const cands = [];
+  // ★ 候选**排序**（2026-10-12 补，实测教训）：一轮只抓 max 条，而失败项会留在池子里。
+  //   不排序的话，名单头永远是那几个卡在队列里的 ⇒ **后面的候选永远轮不到**（池子不流动）。
+  //   排序口径：① 没试过的优先；② 都试过 ⇒ 试得少的优先；③ 再同 ⇒ 按名字稳定排（可复现）。
+  const rank = (k) => (st[k] ? (st[k].tries ?? 0) : 0);
+  const all = [];
+  for (const [key, rec] of Object.entries(seen)) {
+    if (!rec || rec.kind !== 'doc') continue;
+    const ext = String(rec.ext ?? '').toLowerCase();
+    if (ext !== '' && ext !== 'adoc') continue;                 // able/adraw 等不是"文档"，跳过
+    if (st[key] && st[key].ok === true) continue;               // 已抓到 ⇒ 幂等跳过
+    if (st[key] && (st[key].tries ?? 0) >= BODY_MAX_TRIES) continue;   // 连败到上限 ⇒ 不再磨
+    all.push({ key, ...rec });
+  }
+  all.sort((a, b) => (rank(a.key) - rank(b.key)) || String(a.name ?? '').localeCompare(String(b.name ?? '')) || a.key.localeCompare(b.key));
+  cands.push(...all.slice(0, max));
+  const remainingPool = all.length - cands.length;   // 池里还剩多少（排序后剩下的就是下一轮的头部）
+  let fetched = 0; let failed = 0;
+  const rows = [];
+  for (const c of cands) {
+    if (dryRun) { rows.push({ key: c.key, action: 'dryRun', name: c.name ?? '' }); continue; }
+    const rel = `_meta/out/v1/.runtime/kb-export/${c.key}`.replace(/\\/g, '/');
+    const absDir = path.join(v1Out(), '.runtime', 'kb-export', c.key);
+    fs.mkdirSync(absDir, { recursive: true });
+    const ex = exportBody({ nodeId: c.key, relOut: `${rel}/`, run });
+    const tries = (st[c.key]?.tries ?? 0) + 1;
+    if (ex.ok !== true) {
+      st[c.key] = { ok: false, tries, why: String(ex.why).slice(0, 240), at: new Date(now).toISOString(), name: c.name ?? '', ext: c.ext ?? '' };
+      saveBodyState(st); failed += 1;
+      rows.push({ key: c.key, action: 'failed', why: st[c.key].why });
+      continue;
+    }
+    // 落库：按"日期 + 主题"命名（需求 3.1.2）。★ 日期用**本地日期** ——
+    //   `toISOString()` 是 UTC，东八区会把日期减一天（飞书那条正文抓取真跑踩过）。
+    const d = new Date(now);
+    const localDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const dest = path.join(bodyDir(), suggestDocName({ date: localDate, topic: c.name ?? c.key }));
+    try {
+      fs.mkdirSync(bodyDir(), { recursive: true });
+      const srcAbs = path.isAbsolute(String(ex.localPath)) ? String(ex.localPath) : path.join(KB_ROOT, String(ex.localPath));
+      if (!fs.existsSync(srcAbs)) throw new Error(`导出说落在这里但文件不在：${ex.localPath}`);
+      const md = fs.readFileSync(srcAbs, 'utf8');
+      if (md.trim() === '') throw new Error('导出内容为空');
+      fs.writeFileSync(dest, md, 'utf8');
+      try { fs.rmSync(absDir, { recursive: true, force: true }); } catch { /* noop */ }
+      st[c.key] = { ok: true, tries, at: new Date(now).toISOString(), name: c.name ?? '', ext: c.ext ?? '', file: path.relative(KB_ROOT, dest).replace(/\\/g, '/'), bytes: md.length };
+      saveBodyState(st); fetched += 1;
+      rows.push({ key: c.key, action: 'fetched', file: st[c.key].file, bytes: md.length });
+    } catch (e) {
+      st[c.key] = { ok: false, tries, why: `落库失败：${e.message}`.slice(0, 240), at: new Date(now).toISOString(), name: c.name ?? '', ext: c.ext ?? '' };
+      saveBodyState(st); failed += 1;
+      rows.push({ key: c.key, action: 'failed', why: st[c.key].why });
+    }
+  }
+  const allState = Object.values(st);
+  return {
+    inCount: cands.length, fetched, failed, remaining: remainingPool,
+    total: { ok: allState.filter((x) => x.ok === true).length, failed: allState.filter((x) => x.ok !== true).length },
+    rows,
+    why: cands.length === 0 ? (remainingPool === 0 ? '候选池已空（该抓的都抓过了）' : `本轮没有可抓的候选（池里剩 ${remainingPool} 条但都到重试上限）`) : null,
+  };
+}
+
+// 命令行入口（定时任务用；包装脚本 `_meta/tools/v1-kb-bodies.cmd`）。
+// ★ 为什么必须有入口：本项目已三次踩到"没有命令行入口 ⇒ 计划任务只看到 exit=0"这种假绿。
+if (process.argv[1] && process.argv[1].endsWith('dingtalk-wiki.mjs') && process.argv.includes('--bodies')) {
+  // 命令行入口（定时任务用；`_meta/tools/v1-kb-bodies.cmd`）。
+  // ★ 为什么必须有入口：本项目已三次踩到"没有命令行入口 ⇒ 计划任务只看到 exit=0"这种假绿。
+  const dry = process.argv.includes('--dry-run');
+  const t0 = Date.now();
+  try {
+    const r = fetchBodiesOnce({ dryRun: dry });
+    console.log(`[kb-bodies] 候选 ${r.inCount} · 抓到 ${r.fetched} · 失败 ${r.failed} · 池里还剩 ${r.remaining}（累计 成功 ${r.total.ok} / 失败 ${r.total.failed}）用时 ${Math.round((Date.now() - t0) / 1000)}s`);
+    for (const row of r.rows) console.log(`  ${row.action.padEnd(7)} ${row.key} ${row.file ?? row.why ?? ''}`);
+    if (r.why) console.log(`  （${r.why}）`);
+    // 有候选却一条都没成功 ⇒ 判失败（否则计划任务会把它记成成功，又是一次假绿）
+    const ok = !(r.inCount > 0 && r.fetched === 0 && !dry);
+    console.log(ok ? 'PASS' : 'FAIL');
+    process.exit(ok ? 0 : 1);
+  } catch (e) {
+    console.error(`[kb-bodies] 抛异常：${e.stack ?? e.message}`);
+    console.log('FAIL');
+    process.exit(1);
+  }
+}
+
 export async function selfTest() {
   const os = await import('node:os');
   const out = [];
@@ -338,6 +502,54 @@ export async function selfTest() {
     const before = store.list({ type: 'message' }).length;
     ingestOnce({ run: runWith(spaces, feeds), dryRun: true });
     chk('KB-23', '干跑不写盘', store.list({ type: 'message' }).length === before);
+
+    // ⑨ ★ 正文抓取（需求 3.1.1/3.1.2 的"内容"层；2026-10-12 补）
+    const tmpKb = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-kb-bodies-'));
+    const prevKb = process.env.WB_V1_KB_ROOT;
+    process.env.WB_V1_KB_ROOT = tmpKb;
+    try {
+      // 造一份 seen：一个真文档（adoc）+ 一个 AI 表格（able）+ 一个已抓过的
+      saveSeen({
+        N1: { kind: 'doc', name: '01-课程大纲', ext: 'adoc', at: new Date().toISOString() },
+        N2: { kind: 'doc', name: '邮件追踪表', ext: 'able', at: new Date().toISOString() },
+        N3: { kind: 'doc', name: '已抓过的', ext: 'adoc', at: new Date().toISOString() },
+      });
+      saveBodyState({ N3: { ok: true, tries: 1, file: 'Other/Inflow/文档/x.md' } });
+      // 假 run：模拟 `doc +export` 成功。
+      // ⚠️ 它必须把 `document.md` 落在 **v1Out() 下面**（不是假的知识库根）——
+      //    `--output` 是相对**工作目录（知识库根）**的路径，而运行态目录是真实那一个。
+      //    夹具写错地方 ⇒ 断言假红（实测踩到过一次：又是"夹具与实现不同形"）。
+      const fakeExport = (args) => {
+        const outIdx = args.indexOf('--output');
+        const rel = outIdx >= 0 ? String(args[outIdx + 1]) : '';
+        const abs = path.join(KB_ROOT, rel);
+        fs.mkdirSync(abs, { recursive: true });
+        fs.writeFileSync(path.join(abs, 'document.md'), '# 课程大纲\n\n正文内容', 'utf8');
+        return { ok: true, parsed: { ok: true, status: 'success', data: { jobId: 'j1', localPath: `${rel}document.md`, sizeBytes: 12 } } };
+      };
+      const b1 = fetchBodiesOnce({ run: fakeExport, now: Date.UTC(2026, 9, 12, 4, 0, 0) });
+      chk('KB-24', '★ 正文抓到并落库（按"日期+主题"命名）', b1.fetched === 1 && b1.rows.some((r) => r.action === 'fetched'), JSON.stringify(b1.rows));
+      chk('KB-25', '★ AI 表格（ext=able）**不抓**（不是文档，CLI 会拒）', b1.inCount === 1 && b1.rows.every((r) => r.key !== 'N2'), JSON.stringify(b1.rows.map((r) => r.key)));
+      chk('KB-26', '★ 已抓过的节点幂等跳过（不重复导出）', b1.rows.every((r) => r.key !== 'N3'));
+      chk('KB-27', '★ 落盘名用**本地日期**（UTC 会少一天：UTC 04:00 = 东八区 12:00 同日）', (() => {
+        const p = Object.values(loadBodyState()).find((x) => x.ok === true && x.file && x.file.includes('课程大纲'));
+        return !!p && /2026-10-12-01-课程大纲\.md$/.test(p.file);
+      })(), JSON.stringify(Object.values(loadBodyState()).map((x) => x.file)));
+      chk('KB-28', '★ 导出失败 ⇒ 如实记 failed + 原因（正文留空，绝不假装有）', (() => {
+        saveSeen({ N4: { kind: 'doc', name: '抓不到的', ext: 'adoc', at: new Date().toISOString() } });
+        const b2 = fetchBodiesOnce({ run: () => ({ ok: false, why: '导出任务仍处理中（模拟）' }) });
+        const rec = loadBodyState().N4;
+        return b2.failed === 1 && rec.ok === false && /处理中/.test(rec.why);
+      })());
+      chk('KB-29', '★ 返回里没有 localPath ⇒ 也算失败（不写空文件）', (() => {
+        saveSeen({ N5: { kind: 'doc', name: '形状变了', ext: 'adoc', at: new Date().toISOString() } });
+        const b3 = fetchBodiesOnce({ run: () => ({ ok: true, parsed: { ok: true, data: {} } }) });
+        return b3.failed === 1 && loadBodyState().N5.ok === false && /localPath/.test(loadBodyState().N5.why);
+      })());
+    } finally {
+      if (prevKb === undefined) delete process.env.WB_V1_KB_ROOT; else process.env.WB_V1_KB_ROOT = prevKb;
+      try { fs.rmSync(tmpKb, { recursive: true, force: true }); } catch { /* noop */ }
+    }
   } finally {
     if (prevOut === undefined) delete process.env.WB_V1_OUT; else process.env.WB_V1_OUT = prevOut;
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* noop */ }
