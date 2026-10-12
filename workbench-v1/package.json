@@ -2,7 +2,7 @@
   "name": "dsh-workbench-v1",
   "version": "1.0.0",
   "private": true,
-  "description": "弈枢 · 工作台 1.0 —— 采集器 / 处理器 / 存储器三部分重建；只含引擎与页面，不含任何数据",
+  "description": "工作台 · 工作台 1.0 —— 采集器 / 处理器 / 存储器三部分重建；只含引擎与页面，不含任何数据",
   "type": "module",
   "engines": {
     "node": ">=20"

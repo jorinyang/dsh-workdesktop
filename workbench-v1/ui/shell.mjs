@@ -1,8 +1,8 @@
 /**
- * v1/ui/shell.mjs —— **弈枢外壳渲染**（P4；需求 3.3.1）
+ * v1/ui/shell.mjs —— **工作台外壳渲染**（P4；需求 3.3.1）
  *
  * 需求 3.3.1 三条硬要求（都写成了断言）：
- *   ① 名称不变：**弈枢**
+ *   ① 名称不变：**工作台**
  *   ② **顶部横向导航** + **底部状态栏**在**所有**页面都存在
  *   ③ 状态栏横向一行：DWS / MCP / 本地工具 / 浏览器 + 三个开关
  *      （实时回复 / 响应功能 / 向量检索 —— 开关名与 system-switches 能力名一致）
@@ -19,7 +19,7 @@ import { RADIUS, SHADOWS, cssVariables } from './tokens.mjs';
 import { overview, messages, todos, schedules, notes, scheduleHeatmap } from '../api/pages.mjs';
 import { clientScript, clientStyle } from './client.mjs';
 
-export const APP_NAME = '弈枢';
+export const APP_NAME = '工作台';
 
 export const PAGE_DEFS = Object.freeze([
   { key: 'overview', label: '今日总览' },

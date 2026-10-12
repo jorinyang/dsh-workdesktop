@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * v1/ui/status-page.mjs —— 渲染 **弈枢 1.0 现状一览**（`Other/data/workbench-v1/status.html`）
+ * v1/ui/status-page.mjs —— 渲染 **工作台 1.0 现状一览**（`Other/data/workbench-v1/status.html`）
  *
  * 为什么做这一页：进度散在对话与文档里，人和下一个接手者都得翻半天。
  *   这一页把**真实读数**（通道接线数、缺口清单、水位线、台账、四类库存、知识库产出）摊在一张页面上，

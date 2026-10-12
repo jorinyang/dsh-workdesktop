@@ -69,6 +69,40 @@ export const KNOWLEDGE_HINTS = Object.freeze([
 /** 完成类词（与 close.mjs 的 DONE_HINTS 同源口径：用于"这条消息是不是在说某件事办完了"） */
 export const DONE_MARKS = Object.freeze(['已完成', '完成了', '已发', '发了', '已交付', '交付了', '上传了', '已上传', '已提交', '提交了', '搞定了', '已处理', '已回复', 'done', '发你了', '发给我了', '已经发', '已给', '给你了', '办完了', '做完了']);
 
+/**
+ * **系统通知的识别**（2026-10-12 补；这一条是看了自动建出来的东西之后才加的）
+ *
+ * 为什么必须挡住：判定上线跑了半天，自动建了 8 条 —— 其中**三条是钉钉自己的系统通知**
+ *   （额度不足提醒、"上周学习情况总结"、卡片渲染的原始结构）。
+ *   这些不是"我说的话"，是平台自动发的；把它们建成笔记/待办，等于往知识库里灌噪声，
+ *   而且**每一条都会重复出现**（额度提醒会反复发）。
+ *   ⇒ 规矩：**系统通知整条不判**（连候选都不给），而不是"判出来再降级"。
+ *
+ * 辨认方式（两类，都要，缺一类会漏）：
+ *   ① **固定话术**：平台通知有稳定的开头/句式，列成显式清单；
+ *   ② **卡片结构**：钉钉的互动卡片会把渲染数据一起发过来 —— 正文里出现
+ *      `"minSupportVersion"` / 大段 `[{"text":{…}}]` 这种，**不是人说的话**。
+ */
+export const SYSTEM_NOISE = Object.freeze([
+  '额度不足', '额度已使用', '额度即将用完', '剩余', 'DING额度',
+  '上周学习情况总结', '上周使用人数', '上周新分配', '上周新安排',
+  '仅你和对方可见',
+  '你的账号', '系统消息', '自动回复', '本条消息由系统',
+]);
+
+/** 这条是不是系统/卡片产生的（是 ⇒ **整条不判**） */
+export function looksLikeSystemMessage(raw) {
+  const t = String(raw ?? '');
+  if (t.trim() === '') return true;
+  if (SYSTEM_NOISE.some((h) => t.includes(h))) return true;
+  // 卡片结构：正文里塞着渲染数据（JSON 片段 + 卡片的固定键名）
+  if (/"minSupportVersion"|"translateMap"|"items"\s*:\s*\[\s*\{/.test(t)) return true;
+  // 大段 JSON 当作"内容"：整条里 `{` 与 `"` 密度过高 ⇒ 那不是人写的句子
+  const jsonish = (t.match(/[{}"]/g) ?? []).length;
+  if (t.length > 0 && jsonish / t.length > 0.06) return true;
+  return false;
+}
+
 /* ── 取值工具 ────────────────────────────────────────────────────────────── */
 
 const T = (v) => String(v ?? '').trim();
@@ -178,6 +212,11 @@ export function detectFromMessage(evt) {
   const raw = T(evt?.payload?.raw ?? evt?.payload?.summary ?? '');
   const out = [];
   if (raw === '') return { candidates: [], auto: [], pending: [], summary: '空消息，无从判定' };
+  // ★ 系统通知/卡片结构 ⇒ **整条不判**（连候选项都不给）。
+  //   理由见 `SYSTEM_NOISE` 上面的注释：这类东西不是"我说的话"，建成事件只会灌噪声，且会反复出现。
+  if (looksLikeSystemMessage(raw)) {
+    return { candidates: [], auto: [], pending: [], summary: `系统通知/卡片结构 ⇒ 不判定（${SYSTEM_NOISE.find((h) => raw.includes(h)) ?? '含大量卡片字段'}）`, system: true };
+  }
 
   const timeHit = hit(raw, TIME_HINTS);
   const timePhrases = extractAllTimePhrases(raw);
@@ -297,7 +336,12 @@ export function autoCreateFromMessage(evt, { store, schema, dryRun = false, now 
       } else if (c.kind === 'todo') {
         payload = { topic: String(evt.payload.raw).slice(0, 80), detail: String(evt.payload.raw), due: null, publisher: evt.payload.sender ?? null, executor: '我' };
       } else {
-        payload = { topic: String(evt.payload.raw).slice(0, 80), date: ymdOf(now), content_md: String(evt.payload.raw), tags: ['消息沉淀'] };
+        // ★ 笔记的**最低内容门槛**（2026-10-12 补，实测）：判定上线后自动建了 5 条笔记，
+        //   翻出来看有几条是"一周学习情况总结""额度提醒"这类**短的系统播报** ——
+        //   它们不是知识。规矩：**太短的不自动建成笔记**，改标"待处置"交人看。
+        const body = String(evt.payload.raw ?? '').trim();
+        if (body.length < 40) { unbuildable.push({ ...c, why: c.why + `｜内容只有 ${body.length} 字，太短，不自动建笔记（交你判）` }); continue; }
+        payload = { topic: body.slice(0, 80), date: ymdOf(now), content_md: `来源：${evt.payload?.channel ?? evt.origin?.channel ?? '-'} · ${evt.payload?.sender ?? '-'}\n\n${body}`, tags: ['消息沉淀'] };
       }
       const made = schema.makeEvent({
         type: c.kind, payload,
@@ -428,6 +472,44 @@ export async function selfTest() {
       chk('DET-20', '★ 判据不足 ⇒ **不建**（宁可问一句），且不报成 auto', b1.action === 'none' && b1.created.length === 0 && st.list({ type: 'schedule' }).length === 1, JSON.stringify({ action: b1.action, summary: b1.summary }));
       const b2 = autoCreateFromMessage(st.getById('message', m2._id), { store: st, schema: sc });
       chk('DET-21', '判定过的消息会被跳过（幂等对"没建"的也一样）', b2.action === 'skipped');
+
+      // ⑩ ★ 系统通知与短播报**不许**被建成事件（2026-10-12 看了自动建出来的东西之后加的）
+      const sysCases = [
+        ['短信/电话DING额度不足 截止2026-10-12，[某学院]的短信DING额度已使用892条，剩余108条', '额度提醒'],
+        ['* 仅你和对方可见 [{"text":{"minSupportVersion":"1.1","translateMap":{},"version":"1.2","items":[{"text":"x"}]}}]', '卡片结构'],
+        ['[金牌团队]:上周学习情况总结 企业名称：某某科技 上周使用人数：0人，比上一周持平', '周报播报'],
+      ];
+      let sysOk = true; const sysDetail = [];
+      for (const [raw, label] of sysCases) {
+        const d = detectFromMessage({ type: 'message', payload: { raw }, origin: {} });
+        if (d.candidates.length !== 0) { sysOk = false; sysDetail.push(label + ' 仍判出 ' + d.candidates.length + ' 项'); }
+      }
+      chk('DET-22', '★★ 系统通知/卡片结构 ⇒ 整条不判（额度提醒、卡片 JSON、周报播报）', sysOk, sysDetail.join('；') || '三类都不判');
+
+      // 短播报：即使被当成"笔记候选"，也**不自动建**（内容太短）
+      const shortRaw = '上周学习情况总结：使用人数 0 人，新分配学习计划 0 个，新安排考试 0 个，新上传课程 0 门。';
+      const madeShort = sc.makeEvent({ type: 'message', payload: { channel: 'dingtalk', sender: '系统', raw: shortRaw, source: 'im', modality: 'text', summary: shortRaw.slice(0, 40) }, origin: { channel: 'dingtalk', sender: '系统', messageId: 'm-short-1' }, _at: Date.now() });
+      st.upsert(madeShort.event);
+      const mShort = st.list({ type: 'message' }).find((e) => e.origin.messageId === 'm-short-1');
+      const rShort = autoCreateFromMessage(mShort, { store: st, schema: sc });
+      chk('DET-23', '★ 太短的播报不自动建成笔记（改标"待处置"交人看）', rShort.created.length === 0, JSON.stringify({ action: rShort.action, created: rShort.created.length, summary: rShort.summary }));
+
+      // ★ 负向对照的另一半：**不能因为加了闸就把正常内容也挡了**
+      //   ① 只是"长"不够 —— 需求原文要的是"成体系的知识/结构/方法"，
+      //      一段抒发想法的长消息**不该**被自动建成笔记（这半条是我先写错预期、后来按需求原文改回来的）；
+      const longTalk = '呃我刚才有的一个疑问是这样的，就现在我给这些场景去做辅导的时候，我统一告诉他们需要提交的内容就是有一个是他场景的一个说明文档，然后需要做一个海报，呃需要有一个视频去讲解他的这个产品';
+      const madeTalk = sc.makeEvent({ type: 'message', payload: { channel: 'dingtalk', sender: '某人', raw: longTalk, source: 'im', modality: 'text', summary: longTalk.slice(0, 40) }, origin: { channel: 'dingtalk', sender: '某人', messageId: 'm-talk-1' }, _at: Date.now() });
+      st.upsert(madeTalk.event);
+      const mTalk = st.list({ type: 'message' }).find((e) => e.origin.messageId === 'm-talk-1');
+      const rTalk = autoCreateFromMessage(mTalk, { store: st, schema: sc });
+      chk('DET-24', '★ 只是"长"不够：抒发想法的长消息不自动建笔记（需求要的是"成体系的知识/结构/方法"）', rTalk.created.length === 0, JSON.stringify({ action: rTalk.action, summary: rTalk.summary }));
+      //   ② 但**真的成体系的**内容必须照常建（闸门不能把正事挡了）
+      const realKnow = '我把采集器的设计原则归纳了一下：第一是多通道，第二是幂等，第三是模态不变。这个方法论的要点是：结构上分三层，每层各管一段，步骤上先探形状再认种类最后翻页。后面可以复用到别的系统上。';
+      const madeReal = sc.makeEvent({ type: 'message', payload: { channel: 'dingtalk', sender: '某人', raw: realKnow, source: 'im', modality: 'text', summary: realKnow.slice(0, 40) }, origin: { channel: 'dingtalk', sender: '某人', messageId: 'm-real-1' }, _at: Date.now() });
+      st.upsert(madeReal.event);
+      const mReal = st.list({ type: 'message' }).find((e) => e.origin.messageId === 'm-real-1');
+      const rReal = autoCreateFromMessage(mReal, { store: st, schema: sc });
+      chk('DET-25', '★ 成体系的内容仍然照常建（闸门只挡噪声，不挡正事）', rReal.created.length >= 1 && rReal.created.some((x) => x.kind === 'note'), JSON.stringify({ action: rReal.action, created: rReal.created }));
     } finally {
       if (prev === undefined) delete process.env.WB_V1_OUT; else process.env.WB_V1_OUT = prev;
       try { fs.rmSync(tmp2, { recursive: true, force: true }); } catch { /* noop */ }

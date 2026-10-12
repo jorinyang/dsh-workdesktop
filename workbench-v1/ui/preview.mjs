@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * v1/ui/preview.mjs —— 渲染弈枢预览页到 `Other/data/workbench-v1/`（P4 手工查看用）
+ * v1/ui/preview.mjs —— 渲染工作台预览页到 `Other/data/workbench-v1/`（P4 手工查看用）
  *
  * 为什么不直接用命令行内联脚本：Windows 下 PowerShell 会吃掉内联脚本里的引号与括号
  * （实测：正则里的 `( off)?` 被当成命令执行）。落到文件里就没有这层转义问题。

@@ -674,7 +674,7 @@ export async function selfTest() {
 if (process.argv[1] && process.argv[1].endsWith('server.mjs')) {
   const port = Number(process.argv[2] || 8791);
   startServer({ port }).then((s) => {
-    console.log(`弈枢 API 已起：${s.url}（只监听本机 ${s.port}）`);
+    console.log(`工作台 API 已起：${s.url}（只监听本机 ${s.port}）`);
     console.log('读：GET /health · /pages/{overview|messages|todos|schedules|notes}');
     console.log('写：POST 登记表里的路径（write-routes.json）');
   });
