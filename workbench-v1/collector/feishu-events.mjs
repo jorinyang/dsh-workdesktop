@@ -101,6 +101,23 @@ export function parseEventLine(line) {
   if (!t.endsWith('}')) return { ok: false, skip: true, why: 'JSON 片段（多行块的一行）' };
   let j;
   try { j = JSON.parse(t); } catch (e) { return { ok: false, why: `坏 JSON：${e.message}` }; }
+
+  // ★★ 2026-10-12 **真事件到达后才发现**：`lark-cli` 输出的是**扁平结构**，不是官方文档里的嵌套 `event.message`：
+  //   {"type":"im.message.receive_v1","event_id":"…","create_time":"1791772410668",
+  //    "chat_id":"oc_…","chat_type":"p2p","message_type":"text","sender_id":"ou_…","content":"测试信息"}
+  //   ⇒ 三处都不一样：① 扁平（无 `event.message`）；② `content` 是**纯文本**（不是 '{"text":…}' 字符串）；
+  //     ③ `sender_id` 是扁平字符串（不是 `sender.sender_id.open_id`）。
+  //   第一版只按文档形状解析 ⇒ 真事件进来时**一条都认不出**（"认得出 0"），而 skip 又让它看起来"没消息"。
+  if (j && typeof j === 'object' && (j.message_id || j.chat_id) && j.message_type) {
+    const id = String(j.event_id ?? j.id ?? j.message_id ?? '');
+    return {
+      ok: true, id, flat: true,
+      msg: { chat_id: j.chat_id, chat_type: j.chat_type, message_type: j.message_type, create_time: j.create_time, content: j.content },
+      sender: { sender_id: { open_id: j.sender_id } },
+    };
+  }
+
+  // 兼容官方 API 的**嵌套**形状（webhook / 原始事件体）
   const ev = j.event ?? j;
   const msg = ev?.message ?? ev?.event?.message;
   const sender = ev?.sender ?? ev?.event?.sender;
@@ -114,7 +131,10 @@ const TEXT_MSG = 'text';
 /** 事件 → v1 消息事件 */
 export function mapEvent(parsed) {
   const errs = [];
-  const { id, msg, chatType } = parsed ?? {};
+  const { id, msg } = parsed ?? {};
+  // ★ 会话类型两种形状都要取：扁平事件放在 `msg.chat_type`（第一版只读 `parsed.chatType`，
+  //   而那个字段只有嵌套分支才设 ⇒ **单聊被标成了"群聊"**。真事件到达后当场发现。）
+  const chatType = parsed?.chatType ?? msg?.chat_type ?? '';
   if (!id) errs.push('缺 event_id（幂等键要用）');
   const t = Number(msg?.create_time);
   if (!Number.isFinite(t) || t <= 0) errs.push(`create_time 无法解析：${JSON.stringify(msg?.create_time)}`);
@@ -125,19 +145,21 @@ export function mapEvent(parsed) {
   // 内容：text 直接取；其它模态（图片/文件/语音/视频）先按"模态 + 文件键"入流，附件下载是下一步
   let raw = '';
   let modality = 'text';
-  try {
-    const body = JSON.parse(msg.content ?? '{}');
-    if (msg.message_type === TEXT_MSG) raw = String(body.text ?? '').trim();
+  const c = msg.content;
+  if (msg.message_type === TEXT_MSG) {
+    // ★ 两种形状都要认：**扁平事件里 `content` 就是纯文本**；官方嵌套形状里是 `'{"text":"…"}'` 字符串。
+    if (typeof c === 'string' && !c.trim().startsWith('{')) { raw = c.trim(); }
     else {
-      modality = String(msg.message_type ?? 'unknown');
-      // ★ 优先取**人看得懂**的那个：文件名 > 语音时长 > 不透明的 key。
-      //   （第一版直接取 file_key ⇒ 内容成了「［file］fk_1」，等于没告诉人是什么东西；
-      //     FSE-7 当场判红。key 仍留在 origin.raw 里，溯源不受影响。）
-      const human = body.file_name ?? body.image_name ?? '';
-      const opaque = body.file_key ?? body.image_key ?? body.file_token ?? '';
-      raw = `［${modality}］${human || opaque}`.trim();
+      try { raw = String(JSON.parse(c ?? '{}').text ?? '').trim(); } catch { raw = String(c ?? '').trim(); }
     }
-  } catch { modality = String(msg.message_type ?? 'unknown'); raw = `［${modality}］（内容解析失败）`; }
+  } else {
+    modality = String(msg.message_type ?? 'unknown');
+    let body = {};
+    try { body = typeof c === 'string' && c.trim().startsWith('{') ? JSON.parse(c) : (c ?? {}); } catch { body = {}; }
+    const human = body.file_name ?? body.image_name ?? '';
+    const opaque = body.file_key ?? body.image_key ?? body.file_token ?? '';
+    raw = `［${modality}］${human || opaque}`.trim();
+  }
   if (!raw) return { ok: false, skip: true, errors: ['空内容'] };
 
   const who = chatType === 'p2p' ? '飞书·单聊' : `飞书·群聊(${chatId.slice(0, 10)})`;
@@ -227,6 +249,17 @@ export async function selfTest() {
       parseEventLine('{').skip === true && parseEventLine('  "ok": false,').skip === true);
     const p1 = parseEventLine(evt('e1', 'p2p', AT, '你好'));
     chk('FSE-3', '★ 认得出消息事件并拿到 event_id', p1.ok === true && p1.id === 'e1' && p1.msg.create_time === AT);
+
+    // ★★ 真实形状（2026-10-12 真事件到达后才发现）：`lark-cli` 输出的是**扁平**结构，
+    //   且 `content` 是**纯文本**。第一版只按官方文档的嵌套形状解析 ⇒ 真事件一条都认不出（"认得出 0"）。
+    const FLAT = JSON.stringify({
+      type: 'im.message.receive_v1', event_id: 'flat-1', timestamp: String(AT), id: 'om_1', message_id: 'om_1',
+      create_time: String(AT), chat_id: 'oc_flat', chat_type: 'p2p', message_type: 'text',
+      sender_id: 'ou_flat', sender_type: 'user', content: '测试信息',
+    });
+    { const r = parseEventLine(FLAT); chk('FSE-3b', '★★ 认得出**扁平**形状（lark-cli 的真实输出）', r.ok === true && r.id === 'flat-1' && r.msg.content === '测试信息'); }
+    { const m = mapEvent(parseEventLine(FLAT)); chk('FSE-3c', '★★ 扁平形状：纯文本 content + **单聊**标签（不能标成群聊）', m.ok === true && m.payload.raw === '测试信息' && m.payload.sender === '飞书·单聊', JSON.stringify(m.payload)); }
+    { const m = mapEvent(parseEventLine(FLAT.replace('"chat_type":"p2p"', '"chat_type":"group"'))); chk('FSE-3d', '扁平形状：群聊标签带群标识', m.payload.sender.startsWith('飞书·群聊'), m.payload.sender); }
 
     // ② 映射
     const m1 = mapEvent(p1);
