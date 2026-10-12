@@ -124,16 +124,72 @@ export function graph({ maxNodes = 200, now = Date.now() } = {}) {
   };
 }
 
+/**
+ * **四块的落点**（2026-10-12 补齐；需求 4.3.2–4.3.5 逐条点名，此前只有一句泛泛的 ask）
+ *
+ * ★ 为什么必须写死成结构：这四块不是"写点分析"，是**各有指定动作**的 ——
+ *   4.3.2 点名五种方法、4.3.3 点名七个维度、4.3.4 点名六个方面、4.3.5 点名 SWOT × 三时段。
+ *   只给模型一句"找出业务规律"，它一定会给一段读起来像分析的散文，而**点名的那几项会漏**。
+ *   ⇒ 把要求写成逐项清单，并让每项**必须回指到数据切片里的具体数字**（"只依据材料、不编"）。
+ */
+export const NARRATIVE_SPECS = Object.freeze({
+  trend: {
+    label: '发展趋势',
+    ask: '做业务趋势演进分析：还原"当时的信息集 + 当时的判断 + 当时的动作"，找机遇漏判与风险盲区',
+    // 需求 4.3.2 的五种分析，**一种一段，不许合并**
+    methods: Object.freeze([
+      ['情景还原', '按时间顺序还原那几天实际发生了什么（谁、什么时候、做了什么），只写切片里有的事'],
+      ['事件归因', '把结果回溯到当时的信息与判断：哪些动作带来了进展，哪些停滞有前因'],
+      ['决策树回溯', '当时可选的几条路，实际走了哪条、放弃了哪条（切片看不出来的就写"切片里看不到"）'],
+      ['噪声分离', '把偶发噪声（一次性的杂音）与真信号（重复出现的模式）分开'],
+      ['反事实分析', '如果当时做了另一个选择，可能怎样 —— 用于指出**机遇漏判**与**风险盲区**'],
+    ]),
+    shape: '按上面五种方法，**每种一段**（段首写方法名），每段不超过 150 字；结尾给一句"最该补的那件事"',
+  },
+  insight: {
+    label: '业务洞察',
+    ask: '按业务单元（项目 / 业务线）复盘全过程，逐维度洞察',
+    unitGuide: '先按数据切片里的发信人 / 目录 / 主题把内容归到**业务单元**（项目或业务线）；归不进去的写"未能归属"，不要硬塞',
+    // 需求 4.3.3 的七个维度
+    dimensions: Object.freeze(['业务逻辑', '决策与执行', '组织与能力', '机遇与风险', '客户与市场', '财务与资源', '规律与机制']),
+    shape: '先写"业务单元"清单（每个一行：它是什么 + 切片里的依据），再按上面七个维度逐条写（每条约 80 字）；某一维度切片里没材料就写"切片里没有这方面的材料"',
+  },
+  state: {
+    label: '状态分析',
+    ask: '结合库内方法论，把当前最准确的业务状态呈现出来',
+    // 需求 4.3.4 的六个方面
+    dimensions: Object.freeze(['战略', '执行', '机制', '能力', '市场', '资源', '方法论及认知迭代']),
+    shape: '按上面几个方面逐条写（每条约 80 字），每条给出"在推进 / 停住了 / 看不清"三者之一作为判断；最后一句写"最不确定的是哪一项"',
+  },
+  advice: {
+    label: '发展建议',
+    ask: '结合发展趋势 + 洞察结果 + 业务状态，推演未来并给发展建议',
+    // 需求 4.3.5：三时段 × 外部环境/组织能力/资源市场，落成 SWOT
+    horizons: Object.freeze([['短期', '1 个月'], ['中期', '3 个月'], ['长期', '1 年']]),
+    swotAxes: Object.freeze(['外部环境', '组织能力', '资源市场']),
+    shape: '先按 S（优势）/ W（劣势）/ O（机会）/ T（威胁）**四组**写；再按短期(1月) / 中期(3月) / 长期(1年) **三段**，每段覆盖"外部环境 / 组织能力 / 资源市场"三面；最后给"谁、什么时候、做什么"的下一步',
+  },
+});
+
 /** 需要模型的三块：先取真实数据切片，再交给模型；**没数据就不调** */
 export function sliceFor(kind, { from = null, to = null, now = Date.now() } = {}) {
   const s = stats({ now }); const t = trend({ from, to, now }); const g = graph({ now });
-  const byKind = { insight: '业务洞察', state: '状态分析', advice: '发展建议' };
-  const asks = {
-    insight: '从这些切片里找出业务规律与异常（只看材料，不编）',
-    state: '给出当前业务的真实状态（哪些在推进、哪些停住了）',
-    advice: '结合趋势与状态，给出可执行的改进建议（谁、什么时候、做什么）',
-  };
-  return { kind, label: byKind[kind] ?? kind, ask: asks[kind] ?? '', stats: s, trend: t, graphCounts: g.counts, events: t.totals };
+  const spec = NARRATIVE_SPECS[kind];
+  const byKind = { trend: '发展趋势', insight: '业务洞察', state: '状态分析', advice: '发展建议' };
+  return { kind, label: byKind[kind] ?? kind, ask: spec?.ask ?? '', spec: spec ?? null, stats: s, trend: t, graphCounts: g.counts, events: t.totals };
+}
+/** 按 kind 拼提示词里的"逐项要求"（**四块的要求都是显式清单**，不是一句泛泛的话） */
+export function specLines(kind) {
+  const sp = NARRATIVE_SPECS[kind];
+  if (!sp) return [];
+  const L = [];
+  if (sp.methods) { L.push('必须逐项分析（**一种一段**，段首写方法名，不许合并、不许漏项）：'); for (const [n, d] of sp.methods) L.push(`  · ${n}：${d}`); }
+  if (sp.unitGuide) L.push(`业务单元口径：${sp.unitGuide}`);
+  if (sp.dimensions) { L.push('必须逐项覆盖（一个不许漏）：'); for (const d of sp.dimensions) L.push(`  · ${d}`); }
+  if (sp.horizons) { L.push(`时间跨度（三段都要写）：${sp.horizons.map((h) => `${h[0]}(${h[1]})`).join(' / ')}`); L.push(`每段必须覆盖：${sp.swotAxes.join(' / ')}`); }
+  if (kind === 'advice') L.push('SWOT 四组都要写：S 优势 / W 劣势 / O 机会 / T 威胁');
+  if (sp.shape) L.push(`输出形态：${sp.shape}`);
+  return L;
 }
 export function hasEnoughData(slice) {
   const e = slice?.events ?? {};
@@ -174,9 +230,10 @@ export async function narrative(kind, { from = null, to = null, now = Date.now()
   if (!force && prev && prev.fp === fp) return { ok: true, cached: true, kind, label: sl.label, text: prev.text, fp };
 
   const prompt = [
-    '你在为业务驾驶舱写一块分析。要求：先给判断，再给理由，最后给下一步；只依据下面的真实数据，不要编。',
+    '你在为业务驾驶舱写一块分析。要求：先给判断，再给理由，最后给下一步；**只依据下面的真实数据，不要编**。',
+    '材料里没有的，就写"切片里没有这方面的材料" —— 不许用常识补，也不许写成看起来像分析的散文。',
     `这一块是：${sl.label}。${sl.ask}`,
-    '输出不超过 400 字，分三段：判断 / 理由 / 下一步。',
+    ...specLines(kind),
     '',
     `【真实数据切片】（区间 ${sl.trend.from} ~ ${sl.trend.to}）`,
     material,
@@ -257,6 +314,30 @@ export async function selfTest() {
     chk('CKT-13', '★ 模型三块的输入切片带真实数据（统计+趋势+图谱计数）', sl.stats.messages.total === 2 && sl.trend.totals.note === 1 && typeof sl.graphCounts.nodes === 'number');
     chk('CKT-14', '★ 有数据才允许调模型（没数据不生成分析）', hasEnoughData(sl) === true && hasEnoughData({ events: { message: 0, note: 0, todo: 0, schedule: 0 } }) === false);
     chk('CKT-15', '三块的标签与提问各不相同', sliceFor('insight').label === '业务洞察' && sliceFor('state').label === '状态分析' && sliceFor('advice').label === '发展建议' && sliceFor('insight').ask !== sliceFor('advice').ask);
+
+    // ★ CKT-52…56（P4）：四块的落点**逐项照需求写死**（需求 4.3.2–4.3.5 点名的那几项，一项都不许漏）
+    chk('CKT-52', '★ 四块都在（含趋势那块：需求 4.3.2 的五种分析）', ['trend', 'insight', 'state', 'advice'].every((k) => Object.keys(NARRATIVE_SPECS).includes(k)), JSON.stringify(Object.keys(NARRATIVE_SPECS)));
+    chk('CKT-53', '★ 趋势：需求点名的**五种方法**逐条在（情景还原/事件归因/决策树回溯/噪声分离/反事实分析）', (() => {
+      const want = ['情景还原', '事件归因', '决策树回溯', '噪声分离', '反事实分析'];
+      const got = NARRATIVE_SPECS.trend.methods.map((m) => m[0]);
+      return want.every((w) => got.includes(w)) && got.length === want.length;
+    })(), JSON.stringify(NARRATIVE_SPECS.trend.methods.map((m) => m[0])));
+    chk('CKT-54', '★ 业务洞察：需求点名的**七个维度**逐条在', (() => {
+      const want = ['业务逻辑', '决策与执行', '组织与能力', '机遇与风险', '客户与市场', '财务与资源', '规律与机制'];
+      return want.every((w) => NARRATIVE_SPECS.insight.dimensions.includes(w)) && NARRATIVE_SPECS.insight.dimensions.length === want.length;
+    })(), JSON.stringify(NARRATIVE_SPECS.insight.dimensions));
+    chk('CKT-55', '★ 洞察按**业务单元**（项目/业务线）复盘，且不许硬塞归属', /业务单元/.test(NARRATIVE_SPECS.insight.unitGuide) && /不要硬塞/.test(NARRATIVE_SPECS.insight.unitGuide), NARRATIVE_SPECS.insight.unitGuide);
+    chk('CKT-56', '★ 发展建议：SWOT 四组 + 短期/中期/长期三段 + 三面（外部环境/组织能力/资源市场）', (() => {
+      const L = specLines('advice').join('\n');
+      const hz = NARRATIVE_SPECS.advice.horizons.map((h) => h[0]);
+      return /SWOT/.test(L) && ['S 优势', 'W 劣势', 'O 机会', 'T 威胁'].every((s) => L.includes(s)) && hz.every((h) => L.includes(h)) && NARRATIVE_SPECS.advice.swotAxes.every((a) => L.includes(a));
+    })(), specLines('advice').join(' | '));
+    chk('CKT-57', '★ 提示词把"逐项"写进去（不是一句泛泛的话）', specLines('trend').some((l) => /一种一段/.test(l)) && specLines('insight').some((l) => /一个不许漏/.test(l)) && specLines('state').some((l) => /逐条/.test(l)));
+    chk('CKT-58', '★ 材料里没有的必须写"切片里没有材料"（不许用常识补）', /切片里没有这方面的材料/.test(specLines('insight').join('\n')));
+    chk('CKT-59', '★ 状态分析：需求点名的六个方面都在（含"方法论及认知迭代"）', (() => {
+      const want = ['战略', '执行', '机制', '能力', '市场', '资源', '方法论及认知迭代'];
+      return want.every((w) => NARRATIVE_SPECS.state.dimensions.includes(w));
+    })(), JSON.stringify(NARRATIVE_SPECS.state.dimensions));
 
     // 模型三块：生成 / 幂等 / 拒绝
     const stubModel = async () => ({ ok: true, text: '判断：推进中\n理由：有真实事件\n下一步：继续' });

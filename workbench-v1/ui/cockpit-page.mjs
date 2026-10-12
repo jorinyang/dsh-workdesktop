@@ -33,6 +33,12 @@ export const SECTIONS = Object.freeze([
   { key: 'stats', title: '一、数据统计', kind: 'data' },
   { key: 'graph', title: '二、知识图谱', kind: 'data' },
   { key: 'trend', title: '三、发展趋势', kind: 'data' },
+  // ★ 趋势块**额外**带一块模型分析（需求 4.3.2：那五种方法 + 可自定义时间周期）。
+  //   柱状图是"数据"，五种分析是"需要模型"的那一半 —— 分开列，页面才知道要给按钮。
+  //   ⚠️ 这一条的 `key` 必须就是模型类型 `trend`（`modelBlock` 用它去 `sliceFor` 取切片），
+  //      不能为了"名字好看"改成 trendNarrative —— 那样会取不到切片、按钮永远禁用（实测踩到）。
+  //      与上面那条 data 的 key 重复是有意的：同一块标题下，先画图、再放分析。
+  { key: 'trend', title: '三·补 趋势演进分析（情景还原 / 事件归因 / 决策树回溯 / 噪声分离 / 反事实）', kind: 'model' },
   { key: 'insight', title: '四、业务洞察', kind: 'model' },
   { key: 'state', title: '五、状态分析', kind: 'model' },
   { key: 'advice', title: '六、发展建议', kind: 'model' },
@@ -145,6 +151,22 @@ export function renderCockpit({ now = Date.now(), from = null, to = null } = {})
   const nav = PAGE_DEFS.map((p) => '<a href="./' + p.key + '.html">' + esc(p.label) + '</a>').join('') + '<a href="./status.html">现状一览</a><a href="./cockpit.html" aria-current="page">驾驶舱</a>';
   let body = '<h1 style="font-size:22px">' + APP_NAME + ' · 驾驶舱</h1>';
   body += '<div class="cap" style="margin:6px 0 18px;color:var(--c-mute);font-size:13px">自上而下六块（需求 4.3.6）· 前三块为真实数据，后三块需要模型且须先有真实切片</div>';
+  // ★ 时间区间选择器（需求 4.3.2 原话："可以周期性（时间维度，**自定义筛选时间周期**）"）。
+  //   起止日期在这里选一次，下面四块的「生成」都带着它去调 ——
+  //   而不是每块各配一套日期（那样四块会各说各的区间，页面上的数就对不起来了）。
+  body += '<div class="card" id="range-bar" style="margin-bottom:16px">'
+    + '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+    + '<span style="font-size:13px;color:var(--c-ink);font-weight:var(--w-medium)">分析区间</span>'
+    + '<input type="date" id="range-from" value="' + esc(from ?? '') + '" style="font:inherit;padding:4px 6px;border:1px solid var(--c-hairline);border-radius:4px">'
+    + '<span style="color:var(--c-mute)">~</span>'
+    + '<input type="date" id="range-to" value="' + esc(to ?? '') + '" style="font:inherit;padding:4px 6px;border:1px solid var(--c-hairline);border-radius:4px">'
+    + '<button class="btn" data-range-quick="7">近 7 天</button>'
+    + '<button class="btn" data-range-quick="30">近 30 天</button>'
+    + '<button class="btn" data-range-quick="90">近 90 天</button>'
+    + '<button class="btn" data-range-clear="1">清空（用默认）</button>'
+    + '</div>'
+    + '<div class="cap" style="margin-top:6px;color:var(--c-mute);font-size:12px">留空 = 用各块的默认区间。选好之后点下面任意一块的「生成」，那一块就按这个区间算 —— 输入没变（含区间）就返回上一次的结果，不重复调模型。</div>'
+    + '</div>';
   const blocks = { stats: statsBlock(s), graph: graphBlock(g), trend: trendBlock(t) };
   for (const sec of SECTIONS) {
     body += '<div class="section"><h2>' + esc(sec.title) + '</h2>'
@@ -166,6 +188,23 @@ export function cockpitClientScript() {
   L.push('<script>');
   L.push('(function(){');
   L.push('  var API = "/workdesktop/api/v1";');
+  // ★ 区间选择器：四块的「生成」共用这一个区间（读 DOM，不存第二份状态）
+  L.push('  function rangeBody(){');
+  L.push('    var f = document.getElementById("range-from"); var t = document.getElementById("range-to");');
+  L.push('    var o = {}; if (f && f.value) o.from = f.value; if (t && t.value) o.to = t.value; return o;');
+  L.push('  }');
+  L.push('  function ymd(d){ var p = function(n){ return (n < 10 ? "0" : "") + n; }; return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()); }');
+  L.push('  var quicks = document.querySelectorAll("[data-range-quick]");');
+  L.push('  for (var q = 0; q < quicks.length; q++) (function(b){');
+  L.push('    b.addEventListener("click", function(){');
+  L.push('      var days = Number(b.getAttribute("data-range-quick")) || 7;');
+  L.push('      var to = new Date(); var from = new Date(Date.now() - (days - 1) * 86400000);');
+  L.push('      var f = document.getElementById("range-from"); var t = document.getElementById("range-to");');
+  L.push('      if (f) f.value = ymd(from); if (t) t.value = ymd(to);');
+  L.push('    });');
+  L.push('  })(quicks[q]);');
+  L.push('  var clr = document.querySelector("[data-range-clear]");');
+  L.push('  if (clr) clr.addEventListener("click", function(){ var f = document.getElementById("range-from"); var t = document.getElementById("range-to"); if (f) f.value = ""; if (t) t.value = ""; });');
   L.push('  var btns = document.querySelectorAll("[data-cockpit-gen]");');
   L.push('  for (var i = 0; i < btns.length; i++) (function(btn){');
   L.push('    btn.addEventListener("click", function(){');
@@ -173,7 +212,7 @@ export function cockpitClientScript() {
   L.push('      var msg = document.querySelector("[data-cockpit-msg=\\"" + kind + "\\"]");');
   L.push('      btn.disabled = true;');
   L.push('      if (msg) msg.textContent = "生成中…（约 30 秒）";');
-  L.push('      fetch(API + "/cockpit/" + kind, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}) })');
+  L.push('      fetch(API + "/cockpit/" + kind, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ payload: rangeBody() }) })');
   L.push('        .then(function(r){ return r.json().then(function(d){ return { code: r.status, d: d }; }); })');
   L.push('        .then(function(res){');
   L.push('          if (res.code === 200 && res.d && res.d.ok) { if (msg) msg.textContent = "已生成，正在刷新…"; location.reload(); return; }');
@@ -208,17 +247,44 @@ export function selfTest() {
   chk('CKP-6', '趋势块有区间与合计', html.includes('合计') && /\d{4}-\d{2}-\d{2} ~ \d{4}-\d{2}-\d{2}/.test(html));
   chk('CKP-7', '★ 后三块如实写"尚未生成"，不假装已分析', (html.match(/尚未生成/g) ?? []).length === 3 || (html.match(/尚未生成/g) ?? []).length >= 1, String((html.match(/尚未生成/g) ?? []).length));
   chk('CKP-8', '★ 后三块写明"没数据不调模型"的规矩', html.includes('不调用模型') || html.includes('没有事件'));
-  chk('CKP-9', '★ 模型三块的提问各不相同（洞察/状态/建议）', new Set(SECTIONS.filter((s) => s.kind === 'model').map((s) => sliceFor(s.key).ask)).size === 3);
+  chk('CKP-9', '★ 模型块的提问各不相同（**四块**：趋势/洞察/状态/建议 —— 2026-10-12 由三块扩为四块）', (() => {
+    const keys = SECTIONS.filter((s) => s.kind === 'model').map((s) => s.key);
+    return keys.length === 4 && new Set(keys.map((k) => sliceFor(k).ask)).size === 4;
+  })(), JSON.stringify(SECTIONS.filter((s) => s.kind === 'model').map((s) => s.key)));
   chk('CKP-10', '顶导航横排且当前页高亮', html.includes('aria-current="page"') && html.includes('class="nav"'));
+
+  // ★ CKP-20…23（P4 收尾）：时间区间选择器（需求 4.3.2「可自定义筛选时间周期」）
+  chk('CKP-20', '★ 有分析区间选择器（起止日期 + 三档快捷 + 清空）', html.includes('id="range-from"') && html.includes('id="range-to"') && (html.match(/data-range-quick=/g) ?? []).length === 3 && html.includes('data-range-clear'));
+  chk('CKP-21', '★ 四块的「生成」共用同一个区间（不各配一套，免得四块各说各的区间）', (() => {
+    const js = cockpitClientScript();
+    return js.includes('rangeBody()') && (js.match(/payload: rangeBody\(\)/g) ?? []).length === 1 && /querySelectorAll\("\[data-cockpit-gen\]"\)/.test(js);
+  })());
+  chk('CKP-22', '★ 客户端脚本语法有效（真编译一遍：语法错在服务端看不出来，只有浏览器才炸）', (() => {
+    const m = /<script>([\s\S]*)<\/script>/.exec(cockpitClientScript());
+    if (!m) return false;
+    try { new Function(m[1]); return true; } catch { return false; }
+  })());
+  chk('CKP-23', '★ 快捷档算出的是**本地日期**（UTC 会少一天），且格式是 YYYY-MM-DD', (() => {
+    const js = cockpitClientScript();
+    return /getFullYear\(\)/.test(js) && /getMonth\(\) \+ 1/.test(js) && /getDate\(\)/.test(js);
+  })());
   chk('CKP-11', '★ 无外部依赖（不外链脚本/字体/CDN）', !/src="http|href="http|cdn\./.test(html));
-  chk('CKP-12', '★ 负向对照：样式不写死颜色（走 token 变量）', (() => { const body = html.slice(html.indexOf('<main')); return !/#[0-9a-fA-F]{6}/.test(body); })());
+  chk('CKP-12', '★ 负向对照：**除了变量定义块**，样式里不写死颜色', (() => {
+    // ★ 判据分两步收窄（2026-10-12 改两次，两次都是假红）：
+    //   ① 原来扫 `<main>` 之后的全部 HTML ⇒ 模型正文里的 `#21#22#140`（日程主题里的编号）被当成色值；
+    //   ② 改成只看样式块 ⇒ 又撞上 `:root { --c-primary: #080808; }` —— **变量定义本来就该写色值**。
+    //   ⇒ 正解：把 `:root` 变量块摘掉，再看剩下的样式里有没有写死的颜色。
+    //   **假红比不查更糟：会让人开始怀疑整套数。**
+    const styles = (html.match(/<style>[\s\S]*?<\/style>/g) ?? []).join('\n');
+    const noVars = styles.replace(/:root\s*\{[\s\S]*?\}/g, '');
+    return styles.length > 0 && noVars.length > 0 && !/#[0-9a-fA-F]{6}/.test(noVars);
+  })());
   chk('CKP-13', 'SVG 用 token 变量上色（不是硬编码色值）', html.includes('fill="var(--c-accent-blue)"'));
 
   // ── 生成入口（2026-10-12 接线）────────────────────────────────────────────
-  chk('CKP-14', '★ 三块都有「生成」按钮（不再是"等每日任务"的空话）', (html.match(/data-cockpit-gen=/g) ?? []).length === 3, String((html.match(/data-cockpit-gen=/g) ?? []).length));
+  chk('CKP-14', '★ 四块都有「生成」按钮（不再是"等每日任务"的空话）—— 2026-10-12 由三块扩为四块', (html.match(/data-cockpit-gen=/g) ?? []).length === 4, String((html.match(/data-cockpit-gen=/g) ?? []).length));
   chk('CKP-15', '★ 页面内联客户端脚本，且**相对**接口基址（嵌进插件 host 才走同一条）', html.includes('var API = "/workdesktop/api/v1"') && !/src="http/.test(html));
-  chk('CKP-16', '★ 无数据的那块按钮是禁用的（不让人点了才发现没数据）', (() => {
-    const empty = modelBlock('advice', Date.parse('1970-01-02T00:00:00+08:00'));
+  chk('CKP-16', '★ 无数据的那块按钮是禁用的（不让人点了才发现没数据）', (() => {    const empty = modelBlock('advice', Date.parse('1970-01-02T00:00:00+08:00'));
     return empty.includes('disabled') && empty.includes('按规矩不调模型');
   })());
   chk('CKP-17', '★ 客户端脚本对 409（无数据）单独给话术，不与普通失败混同', html.includes('409') && html.includes('拒绝生成（按规矩不调模型）'));

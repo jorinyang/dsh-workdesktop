@@ -76,10 +76,21 @@ export function enqueue(links, { fromId = '', from = '', at = Date.now() } = {})
 export const pending = () => loadQueue().filter((r) => r.status === 'pending');
 export function pendingCount() { return pending().length; }
 
-/** 文档落盘名（需求 3.1.2：日期 + 主题） */
+/** 文档落盘名（需求 3.1.2：日期 + 主题）。
+ *  ★ 2026-10-12 真跑校准（三条都是实测撞出来的）：
+ *    ① **必须限长**：真数据里出现过 100+ 字符的文件名（URL 片段进了主题），
+ *       Windows 整路径上限 260 ⇒ 迟早写不进去。主题截到 40 字符。
+ *    ② **必须清 HTML 实体**：抓到的标题里有 `&nbsp;`，直接成了文件名的一部分（难看且易踩编辑器）。
+ *    ③ **空白要压**：换行/制表/连续空格统一压成一个空格（文件名里不该有换行）。 */
 export function suggestDocName({ date, topic }) {
   const d = String(date ?? '').slice(0, 10) || new Date().toISOString().slice(0, 10);
-  const t = String(topic ?? '未命名').replace(/[\\/:*?"<>|\r\n]+/g, ' ').trim().slice(0, 60) || '未命名';
+  const t = String(topic ?? '未命名')
+    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/&#\d+;/g, ' ')
+    .replace(/[\\/:*?"<>|\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 40)
+    .trim() || '未命名';
   return `${d}-${t}.md`;
 }
 
@@ -175,11 +186,19 @@ export async function fetchOnce({ fetchFn = defaultFetch, dryRun = false, maxIte
     let name; let body;
     if (isHtml) {
       const { title, text } = htmlToText(got.bytes.toString('utf8'));
+      // ★ "抓到了但内容是空的"不算成功（实测：钉钉文档页需要登录 ⇒ 抓回一个空壳）。
+      //   落一个只有标题的空文件，看起来像成功，实际什么也没留下 —— 宁可标 failed 留下原因。
+      if (text.replace(/\s+/g, '').length < 20 && String(title).trim() === '') {
+        failed += 1; r.status = 'failed'; r.tries = (r.tries ?? 0) + 1;
+        r.note = '抓回来是空页面（正文不足 20 字且无标题）—— 多半需要登录或页面是动态渲染'; r.at = new Date(now).toISOString();
+        errors.push(`${r.url} ⇒ ${r.note}`); continue;
+      }
       name = suggestDocName({ date, topic: title || topic });     // 需求 3.1.2：日期 + 主题
       body = Buffer.from(`> 来源：${r.url}\n> 抓取于：${new Date(now).toISOString()}\n> 来源消息：${r.fromId ?? '-'}（${r.from ?? '-'}）\n\n# ${title || topic}\n\n${text}\n`, 'utf8');
     } else {
+      // 非 HTML：二进制落原样。文件名同样限长（实测有 100+ 字符的 URL 片段当主题的情形）
       const ext = (/\.([A-Za-z0-9]{1,6})$/.exec(new URL(r.url).pathname)?.[1] ?? 'bin').toLowerCase();
-      name = `${date}-${topic}.${ext}`;
+      name = `${date}-${String(topic).replace(/[\\/:*?"<>|\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40)}.${ext}`;
       body = got.bytes;
     }
     if (!dryRun) {
@@ -308,6 +327,20 @@ export async function selfTest() {
     chk('LF-11', '★ 干跑：不落盘、不改队列', r3.saved === 2 && fs.readdirSync(path.join(tmp, LINKS_DIR)).length === before && loadQueue().every((x) => x.status === 'pending'), JSON.stringify({ saved: r3.saved, before }));
     const r4 = await fetchOnce({ fetchFn: fakeFetch, kbRoot: tmp, maxItems: 1 });
     chk('LF-12', '★ 单轮上限：抓 1 条，其余留下轮（并说明）', r4.saved === 1 && r4.skipped === 1 && /其余 1 条下一轮/.test(r4.why), r4.why);
+
+    // ★ LF-13/14：命令行入口真的存在（静态自证 —— 这是"死代码"那类问题的守卫）
+    //   背景：`fetchOnce` 写好了、自检也有 12 条，但**全库没人调它**，队列只进不出。
+    //   这一条把"必须有入口"钉住，免得下次又被"看起来功能齐了"骗过去。
+    const src = fs.readFileSync(new URL('./links.mjs', import.meta.url), 'utf8');
+    chk('LF-13', '★ 有命令行入口 --drain（否则计划任务只会看到 exit=0）', /--drain/.test(src) && /process\.argv/.test(src) && /PASS/.test(src));
+    chk('LF-14', '★ 空队列时**如实说是空**（Q10：空转不假装跑过）', /队列为空/.test(src) && /空转近零成本/.test(src));
+
+    // ★ LF-15/16：真跑校准出来的三条（都写在 suggestDocName 里，这里钉住行为）
+    chk('LF-15', '★ 文件名限长 40 字符（实测出现过 100+ 字符，Windows 全路径 260 上限会写不进）', suggestDocName({ date: '2026-10-12', topic: 'x'.repeat(120) }).length <= 10 + 1 + 40 + 3, String(suggestDocName({ date: '2026-10-12', topic: 'x'.repeat(120) }).length));
+    chk('LF-16', '★ 文件名清 HTML 实体与空白（实测标题里的 &nbsp; 直接进了文件名）', (() => {
+      const n = suggestDocName({ date: '2026-10-12', topic: '&nbsp; 标题 &amp; 副标题\n第二行' });
+      return !/&nbsp;|&amp;|\n/.test(n) && /标题 & 副标题 第二行/.test(n);
+    })(), suggestDocName({ date: '2026-10-12', topic: '&nbsp; 标题 &amp; 副标题\n第二行' }));
   } finally {
     if (prev === undefined) delete process.env.WB_V1_OUT; else process.env.WB_V1_OUT = prev;
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* noop */ }
@@ -315,3 +348,45 @@ export async function selfTest() {
   const pass = out.filter((x) => x.ok).length;
   return { pass, fail: out.length - pass, details: out };
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 命令行入口（2026-10-12 补；计划任务 `DSH-WorkbenchV1-Links` 每 5 分钟一次）
+//
+// ★ 为什么必须补这一段（和 `storage/cycles.mjs` 那次是**同一个形态**）：
+//   `fetchOnce` 早就写好了、自检也有 12 条 —— 但**全库没有任何地方调它**。
+//   队列只进不出 ⇒ 链接永远停在 pending，看起来"功能齐了"，实际是死代码。
+//   本项目为此已经付过代价：周/月沉淀当初也是"写好了没触发器"，补的时候才发现
+//   ① 没有命令行入口 ⇒ 计划任务只看到 exit=0；② 入口有了但没注入依赖 ⇒ 静默不产出。
+//   ⇒ 所以这里两件事一起做：**有入口**，且**入口的返回值能判成败**。
+//
+// 关于需求原文的"爬取时使用对应的 skills"（如实说明，不假装）：
+//   skills 是 **agent 侧能力**，计划任务里调不到。这里做的是**机械抓取**（HTTP 取回 → 落盘），
+//   它同时就是"接 skills 的挂点"：要把某类链接交给某个 skill，替换 `fetchFn` 即可。
+// ══════════════════════════════════════════════════════════════════════════════
+
+if (process.argv[1] && process.argv[1].endsWith('links.mjs') && process.argv.includes('--drain')) {
+  const dry = process.argv.includes('--dry-run');
+  const t0 = Date.now();
+  try {
+    const before = pendingCount();
+    if (before === 0) {
+      // Q10 的"空队列近乎零成本"：一条都不抓、不发任何请求，且**如实说明是空**（不是"跑过了"）
+      console.log('[links] 队列为空 ⇒ 跳过（第 10 条裁定：空转近零成本）');
+      console.log('PASS');
+      process.exit(0);
+    }
+    const r = await fetchOnce({ dryRun: dry, maxItems: 5 });
+    console.log(`[links] 待抓 ${before} · 本轮取 ${r.picked} · 落盘 ${r.saved} · 失败 ${r.failed ?? 0} · 跳过 ${r.skipped ?? 0}（用时 ${Math.round((Date.now() - t0) / 1000)}s）`);
+    for (const row of (r.rows ?? [])) console.log(`  ${row.action ?? ''} ${row.url ?? ''} ${row.file ?? row.why ?? ''}`);
+    if (r.why) console.log(`  （${r.why}）`);
+    // 有候选却一条都没成功 ⇒ 判失败（否则计划任务会把它记成成功，又是一次假绿）
+    const ok = !(r.picked > 0 && r.saved === 0 && !dry);
+    console.log(ok ? 'PASS' : 'FAIL');
+    process.exit(ok ? 0 : 1);
+  } catch (e) {
+    console.error(`[links] 抛异常：${e.stack ?? e.message}`);
+    console.log('FAIL');
+    process.exit(1);
+  }
+}
+

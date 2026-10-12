@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { makeEvent } from '../schema.mjs';
 import * as store from '../store.mjs';
 import * as pages from './pages.mjs';
+import { NARRATIVE_SPECS } from './cockpit.mjs';   // 驾驶舱四块的落点（允许值从它取，**一处定义**）
 import { KB_ROOT as ROOT, PKG_ROOT } from '../paths.mjs';   // 路径收口（见 paths.mjs 顶部说明：原先按本文件深度往上数，包一挪就错）
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -220,8 +221,13 @@ export function handler(req, res) {
     const ck = new RegExp(`^${API_PREFIX}/cockpit/([a-z]+)$`).exec(p);
     if (ck) {
       const kind = ck[1];
-      if (!['insight', 'state', 'advice'].includes(kind)) {
-        return json(res, 400, { error: `未知的驾驶舱块：${kind}`, allowed: ['insight', 'state', 'advice'] });
+      // ★ `trend` 于 2026-10-12 加入（需求 4.3.2：趋势演进分析的五种方法 + **自定义时间周期**）。
+      //   允许值从 `NARRATIVE_SPECS` 取（**一处定义**），别在这里再抄一份清单 ——
+      //   两处清单迟早不一致，而不一致的表现是"页面有按钮、接口说未知"。
+      //   （`cockpit.mjs` 只 import store/pages，不 import 本文件 ⇒ 静态 import 不成环。）
+      const KIND_LIST = Object.keys(NARRATIVE_SPECS);
+      if (!KIND_LIST.includes(kind)) {
+        return json(res, 400, { error: `未知的驾驶舱块：${kind}`, allowed: KIND_LIST });
       }
       return (async () => {
         try {
