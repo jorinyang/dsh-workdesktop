@@ -21,7 +21,9 @@
 import { runEngine } from '../ledger.mjs';
 import * as store from '../store.mjs';
 import { makeEvent } from '../schema.mjs';
+import * as schemaMod from '../schema.mjs';
 import { classifyIntent, toNotePayload } from './intent.mjs';
+import { detectOnce } from './detect.mjs';
 import * as kb from './kb.mjs';
 import * as links from './links.mjs';
 
@@ -96,8 +98,22 @@ export function runFilterOnce({ limit = 500, dryRun = false } = {}) {
     outCount += 1;
   }
 
+  // ★ 消息判定与自动创建（用户 Q2：信息完整且置信度高 ⇒ **直接建**日程/待办/笔记；
+  //   判据不足 ⇒ 标"待处置"交人点）。放在筛选之后：此时消息已在知识库里有结构性归档，
+  //   建出来的目标事件也就能在下一轮解析/归档时被正常处理。
+  //   幂等由 detect 自己的 `_detect` 记账保证（判过就不再建）。
+  let detect = null;
+  try {
+    detect = detectOnce({ store, schema: schemaMod, dryRun });
+    if (detect.auto > 0) console.log(`[v1][filter] 判定自动创建 ${detect.created} 条（auto ${detect.auto} / pending ${detect.pending}）`);
+  } catch (e) {
+    // 判定失败**不许拖垮筛选主链**（筛选是主职），但必须留声
+    errors.push(`意图判定失败：${e.message}`);
+  }
+
   return {
     inCount, outCount, toNote, toCommand, kbWritten, linkQueued, noteWritten, errors,
+    detect,
     why: inCount === 0 ? '无待筛选的消息' : null,
   };
 }

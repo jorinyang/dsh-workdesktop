@@ -16,7 +16,7 @@
  */
 
 import { RADIUS, SHADOWS, cssVariables } from './tokens.mjs';
-import { overview, messages, todos, schedules, notes } from '../api/pages.mjs';
+import { overview, messages, todos, schedules, notes, scheduleHeatmap } from '../api/pages.mjs';
 import { clientScript, clientStyle } from './client.mjs';
 
 export const APP_NAME = '弈枢';
@@ -88,6 +88,25 @@ export function stylesheet() {
   s.push('button { font: inherit; background: var(--c-primary); color: var(--c-canvas); border: 0; border-radius: ' + RADIUS.sm + 'px; padding: var(--s-xs) var(--s-md); font-weight: var(--w-medium); cursor: pointer; }');
   s.push('.empty { color: var(--c-mute); font-size: 13px; padding: var(--s-sm) 0; }');
   s.push('.spacer { height: 56px; }');
+  // 日程密度热力图（需求 3.3.5）：左月历、右分析；色阶**只用 token 变量**，不写死颜色
+  s.push('.heat-wrap { display: flex; gap: var(--s-xl); align-items: flex-start; flex-wrap: wrap; }');
+  s.push('.heat { flex: 0 0 auto; }');
+  s.push('.hm-grid { display: grid; grid-template-columns: repeat(7, 34px); gap: 4px; }');
+  s.push('.hm-h { font-size: 11px; color: var(--c-mute); text-align: center; }');
+  s.push('.hm-c { width: 34px; height: 34px; border-radius: ' + RADIUS.sm + 'px; border: 1px solid var(--c-hairline); display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 11px; color: var(--c-body-mid); }');
+  s.push('.hm-empty { border: 1px dashed var(--c-hairline); opacity: .35; }');
+  s.push('.hm-c .hm-d { font-size: 10px; line-height: 1; }');
+  s.push('.hm-c .hm-n { font-size: 11px; font-weight: var(--w-strong); color: var(--c-ink); line-height: 1; }');
+  s.push('.hm-l1 { background: color-mix(in srgb, var(--c-primary) 14%, transparent); }');
+  s.push('.hm-l2 { background: color-mix(in srgb, var(--c-primary) 34%, transparent); }');
+  s.push('.hm-l3 { background: color-mix(in srgb, var(--c-primary) 58%, transparent); }');
+  s.push('.hm-l4 { background: color-mix(in srgb, var(--c-primary) 82%, transparent); }');
+  s.push('.hm-l4 .hm-d, .hm-l4 .hm-n { color: var(--c-canvas); }');
+  s.push('.hm-legend { display: flex; align-items: center; gap: 6px; margin-top: var(--s-sm); font-size: 11px; color: var(--c-mute); }');
+  s.push('.hm-legend .hm-c { width: 14px; height: 14px; }');
+  s.push('.heat-an { flex: 1 1 320px; min-width: 280px; }');
+  s.push('.heat-an-t { font-size: 13px; font-weight: var(--w-medium); color: var(--c-ink); margin-bottom: var(--s-xs); }');
+  s.push('.heat-an .list li { display: block; font-size: 13px; color: var(--c-body); }');
   return s.join('\n');
 }
 
@@ -125,7 +144,14 @@ function listBlock(title, rows, cls) {
   if (!rows || !rows.length) return '<div class="section"><h2>' + esc(title) + '</h2><div class="empty">暂无</div></div>';
   let items = '';
   for (const r of rows) {
-    items += '<li><span class="when">' + esc(r.col1 || '') + '</span><span class="who">' + esc(r.col2 || '') + '</span><span class="' + cls + '">' + esc(r.col3 || '') + '</span></li>';
+    // ★ `data-id` 是**必须**的（2026-10-12 补，P1-6）：
+    //   详情浮层要按 id 取单条。此前的做法是"点击行 ⇒ 按行序从接口列表里取第 idx 条"，
+    //   而**页面上给的是全量列表、接口按页签过滤**（`?tab=`）⇒ 只要页签一变，行序就对不上，
+    //   点第 3 行会打开第 5 条 —— 错得还很安静。直接把 id 写进 DOM 就没有这层推断。
+    const idAttr = r.id ? ' data-id="' + esc(r.id) + '"' : '';
+    // `data-go` = 这条提醒属于哪一类（日程/待办/消息）⇒ 总览页据此跳到对应页面（需求 3.3.2）
+    const goAttr = r.go ? ' data-go="' + esc(r.go) + '"' : '';
+    items += '<li' + idAttr + goAttr + '><span class="when">' + esc(r.col1 || '') + '</span><span class="who">' + esc(r.col2 || '') + '</span><span class="' + cls + '">' + esc(r.col3 || '') + '</span></li>';
   }
   return '<div class="section"><h2>' + esc(title) + '</h2><ul class="list">' + items + '</ul></div>';
 }
@@ -134,9 +160,11 @@ export function pageOverview(snap) {
   const o = (snap && snap.overview) || overview();
   const st = o.stats;
   const cards = statCards([['待完成待办', st.todosOpen, true], ['待处理信息', st.messagesPending, true], ['近 7 日日程', st.schedules7d, true], ['近一周笔记', st.notes7d, true]]);
-  const up = o.reminders.upcoming.map(function (r) { return { col1: r.at ? fmtTime(Date.parse(r.at)) : '', col2: r.title, col3: r.note }; });
-  const ur = o.reminders.urgent.map(function (r) { return { col1: r.at ? fmtTime(Date.parse(r.at)) : '', col2: r.title, col3: r.note }; });
-  const stl = o.reminders.stale.map(function (r) { return { col1: r.at ? fmtTime(Date.parse(r.at)) : '', col2: r.title, col3: r.note }; });
+  // ★ 三类提醒的行也带 id + 目标页（需求 3.3.2 原话："点击可跳转到对应的页面并打开详情页"）
+  const rem = function (r) { return { id: r.id, go: r.kind, col1: r.at ? fmtTime(Date.parse(r.at)) : '', col2: r.title, col3: r.note }; };
+  const up = o.reminders.upcoming.map(rem);
+  const ur = o.reminders.urgent.map(rem);
+  const stl = o.reminders.stale.map(rem);
   return '<div class="stats">' + cards + '</div>'
     + listBlock('重要日程 / 行程', up)
     + listBlock('逾期 / 临期任务', ur, 'overdue')
@@ -153,7 +181,7 @@ export function pageMessages(snap) {
   for (const t of ['all', 'pending', 'to-todo', 'to-schedule', 'replied']) {
     tabs.push('<a href="#messages?tab=' + t + '"' + (t === m.tab ? ' aria-current="page"' : '') + '>' + TAB_LABEL[t] + '</a>');
   }
-  const rows = m.list.map(function (r) { return { col1: fmtTime(r.at), col2: r.source, col3: r.summary }; });
+  const rows = m.list.map(function (r) { return { id: r.id, col1: fmtTime(r.at), col2: r.source, col3: r.summary }; });
   return '<div class="stats">' + cards + '</div>' + listBlock(tabs.join(' · '), rows);
 }
 
@@ -161,7 +189,7 @@ export function pageTodos(snap) {
   const t = (snap && snap.todos) || todos();
   const c = t.counts;
   const cards = statCards([['今日', c.today], ['本周', c.week], ['待定', c.undecided], ['已完成', c.done]]);
-  const rows = t.list.map(function (r) { return { col1: r.dueLabel, col2: r.executor || '—', col3: r.topic + ' ' + (r.detail || ''), overdue: r.overdue }; });
+  const rows = t.list.map(function (r) { return { id: r.id, col1: r.dueLabel, col2: r.executor || '—', col3: r.topic + ' ' + (r.detail || ''), overdue: r.overdue }; });
   return '<div class="stats">' + cards + '</div>' + listBlock('待办列表', rows);
 }
 
@@ -169,15 +197,40 @@ export function pageSchedules(snap) {
   const sc = (snap && snap.schedules) || schedules();
   const c = sc.counts;
   const cards = statCards([['今日', c.today], ['未来 7 天', c.next7], ['前 30 日已完成', c.done30]]);
-  const rows = sc.list.map(function (r) { return { col1: String(r.start || '').slice(5, 16), col2: (r.participants || []).join('、') || '—', col3: r.topic + ' ' + (r.place || '') }; });
-  return '<div class="stats">' + cards + '</div>' + listBlock('日程列表', rows);
+  const rows = sc.list.map(function (r) { return { id: r.id, col1: String(r.start || '').slice(5, 16), col2: (r.participants || []).join('、') || '—', col3: r.topic + ' ' + (r.place || '') }; });
+  // ★ 日程密度热力图（需求 3.3.5）：左=当月每天热力，右=动态分析。
+  //   数据来自 `api/pages.mjs#scheduleHeatmap`（**纯规则**，不调模型 —— 这页不该偷偷烧 token）。
+  const hm = (snap && snap.heatmap) || scheduleHeatmap({});
+  return '<div class="stats">' + cards + '</div>' + heatBlock(hm) + listBlock('日程列表', rows);
+}
+
+/** 热力图分块（左：月历热力；右：动态分析） */
+function heatBlock(hm) {
+  if (!hm) return '';
+  let head = '';
+  for (const w of ['一', '二', '三', '四', '五', '六', '日']) head += '<div class="hm-h">' + w + '</div>';
+  let cells = '';
+  for (const cell of hm.grid) {
+    if (!cell) { cells += '<div class="hm-c hm-empty"></div>'; continue; }
+    const titles = cell.items.map(function (x) { return x.topic; }).filter(Boolean).slice(0, 6).join('\n');
+    cells += '<div class="hm-c hm-l' + cell.level + '" title="' + esc(cell.date + (titles ? '\n' + titles : '')) + '">'
+      + '<span class="hm-d">' + cell.day + '</span>' + (cell.count ? '<span class="hm-n">' + cell.count + '</span>' : '') + '</div>';
+  }
+  let an = '';
+  for (const line of (hm.analysis || [])) an += '<li>' + esc(line) + '</li>';
+  return '<div class="section"><h2>日程密度（' + esc(hm.month) + '）</h2>'
+    + '<div class="heat-wrap">'
+    + '<div class="heat"><div class="hm-grid">' + head + cells + '</div>'
+    + '<div class="hm-legend"><span class="hm-c hm-l0"></span>无<span class="hm-c hm-l1"></span>1<span class="hm-c hm-l2"></span>2<span class="hm-c hm-l3"></span>3<span class="hm-c hm-l4"></span>4+</div></div>'
+    + '<div class="heat-an"><div class="heat-an-t">动态分析</div><ul class="list">' + (an || '<li>暂无</li>') + '</ul></div>'
+    + '</div></div>';
 }
 
 export function pageNotes(snap) {
   const n = (snap && snap.notes) || notes();
   const c = n.counts;
   const cards = statCards([['笔记总数', c.total], ['本月新增', c.thisMonth], ['标签数', c.tags]]);
-  const rows = n.list.map(function (r) { return { col1: r.date, col2: (r.tags || []).join('、') || '—', col3: r.topic }; });
+  const rows = n.list.map(function (r) { return { id: r.id, col1: r.date, col2: (r.tags || []).join('、') || '—', col3: r.topic }; });
   return '<div class="stats">' + cards + '</div>' + listBlock('笔记列表', rows);
 }
 
@@ -212,11 +265,11 @@ export function selfTest() {
   const out = [];
   const chk = function (id, desc, ok, detail) { out.push({ id: id, desc: desc, ok: !!ok, detail: detail || '' }); };
   const snap = {
-    overview: { stats: { todosOpen: 3, messagesPending: 2, schedules7d: 1, notes7d: 4 }, reminders: { upcoming: [{ at: '2026-10-12T14:00', title: '评审', note: '线上' }], urgent: [{ at: '2026-10-09', title: '逾期的活', note: '已逾期 3 天' }], stale: [{ at: '2026-10-01T09:00:00+08:00', title: '没回的消息', note: '钉钉 · 张伟 · 已 11 天未回复' }] } },
-    messages: { counts: { pending: 2, toTodo: 1, toSchedule: 0, replied: 3 }, tab: 'all', list: [{ at: Date.parse('2026-10-12T00:39:00+08:00'), source: '钉钉 · 曹元庭', summary: '一句话概括' }] },
-    todos: { counts: { today: 2, week: 1, undecided: 1, done: 4 }, list: [{ dueLabel: '已逾期 3 天', executor: '我', topic: '逾期的活', detail: '细节', overdue: true }] },
-    schedules: { counts: { today: 1, next7: 2, done30: 3 }, list: [{ start: '2026-10-12T14:00', topic: '评审', place: '线上', participants: ['我', '张伟'] }] },
-    notes: { counts: { total: 9, thisMonth: 4, tags: 7 }, list: [{ date: '2026-10-05', topic: 'A', tags: ['采集'] }] },
+    overview: { stats: { todosOpen: 3, messagesPending: 2, schedules7d: 1, notes7d: 4 }, reminders: { upcoming: [{ id: 'sch_1', kind: 'schedule', at: '2026-10-12T14:00', title: '评审', note: '线上' }], urgent: [{ id: 'td_1', kind: 'todo', at: '2026-10-09', title: '逾期的活', note: '已逾期 3 天' }], stale: [{ id: 'msg_9', kind: 'message', at: '2026-10-01T09:00:00+08:00', title: '没回的消息', note: '钉钉 · 张伟 · 已 11 天未回复' }] } },
+    messages: { counts: { pending: 2, toTodo: 1, toSchedule: 0, replied: 3 }, tab: 'all', list: [{ id: 'msg_1', at: Date.parse('2026-10-12T00:39:00+08:00'), source: '钉钉 · 曹元庭', summary: '一句话概括' }] },
+    todos: { counts: { today: 2, week: 1, undecided: 1, done: 4 }, list: [{ id: 'td_2', dueLabel: '已逾期 3 天', executor: '我', topic: '逾期的活', detail: '细节', overdue: true }] },
+    schedules: { counts: { today: 1, next7: 2, done30: 3 }, list: [{ id: 'sch_2', start: '2026-10-12T14:00', topic: '评审', place: '线上', participants: ['我', '张伟'] }] },
+    notes: { counts: { total: 9, thisMonth: 4, tags: 7 }, list: [{ id: 'note_1', date: '2026-10-05', topic: 'A', tags: ['采集'] }] },
   };
 
   // ① 五页都能渲染，且每页导航 + 状态栏 + 名称齐全（需求 3.3.1）
@@ -259,6 +312,27 @@ export function selfTest() {
   chk('SH-24', '非总览页有「新增一条」按钮，总览页没有', wired.indexOf('id="btn-add"') >= 0 && renderPage('overview', { snap: snap, api: 'http://x' }).indexOf('id="btn-add"') < 0);
   chk('SH-25', '★ 不给 api ⇒ 不注入脚本（静态可读，不致残）', home.indexOf('<script>') < 0 && home.indexOf('id="btn-add"') < 0);
   chk('SH-26', '★ 注入的脚本语法有效（真编译）', (function () { const m = /<script>([\s\S]*)<\/script>/.exec(wired); if (!m) return false; try { new Function(m[1]); return true; } catch (e) { return false; } })());
+
+  // ★ 列表项必须带 data-id（P1-6）：详情浮层按它取单条。
+  //   旧做法按行序推断，页签一变就错位 ⇒ 这两条守着"id 真的写进 DOM 了"。
+  const msgHtml = renderPage('messages', { snap: snap, api: '/workdesktop/api/v1' });
+  chk('SH-27', '★ 消息列表项带 data-id（浮层据此取单条）', /<li data-id="msg_1"/.test(msgHtml), (msgHtml.match(/<li[^>]*>/) || ['无'])[0]);
+  const ovHtml = renderPage('overview', { snap: snap, api: '/workdesktop/api/v1' });
+  chk('SH-28', '★ 总览三类提醒带 data-id + data-go（可跳对应页面并开详情，需求 3.3.2）', /data-go="schedule"/.test(ovHtml) && /data-go="todo"/.test(ovHtml) && /data-go="message"/.test(ovHtml), (ovHtml.match(/<li[^>]*>/g) || []).slice(0, 3).join(' | '));
+  chk('SH-29', '★ 负向对照：没有 id 的行不写 data-id（不编假 id）', (function () {
+    const h = renderPage('notes', { snap: { notes: { counts: { total: 1, thisMonth: 1, tags: 0 }, list: [{ date: '2026-10-05', topic: 'A', tags: [] }] } } });
+    return h.indexOf('<li data-id=') < 0 && h.indexOf('<li>') >= 0;
+  })());
+
+  // ★ SH-30/31：日程密度热力图（需求 3.3.5）—— 左：当月每天热力；右：动态分析
+  const schHtml = renderPage('schedules', { snap: snap, api: '/x' });
+  chk('SH-30', '★ 日程页有密度热力图（左侧月历热力格 + 图例）', schHtml.includes('日程密度') && schHtml.includes('hm-grid') && schHtml.includes('hm-l1'), '');
+  chk('SH-31', '★ 热力图右侧是动态分析；**没数据时原样呈现"没有数据就不分析"**（不编分析）', schHtml.includes('动态分析') && (function () {
+    // 用一份"空库"的热力图数据驱动渲染（不依赖本机真实数据，判据才稳）
+    const emptyHeat = { month: '2026-10', grid: new Array(31).fill(null).map(function (_, i) { return { date: '2026-10-' + String(i + 1).padStart(2, '0'), day: i + 1, count: 0, level: 0, items: [] }; }), analysis: ['本月（2026-10）还没有日程记录 —— 没有数据就不分析。'], totals: { count: 0, busyDays: 0, emptyDays: 31, maxStreak: 0 }, peak: null, busiestHour: null, topTopics: [] };
+    const h = renderPage('schedules', { snap: { schedules: { counts: { today: 0, next7: 0, done30: 0, total: 0 }, list: [] }, heatmap: emptyHeat } });
+    return h.includes('没有数据就不分析');
+  })(), '');
 
   const pass = out.filter(function (x) { return x.ok; }).length;
   return { pass: pass, fail: out.length - pass, details: out };

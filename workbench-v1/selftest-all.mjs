@@ -71,6 +71,8 @@ await run('P1l', 'P1 飞书妙记通路', async () => (await import(base + 'coll
 await run('P1m', 'P1 飞书多维表记录段', async () => (await import(base + 'collector/feishu-bitable.mjs')).selfTest());
 await run('P1n', 'P1 飞书聊天实时', async () => (await import(base + 'collector/feishu-events.mjs')).selfTest());
 await run('P2', 'P2 意图判定', async () => (await import(base + 'processor/intent.mjs')).selfTest());
+// P2 消息判定与自动创建（用户 Q2：高置信自动建 / 低置信标待处置；幂等）
+await run('P2det', 'P2 消息判定与自动创建', async () => (await import(base + 'processor/detect.mjs')).selfTest());
 await run('P2b', 'P2 链接队列', async () => (await import(base + 'processor/links.mjs')).selfTest());
 await run('P2c', 'P2 筛选主链', async () => (await import(base + 'processor/filter.mjs')).selfTest());
 await run('P2d', 'P3 召回层', async () => (await import(base + 'processor/recall.mjs')).selfTest());

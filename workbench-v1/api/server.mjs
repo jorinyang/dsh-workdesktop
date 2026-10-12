@@ -168,11 +168,16 @@ export function handler(req, res) {
       const evt = store.getById(t, id);
       if (!evt) return json(res, 404, { error: '没有这条事件', type, id });
       const opsFor = {
-        message: ['转待办', '转日程', '已回复'],
+        message: ['转待办', '转日程', '转笔记', '已回复'],
         todo: ['已搁置', '转日程', '已完成'],
         schedule: ['转待办', '已完成'],
         note: ['可视化构建', '分析笔记'],
       };
+      // ★ 判定结果（用户 Q2 的"待处置"就落在这里）：判过但判据不足的候选项。
+      //   只报 **还没建出来** 的那些 —— 已建的已经在列表里了，再报一次会让人以为重复。
+      const det = evt._detect ?? null;
+      const createdKinds = new Set((det?.created ?? []).map((c) => c.kind));
+      const pending = (det?.pending ?? []).filter((c) => !createdKinds.has(c.kind));
       return json(res, 200, {
         id: evt._id, type: evt.type, lifecycle: evt.lifecycle, at: evt._at,
         structured: evt.payload,                       // 结构化内容
@@ -181,6 +186,7 @@ export function handler(req, res) {
         analysis: evt.analysis ?? null,                // 分析与建议 / 可视化（笔记用）
         deliverables: evt.deliverables ?? [],
         ops: evt.ops ?? [],
+        detect: det ? { at: det.at, summary: det.summary, created: det.created ?? [], pending } : null,
         availableOps: opsFor[evt.type] ?? [],          // 可执行操作（界面据此渲染按钮）
       });
     }
@@ -192,6 +198,9 @@ export function handler(req, res) {
       if (typeof fn !== 'function') return json(res, 404, { error: `没有这个页面数据：${key}`, available: ['overview', 'messages', 'todos', 'schedules', 'notes'] });
       const data = fn();
       if (key === 'messages' && u.searchParams.get('tab')) return json(res, 200, typeof pages.messages === 'function' ? pages.messages({ tab: u.searchParams.get('tab') }) : data);
+      // ★ 日程页额外带**密度热力图**（需求 3.3.5）：左侧月历热力 + 右侧动态分析。
+      //   放在这里而不是塞进 `schedules()`，是因为它在语义上是"日程页的第二块"，不是日程列表的一部分。
+      if (key === 'schedules') return json(res, 200, { ...data, heatmap: pages.scheduleHeatmap({}) });
       return json(res, 200, data);
     }
     return json(res, 404, { error: '未知读路径' });
@@ -260,16 +269,43 @@ export function handler(req, res) {
           return json(res, 200, { ok: true, id, marked: 'replied', note: '已回复（按既有规则：我回复过即视为已回复）' });
         }
         if (t === 'message' && action === 'convert') {
-          const to = String(body.payload?.to ?? body.to ?? '').trim();
-          if (to !== 'todo' && to !== 'schedule') return json(res, 400, { error: 'convert 需要 payload.to = "todo" 或 "schedule"' });
+          return (async () => {
+            const to = String(body.payload?.to ?? body.to ?? '').trim();
+          // ★ `note` 于 2026-10-12 加入（需求 3.3.3 后半句："如有成体系的知识/结构/方法，
+          //   可将其总结概括并记录为笔记"）—— 此前只支持 todo/schedule，那条需求没落点。
+          if (to !== 'todo' && to !== 'schedule' && to !== 'note') return json(res, 400, { error: 'convert 需要 payload.to = "todo" / "schedule" / "note"', allowed: ['todo', 'schedule', 'note'] });
           const src = evt.payload ?? {};
-          const mk = to === 'todo'
-            ? { topic: String(body.payload?.topic ?? src.summary ?? src.raw ?? '').slice(0, 80) || '（未命名待办）', detail: String(body.payload?.detail ?? src.raw ?? ''), due: body.payload?.due ?? null, publisher: src.sender ?? null, executor: body.payload?.executor ?? '我' }
-            : { topic: String(body.payload?.topic ?? src.summary ?? src.raw ?? '').slice(0, 80) || '（未命名日程）', start: body.payload?.start ?? null, end: body.payload?.end ?? body.payload?.start ?? null, place: body.payload?.place ?? null, participants: body.payload?.participants ?? [] };
-          const made = createEvent(to, mk, { origin: { channel: evt.origin.channel, sender: evt.payload.sender, messageId: `from-${evt.origin.messageId ?? evt._id}`, raw: evt.payload.raw ?? null }, at: evt._at });
+          let mk; let made;
+          if (to === 'note') {
+            // 转笔记：内容用原文，主题可取人给的第一句（不给人就给原文首行）
+            const { toNotePayload } = await import('../processor/intent.mjs');
+            // ⚠️ 必须把 `_at` 一起给进去：`toNotePayload` 用 `evt._at` 生成日期，
+            //    漏了它就会得到 `NaN-NaN-NaN` 并被契约拒掉（实测踩到，表现为"转笔记失败"）。
+            const np = toNotePayload({ _at: evt._at ?? Date.now(), payload: { raw: src.raw, sender: src.sender, channel: src.channel } });
+            mk = { ...np, topic: String(body.payload?.topic ?? np.topic).slice(0, 80), content_md: String(body.payload?.content_md ?? np.content_md) };
+            if (Array.isArray(body.payload?.tags) && body.payload.tags.length) mk.tags = body.payload.tags;
+          } else if (to === 'todo') {
+            mk = { topic: String(body.payload?.topic ?? src.summary ?? src.raw ?? '').slice(0, 80) || '（未命名待办）', detail: String(body.payload?.detail ?? src.raw ?? ''), due: body.payload?.due ?? null, publisher: src.sender ?? null, executor: body.payload?.executor ?? '我' };
+          } else {
+            // 转日程：契约要求 start/end **必须有具体值**（实测：给 null 会被判非法、建了个空）
+            const { deriveScheduleWindow } = await import('../processor/detect.mjs');
+            const w = deriveScheduleWindow(String(src.raw ?? ''), { now: evt._at ?? Date.now() });
+            const start = body.payload?.start ?? (w.ok ? w.start : null);
+            const end = body.payload?.end ?? (w.ok ? w.end : start);
+            if (!start || !end) {
+              return json(res, 409, {
+                error: '转日程需要具体起止时间：这条消息里没解析出来，请把 start/end 一起传进来',
+                hint: '日程契约要求 start/end 是 YYYY-MM-DD 或 YYYY-MM-DDTHH:mm（不接受空）',
+                parsed: w.ok ? { start: w.start, end: w.end } : null, why: w.ok ? null : w.why,
+              });
+            }
+            mk = { topic: String(body.payload?.topic ?? src.summary ?? src.raw ?? '').slice(0, 80) || '（未命名日程）', detail: String(body.payload?.detail ?? src.raw ?? ''), start, end, place: body.payload?.place ?? null, participants: body.payload?.participants ?? [] };
+          }
+          made = createEvent(to, mk, { origin: { channel: evt.origin.channel, sender: evt.payload.sender, messageId: `from-${evt.origin.messageId ?? evt._id}`, raw: evt.payload.raw ?? null }, at: evt._at });
           if (made.ok === false) return json(res, 400, { error: '生成目标事件失败', errors: made.errors });
-          store.patch('message', id, {}, { op: to === 'todo' ? 'to-todo' : 'to-schedule', targetId: made.id });
+          store.patch('message', id, {}, { op: to === 'todo' ? 'to-todo' : to === 'schedule' ? 'to-schedule' : 'to-note', targetId: made.id, by: 'manual' });
           return json(res, 200, { ok: true, from: id, to: made.id, kind: to, note: '已建目标事件并在来源消息上留痕' });
+          })().catch((e) => json(res, 500, { error: `转换失败：${e.message}` }));
         }
 
         // ② 待办动作（需求 3.3.4：已搁置 / 转日程 / 已完成）
@@ -290,7 +326,42 @@ export function handler(req, res) {
           return json(res, 200, { ok: true, id, op: k });
         }
 
-        // ④ 笔记的两个动作（需求 3.3.6 / 用户 Q3）—— 2026-10-12 接线（此前如实回 501）
+        // ⑤ 待办：结果与交付物（需求 3.3.4：详情里要有"待办的结果 / 交付物（文字说明、附件上传）"）
+        //   ★ 用户 Q4 裁定（2026-10-12）："结果走归档进知识库；附件落 Other/Inflow/文件/"。
+        //     ⇒ 这是给"写接口只落运行态"开的**一个受控例外**，写在 write-routes.json 里，
+        //       并且**只往 Inflow/文件 里放**（那是采集入口的既有目录，天然进 RAG）。
+        if (t === 'todo' && action === 'deliverable') {
+          return (async () => {
+            const text = String(body.payload?.text ?? body.text ?? '').trim();
+            const src = String(body.payload?.file ?? body.file ?? '').trim();     // 本机已有的文件路径
+            const note = String(body.payload?.note ?? '').trim();
+            if (text === '' && src === '') return json(res, 400, { error: '至少给一个：text（文字说明）或 file（附件路径）' });
+            const list = Array.isArray(evt.deliverables) ? [...evt.deliverables] : [];
+            let attachment = null;
+            if (src !== '') {
+              if (!fs.existsSync(src)) return json(res, 400, { error: `附件路径不存在：${src}` });
+              const st = fs.statSync(src);
+              if (!st.isFile()) return json(res, 400, { error: `附件不是文件：${src}` });
+              const dir = path.join(ROOT, 'Other', 'Inflow', '文件');
+              fs.mkdirSync(dir, { recursive: true });
+              const base = path.basename(src);
+              let dest = path.join(dir, base);
+              // 幂等：同名同大小 ⇒ 不再复制（同一附件重复提交不产生第二份）
+              if (fs.existsSync(dest) && fs.statSync(dest).size === st.size) {
+                attachment = { ref: path.relative(ROOT, dest).replace(/\\/g, '/'), bytes: st.size, reused: true };
+              } else {
+                if (fs.existsSync(dest)) dest = path.join(dir, `${String(Date.now()).slice(-6)}-${base}`);
+                fs.copyFileSync(src, dest);
+                attachment = { ref: path.relative(ROOT, dest).replace(/\\/g, '/'), bytes: st.size, reused: false };
+              }
+            }
+            list.push({ at: new Date().toISOString(), by: 'manual', text: text || null, note: note || null, attachment });
+            const pr = store.patch('todo', id, { deliverables: list }, { op: 'deliverable', by: 'manual', evidence: { text: !!text, attachment: attachment?.ref ?? null } });
+            if (pr.ok === false) return json(res, 500, { error: `交付物写入被拒：${pr.why}` });
+            return json(res, 200, { ok: true, id, count: list.length, attachment, note: '结果已记在待办上，归档时随待办一起进知识库（处理引擎负责）' });
+          })().catch((e) => json(res, 500, { error: `交付物登记失败：${e.message}` }));
+        }
+
         //    · 分析笔记  ⇒ 重新召回 + 重新调模型，**覆盖**上一次结论（visual.built 这类落点保留）
         //    · 可视化构建 ⇒ 真调工具建模型（坐标系 / 工程图 / 建模中心），**成功才置 built**
         //    两条都不假装：模型失败 ⇒ 回 502 且事件里只留 error；工具失败 ⇒ 回 502 且 built 不置真
@@ -411,7 +482,8 @@ export async function selfTest() {
       && detail.body.structured?.raw === '手工新增的一条消息'
       && detail.body.original?.channel === 'manual'
       && detail.body.context !== undefined
-      && Array.isArray(detail.body.availableOps) && detail.body.availableOps.length === 3, JSON.stringify(detail.body.availableOps));
+      && Array.isArray(detail.body.availableOps) && detail.body.availableOps.length === 4, JSON.stringify(detail.body.availableOps));
+    // API-19 由 3 个动作改为 4 个（2026-10-12）：需求 3.3.3 后半句要"转笔记"，此前缺这一个动作。
     chk('API-20', '各类型可执行操作按需求给（待办=已搁置/转日程/已完成）', (() => { return true; })());
     const tDetail = await get('/detail/todos/' + t.body.id);
     chk('API-20b', '★ 待办详情三项操作齐（已搁置/转日程/已完成）', tDetail.code === 200 && tDetail.body.availableOps.join(',') === '已搁置,转日程,已完成', JSON.stringify(tDetail.body.availableOps));
@@ -514,6 +586,40 @@ export async function selfTest() {
       void analyzeMod; void vizMod;
     }
     chk('API-30', '★ 动作路径也受登记守卫（未登记的动作用 404 挡住）', (await post('/messages/' + w.body.id + '/whatever', {})).code === 404);
+
+    // ── P2 新增：转笔记 / 转日程需具体时间 / 待办交付物（2026-10-12）───────────────
+    // ★ 判据用**增量**不写绝对条数：绝对数会随前面夹具变动而红（实测：断言 2，实际已经 3）
+    const notesBefore = (await get('/pages/notes')).body.counts.total;
+    const cnvNote = await post('/messages/' + w.body.id + '/convert', { to: 'note', topic: '从消息沉淀的笔记' });
+    const notesAfter = (await get('/pages/notes')).body.counts.total;
+    chk('API-43', '★ 消息转笔记（需求 3.3.3 后半句：成体系知识 ⇒ 记为笔记）', cnvNote.code === 200 && cnvNote.body.kind === 'note' && notesAfter === notesBefore + 1, JSON.stringify(cnvNote.body) + ` notes ${notesBefore}→${notesAfter}`);
+    chk('API-44', '转笔记后来源消息留痕（to-note + 目标 id）', await (async () => {
+      const d = await get('/detail/messages/' + w.body.id);
+      const o = (d.body.ops ?? []).find((x) => x.op === 'to-note');
+      return !!o && typeof o.targetId === 'string';
+    })());
+    const cnvSch = await post('/messages/' + w.body.id + '/convert', { to: 'schedule' });   // 原文里没有可解析时间
+    chk('API-45', '★ 转日程但解析不出具体时间 ⇒ 409 且说明契约（不建个空日程）', cnvSch.code === 409 && /start\/end/.test(JSON.stringify(cnvSch.body)), JSON.stringify(cnvSch.body).slice(0, 160));
+    const cnvSch2 = await post('/messages/' + w.body.id + '/convert', { to: 'schedule', start: '2026-10-20T14:00', end: '2026-10-20T15:00' });
+    chk('API-46', '★ 时间由人给 ⇒ 转日程成功（契约要求具体值，实测给 null 会建个空）', cnvSch2.code === 200 && cnvSch2.body.kind === 'schedule', JSON.stringify(cnvSch2.body));
+    chk('API-47', '转错目标仍 400 且列出全部允许值', (await post('/messages/' + w.body.id + '/convert', { to: 'whatever' })).body.allowed?.join(',') === 'todo,schedule,note');
+
+    const dlBad = await post('/todos/' + t.body.id + '/deliverable', {});
+    chk('API-48', '交付物：什么都没给 ⇒ 400（不写空记录）', dlBad.code === 400, JSON.stringify(dlBad.body));
+    const dlTxt = await post('/todos/' + t.body.id + '/deliverable', { text: '验收单已发出，回执见附件' });
+    chk('API-49', '★ 待办结果：文字说明可登记（需求 3.3.4）', dlTxt.code === 200 && dlTxt.body.count === 1, JSON.stringify(dlTxt.body));
+    // 附件：用一个真实存在的小文件（本自检自己造的），落在 Other/Inflow/文件/（用户 Q4 裁定的例外）
+    const attSrc = path.join(process.env.WB_V1_OUT, 'att-sample.txt');
+    fsx.writeFileSync(attSrc, 'attachment sample', 'utf8');
+    const dlFile = await post('/todos/' + t.body.id + '/deliverable', { file: attSrc, note: '回执' });
+    chk('API-50', '★ 附件落到 Inflow/文件（Q4 裁定的受控例外）', dlFile.code === 200 && String(dlFile.body.attachment?.ref ?? '').startsWith('Other/Inflow/文件/'), JSON.stringify(dlFile.body.attachment));
+    chk('API-51', '附件不存在的路径 ⇒ 400（不写半条记录）', (await post('/todos/' + t.body.id + '/deliverable', { file: path.join(process.env.WB_V1_OUT, '没有这个文件.txt') })).code === 400);
+    chk('API-52', '★ 幂等：同名同大小再交一次 ⇒ 复用，不产生第二份', await (async () => {
+      const again = await post('/todos/' + t.body.id + '/deliverable', { file: attSrc });
+      return again.code === 200 && again.body.attachment?.reused === true;
+    })());
+    const dlDetail = await get('/detail/todos/' + t.body.id);
+    chk('API-53', '详情里能读到结果与交付物（浮层据此渲染）', (dlDetail.body.deliverables ?? []).length === 3 && dlDetail.body.deliverables[0].text !== undefined, JSON.stringify(dlDetail.body.deliverables).slice(0, 200));
 
     // ── 驾驶舱"生成入口"（2026-10-12 接线）────────────────────────────────────
     chk('API-31', '★ 驾驶舱生成路径已登记（POST /cockpit/:kind）', isRegistered('POST', `${API_PREFIX}/cockpit/state`), JSON.stringify(writeRoutes().filter((r) => r.path && r.path.includes('cockpit'))));

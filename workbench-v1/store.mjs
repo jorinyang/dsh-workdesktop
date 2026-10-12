@@ -104,7 +104,11 @@ export function upsert(evt) {
 }
 
 /** 打补丁（处理引擎用）：只改允许的字段，并追加一条 ops 留痕 */
-const PATCHABLE = ['payload', 'context', 'analysis', 'deliverables', 'closedBy', 'archiveRef'];
+// 允许打补丁的字段（白名单；`lifecycle` 不在其中 —— 它必须走 schema.transition）
+// ★ `_detect` 于 2026-10-12 加入（P2）：消息的"意图判定与自动创建记账"落在这个字段上，
+//   而它是**幂等的依据**（判过就不再建）。加它之前那一版补丁被白名单**静默拒绝**，
+//   表现为"每轮都重复自动建"——正是 detect.mjs 里最贵的那种错。**收返回值、别假设 patch 成功。**
+const PATCHABLE = ['payload', 'context', 'analysis', 'deliverables', 'closedBy', 'archiveRef', '_detect'];
 export function patch(type, id, changes, op = null) {
   const doc = loadType(type);
   const idx = doc.events.findIndex((e) => e._id === id);

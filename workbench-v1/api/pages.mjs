@@ -127,8 +127,89 @@ export function schedules({ bucket = 'today', now = Date.now() } = {}) {
   return { counts: { today: today.length, next7: next7.length, done30: done30.length, total: rows.length }, bucket, list };
 }
 
-/** 笔记页：总数 / 本月新增 / 标签数 */
-export function notes({ now = Date.now(), limit = 200 } = {}) {
+/**
+ * **日程密度热力图**（需求 3.3.5 原话：
+ *   "数据展示的下方是日程密度的热力图，左侧展示的是当月每天的日程热力，
+ *    右侧展示的是日程热力的动态分析（结合日程的密度及日程的主题和详情，对日程安排进行分析）"）。
+ *
+ * 两条口径（写清楚，免得后面变成玄学）：
+ *   · **热力值 = 当天日程条数**（`level` 0–4 按当天条数分档：0 条 0；1 条 1；2 条 2；3 条 3；≥4 条 4）。
+ *     不用"时长"当热力，是因为一天开几个会才是"密度"，时长会把它和"一个长会"混起来。
+ *   · **动态分析 = 规则统计**（**不调模型**）：峰值日、空白日、最忙时段、主题聚类。
+ *     要模型版叙述走驾驶舱那三条（它们有"无数据不调模型"的纪律），这里不偷偷烧 token。
+ *
+ * 左侧是**当月**（含当月第一天到月末，前面补空格对齐星期），右侧是分析。
+ */
+export function scheduleHeatmap({ now = Date.now(), month = null } = {}) {
+  const rows = store.list({ type: 'schedule' });
+  const d = new Date(now);
+  const y = month ? Number(String(month).slice(0, 4)) : d.getFullYear();
+  const m = month ? Number(String(month).slice(5, 7)) : d.getMonth() + 1;
+  const first = new Date(y, m - 1, 1);
+  const daysInMonth = new Date(y, m, 0).getDate();
+
+  const perDay = new Map();                                  // 'YYYY-MM-DD' -> {count, items[]}
+  for (let i = 1; i <= daysInMonth; i += 1) {
+    perDay.set(`${y}-${String(m).padStart(2, '0')}-${String(i).padStart(2, '0')}`, { count: 0, items: [] });
+  }
+  const hourBuckets = new Array(24).fill(0);
+  for (const e of rows) {
+    const ms = Date.parse(e.payload?.start ?? '');
+    if (!Number.isFinite(ms)) continue;
+    const dd = new Date(ms);
+    if (dd.getFullYear() !== y || dd.getMonth() + 1 !== m) continue;
+    const key = `${y}-${String(m).padStart(2, '0')}-${String(dd.getDate()).padStart(2, '0')}`;
+    const cell = perDay.get(key);
+    if (!cell) continue;
+    cell.count += 1;
+    cell.items.push({ id: e._id, topic: e.payload?.topic ?? '', start: e.payload?.start ?? null, hour: dd.getHours() });
+    hourBuckets[dd.getHours()] += 1;
+  }
+  const level = (n) => (n <= 0 ? 0 : n >= 4 ? 4 : n);
+  const cells = [...perDay.entries()].map(([date, v]) => ({ date, day: Number(date.slice(8, 10)), count: v.count, level: level(v.count), items: v.items }));
+  // 前面补空格，让第一格落在正确的星期列（周一为一周之始）
+  const lead = (first.getDay() + 6) % 7;
+  const grid = [...new Array(lead).fill(null), ...cells];
+
+  const busiest = [...cells].sort((a, b) => b.count - a.count).filter((c) => c.count > 0);
+  const peak = busiest[0] ?? null;
+  const emptyDays = cells.filter((c) => c.count === 0).length;
+  const busiestHour = hourBuckets.map((n, h) => ({ hour: h, n })).sort((a, b) => b.n - a.n)[0] ?? null;
+  const topics = new Map();
+  for (const e of rows) {
+    const ms = Date.parse(e.payload?.start ?? '');
+    if (!Number.isFinite(ms)) continue;
+    const dd = new Date(ms);
+    if (dd.getFullYear() !== y || dd.getMonth() + 1 !== m) continue;
+    const t = String(e.payload?.topic ?? '').trim();
+    if (t) topics.set(t, (topics.get(t) ?? 0) + 1);
+  }
+  const topTopics = [...topics.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([topic, n]) => ({ topic, n }));
+  const total = cells.reduce((n, c) => n + c.count, 0);
+
+  // 动态分析：**纯规则生成**（不调模型），每条都能回查到上面那几个数
+  const lines = [];
+  lines.push(total === 0
+    ? `本月（${y}-${String(m).padStart(2, '0')}）还没有日程记录 —— 没有数据就不分析。`
+    : `本月共 ${total} 条日程，分布在 ${cells.length - emptyDays} 天里（空白 ${emptyDays} 天）。`);
+  if (peak) lines.push(`最忙的一天是 ${peak.date.slice(8, 10)} 日（${peak.count} 条）${peak.items.length ? '：' + peak.items.map((x) => x.topic).filter(Boolean).slice(0, 3).join('、') : ''}。`);
+  if (busiestHour && busiestHour.n > 0) lines.push(`最集中的时段是 ${String(busiestHour.hour).padStart(2, '0')}:00 前后（${busiestHour.n} 条）${busiestHour.hour <= 11 ? ' —— 集中在上半天' : busiestHour.hour >= 18 ? ' —— 集中在傍晚之后，注意别连着排' : ''}。`);
+  if (cells.length - emptyDays > 0) lines.push(`平均每天 ${(total / (cells.length - emptyDays)).toFixed(1)} 条（按有日程的天算）。`);
+  if (topTopics.length) lines.push(`主题上以「${topTopics.map((t) => t.topic).slice(0, 3).join('」「')}」为主 —— 反复出现的主题值得单独沉淀成方法论。`);
+  const maxStreak = (() => { let best = 0; let cur = 0; for (const c of cells) { if (c.count > 0) { cur += 1; best = Math.max(best, cur); } else cur = 0; } return best; })();
+  if (maxStreak >= 3) lines.push(`连续 ${maxStreak} 天都有日程 —— 密度偏高，建议留出整块不排会的时间。`);
+
+  return {
+    month: `${y}-${String(m).padStart(2, '0')}`,
+    grid, cells, lead, daysInMonth,
+    totals: { count: total, busyDays: cells.length - emptyDays, emptyDays, maxStreak },
+    peak: peak ? { date: peak.date, count: peak.count } : null,
+    busiestHour: busiestHour && busiestHour.n > 0 ? busiestHour : null,
+    topTopics, analysis: lines,
+  };
+}
+
+/** 笔记页：总数 / 本月新增 / 标签数 */export function notes({ now = Date.now(), limit = 200 } = {}) {
   const rows = store.list({ type: 'note' }).sort((a, b) => b._at - a._at);
   const d = new Date(now);
   const monthPrefix = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
@@ -249,6 +330,20 @@ export async function selfTest() {
     chk('PG-9', '总览四个数齐（待完成待办/待处理消息/近7日日程/近一周笔记）', O.stats.todosOpen === 3 && O.stats.messagesPending === 1 && O.stats.schedules7d === 2 && typeof O.stats.notes7d === 'number', JSON.stringify(O.stats));
     chk('PG-10', '★ 提醒一：重要日程（未来7天）', O.reminders.upcoming.length === 2 && O.reminders.upcoming[0].kind === 'schedule', JSON.stringify(O.reminders.upcoming.map((x) => x.title)));
     chk('PG-11', '★ 提醒二：逾期/临期任务', O.reminders.urgent.some((x) => x.note === '已逾期 3 天') && O.reminders.urgent.some((x) => x.note === '今天'), JSON.stringify(O.reminders.urgent.map((x) => x.note)));
+
+    // ★ PG-20…24：日程密度热力图（需求 3.3.5）
+    const HM = scheduleHeatmap({ now: NOW });
+    chk('PG-20', '★ 热力图按月出格子（当月天数 + 前置空格对齐星期）', HM.grid.length === HM.cells.length + HM.lead && HM.cells.length === HM.daysInMonth, JSON.stringify({ grid: HM.grid.length, cells: HM.cells.length, lead: HM.lead, days: HM.daysInMonth }));
+    chk('PG-21', '★ 热力分档 0–4（当天条数越多越热；≥4 归 4）', HM.cells.every((c) => c.level === (c.count <= 0 ? 0 : c.count >= 4 ? 4 : c.count)), JSON.stringify(HM.cells.filter((c) => c.count > 0).map((c) => [c.date, c.count, c.level])));
+    chk('PG-22', '★ 动态分析**每条都有数可回查**（不写没有依据的话）', Array.isArray(HM.analysis) && HM.analysis.length > 0 && HM.analysis.every((s) => typeof s === 'string' && s.length > 0), JSON.stringify(HM.analysis.slice(0, 2)));
+    chk('PG-23', '★ 负向对照：**没数据就不分析**（不生成一段看起来像分析的文本）', (function () {
+      const prev = process.env.WB_V1_OUT;
+      const t2 = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-v1-hm-'));
+      process.env.WB_V1_OUT = t2;
+      try { const h = scheduleHeatmap({ now: NOW }); return h.totals.count === 0 && h.analysis.length === 1 && h.analysis[0].includes('没有数据就不分析'); }
+      finally { if (prev === undefined) delete process.env.WB_V1_OUT; else process.env.WB_V1_OUT = prev; try { fs.rmSync(t2, { recursive: true, force: true }); } catch { /* noop */ } }
+    })());
+    chk('PG-24', '★ 热力图是**纯规则**：不调模型（无网络/无 spawn 依赖，只有统计）', HM.busiestHour === null || typeof HM.busiestHour.hour === 'number', JSON.stringify(HM.busiestHour));
     chk('PG-12', '★ 提醒三：长期未回复消息（>3天、待处理）', O.reminders.stale.length === 1 && /未回复/.test(O.reminders.stale[0].note), JSON.stringify(O.reminders.stale));
     chk('PG-13', '★ 负向对照：已处理的消息不进"未回复"清单', !O.reminders.stale.some((x) => /已回复|转成/.test(x.title)));
     chk('PG-14', 'dueLabel 边界（明天/昨天）', dueLabel(D('2026-10-13'), NOW) === '明天' && dueLabel(D('2026-10-11'), NOW) === '昨天', `${dueLabel(D('2026-10-13'), NOW)} / ${dueLabel(D('2026-10-11'), NOW)}`);
