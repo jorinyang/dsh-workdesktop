@@ -185,12 +185,48 @@ export function clientScript(apiBase) {
   L.push('        ? rec.slice(0, 3).map(function (h) { return h.path + "（" + (h.similarity === null || h.similarity === undefined ? "-" : h.similarity) + "）"; }).join("\\n")');
   L.push('        : (recallError ? ("召回不可用：" + recallError) : "暂无相关材料");');
   L.push('      var rows = [["结构化内容", seen.topic || seen.raw || seen.summary || ""], ["原始消息", (orig.sender || "") + " · " + (orig.raw || "")], ["相关上下文", ctxText]];');
-  L.push('      if (det.analysis && det.analysis.text) rows.push(["分析与建议", det.analysis.text]);');
+  // ══════════════════════════════════════════════════════════════════════════
+  // ★★ 2026-10-13 改（用户第 11 条）：笔记详情要有**分析与建议**和**可视化构建**两项，
+  //    且可视化那一项**没建时要显示"待构建"**、建过时要能看到结果。
+  //
+  // 改动前：`分析与建议` 只在有 `analysis.text` 时出现（没有就整行不显示）；
+  //   `可视化` 只在有 `visual` 时出现，而且**没建的时候整行消失** ——
+  //   用户看到的是"详情页里根本没有这两个字段"，而不是"这两项还没做"。
+  //   两件事不一样：**字段缺失**看着像功能没做，**"待构建"**才是如实的状态。
+  //   ⇒ 现在两种情况都出一行，文案按状态走。
+  //
+  // ⚠️ 关于"点击跳转到坐标系/工程图/建模中心"：**这一轮没做，如实说明**。
+  //   实测这三种可视化都是**右侧栏面板**（`dsh-coords:center` / `dsh-modeling:center` / 工程图），
+  //   而本页跑在 iframe 里、插件的客户端**没有对外暴露任何"按 id 切面板"的通道**
+  //   （查过 `postMessage` / `location.hash` / 全局函数，都没有）。
+  //   要做得先加一条跨层通道（页面 postMessage → 插件切面板），那是另一件事。
+  //   ⇒ 现在**把落点如实显示出来**（工具 + 路径/名字/id），人能自己找过去；
+  //     不做一个点了没反应的按钮（这个项目已经因为"点了没反应"返工过好几轮）。
+  L.push('      if (det.analysis && det.analysis.text) {');
+  L.push('        rows.push(["分析与建议", det.analysis.text + (det.analysis.contextCount !== undefined ? ("\\n（召回 " + det.analysis.contextCount + " 条材料作依据）") : "")]);');
+  L.push('      } else if (det.analysis && det.analysis.error) {');
+  L.push('        rows.push(["分析与建议", "未完成：" + det.analysis.error]);');
+  L.push('      } else if (type === "notes") {');
+  L.push('        rows.push(["分析与建议", "待分析（点下方「分析笔记」即可生成；分析引擎只召回不调模型，成本近零）"]);');
+  L.push('      }');
   L.push('      var v = det.analysis && det.analysis.visual;');
-  L.push('      if (v) rows.push(["可视化", v.built === true');
-  L.push('        ? ("已建：" + (v.tool || "") + " · " + (v.name || v.ref || ""))');
-  L.push('        : (v.suggested ? ("建议 " + v.suggested + " —— " + (v.why || "") + (v.error ? "（上次构建失败：" + v.error + "）" : "")) : "")]);');
-  L.push('      if (det.analysis && det.analysis.error) rows.push(["分析未完成", det.analysis.error]);');
+  L.push('      var TOOL = { coordinates: "坐标系", project_graph: "工程图", modeling: "建模中心" };');
+  L.push('      if (type === "notes") {');
+  L.push('        if (v && v.built === true) {');
+  // 已构建：把**落点**写清楚（工具 + 名字/路径/id）—— 这是人能据此找过去的凭据
+  L.push('          var loc = String(v.ref || v.name || "");');
+  L.push('          rows.push(["可视化构建", "已构建：" + (TOOL[v.tool] || v.tool || "") + "\\n" + loc]);');
+  L.push('        } else if (v && v.suggested) {');
+  L.push('          rows.push(["可视化构建", "待构建 —— 建议用「" + (TOOL[v.suggested] || v.suggested) + "」\\n" + (v.why || "") + (v.error ? ("\\n（上次构建失败：" + v.error + "）") : "")]);');
+  L.push('        } else if (v && v.error) {');
+  L.push('          rows.push(["可视化构建", "待构建（上次尝试失败：" + v.error + "）"]);');
+  L.push('        } else {');
+  L.push('          rows.push(["可视化构建", "待构建（点下方「可视化构建」让工具判定该用哪个）"]);');
+  L.push('        }');
+  L.push('      } else if (v) {');
+  L.push('        rows.push(["可视化", v.built === true ? ("已建：" + (v.tool || "") + " · " + (v.name || v.ref || "")) : (v.suggested ? ("建议 " + v.suggested + " —— " + (v.why || "")) : "")]);');
+  L.push('      }');
+  L.push('      if (det.analysis && det.analysis.error && type !== "notes") rows.push(["分析未完成", det.analysis.error]);');
   L.push('      if (det.deliverables && det.deliverables.length) rows.push(["结果 / 交付物", det.deliverables.map(function (d) { return d.text || d.ref || ""; }).join("\\n")]);');
   // ★ 用户 Q2 裁定的前端那一半：判据不足的候选项标「待处置」，并给**一键创建**。
   //   高置信的已经被自动建过了（这里只显示"已建"的结果），所以这里出现的都是"要你点一下"的。
