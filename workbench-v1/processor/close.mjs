@@ -106,6 +106,99 @@ export function autoCloseTodos({ now = Date.now(), messages = null, minOverlap =
 }
 
 /** 一轮自动关闭（供每日沉淀 / 定时任务调用） */
+// ══════════════════════════════════════════════════════════════════════════════
+// ★★ 2026-10-13 加：**创建待办时给出"关闭条件"**（用户第 9 条要求；需求 3.3.4）
+//
+// 用户原话：「所有待办创建的时候都应当根据待办的具体事项，**匹配验证/关闭的条件**，
+//   当满足关闭条件时自动完成对应待办。」
+//
+// 实测缺的是什么（真机验证 E4-2 抓出来的）：`closeConditions` 这个字段**全库没有任何地方在写** ——
+//   契约里登记了它可选，自动关闭的判定（上面的 `autoCloseTodos`）也在跑，
+//   但**创建时从来不填这个字段** ⇒ 11 条待办，带关闭条件 0 条。
+//   ⇒ 补的就是这一段：按事项内容给出**可核对的关闭条件**。
+//
+// ⚠️ 与 `autoCloseTodos` 的分工（别混淆）：
+//   · `autoCloseTodos`：**已经关掉的**怎么判（看消息里有没有"已完成/已交付"这类线索 + 关键词重合）；
+//   · 这里 `closeConditionFor`：**创建时**写下"凭什么叫达成"，给人看、给后续判定当依据。
+//   两者互补，不是二选一。
+// ══════════════════════════════════════════════════════════════════════════════
+
+/** 关闭条件的种类（与 schema 的 `closeConditions` 对齐；`kind` 用来给界面选图标/措辞） */
+export const CLOSE_KINDS = Object.freeze({
+  deliverable: '交付物',
+  reply: '回复',
+  schedule: '日程完成',
+  manual: '人工确认',
+});
+
+/**
+ * 按待办的具体事项推出关闭条件。
+ * ★ 判法是**按内容线索分级**，最后一级老实交回人工 —— 不拿关键词冒充语义判断。
+ * @returns {{kind:string,label:string,why:string,check:string}}
+ */
+export function closeConditionFor(t = {}) {
+  const topic = String(t.topic ?? '').trim();
+  const text = `${topic} ${String(t.detail ?? '')}`;
+  const short = topic.slice(0, 40) || '这条待办';
+
+  // ① 由消息/日程转入的：源事件就是"当时交代了什么"的原始记录
+  if (/^from-/.test(String(t.originMessageId ?? ''))) {
+    return {
+      kind: CLOSE_KINDS.deliverable,
+      label: '结果性物料已交付',
+      why: '这条待办由消息/日程转入，源事件是"当时交代了什么"的原始记录',
+      check: `知识库或沟通上下文里出现针对「${short}」的结果性物料（文档/回复/交付说明）`,
+    };
+  }
+  // ② 指向一份产物
+  if (/方案|文档|报告|清单|设计|计划|ppt|表格|proposal/i.test(text)) {
+    return {
+      kind: CLOSE_KINDS.deliverable,
+      label: '产物已产出',
+      why: '待办内容指向一份可交付的产物（出现方案/文档/报告这类词）',
+      check: `知识库出现与「${short}」对应的产物文件，或工作台的「结果交付物」里已登记`,
+    };
+  }
+  // ③ 指向一次沟通
+  if (/沟通|确认|回复|对接|同步|联系|约|答复/.test(text)) {
+    return {
+      kind: CLOSE_KINDS.reply,
+      label: '对方已回复或确认',
+      why: '待办内容指向一次沟通，达成与否要看对方是否回应',
+      check: `对应沟通工具里出现针对这条事项的回复，或工作台里把它标为已回复`,
+    };
+  }
+  // ④ 带时间点
+  if (t.due) {
+    return {
+      kind: CLOSE_KINDS.schedule,
+      label: '时间点已过且动作完成',
+      why: `这条待办带截止时间 ${t.due}`,
+      check: `${t.due} 之后核对：该做的事是否已发生（工作台动作留痕或知识库证据）`,
+    };
+  }
+  // ⑤ 兜底：不猜 —— **不知道就说不确定**
+  return {
+    kind: CLOSE_KINDS.manual,
+    label: '人工确认',
+    why: '内容里没有可机器判定的线索（没有产物词、没有沟通词、没有截止时间）',
+    check: '需要人工确认完成情况；工作台的「已完成」动作即为确认',
+  };
+}
+
+/**
+ * 给待办 payload 补上关闭条件（**已有就不覆盖** —— 幂等，且尊重人工填过的）。
+ *
+ * ⚠️ 契约要求 `closeConditions` 是**数组**（`{kind,…}` 的数组），不是单个对象 ——
+ *   我第一版给的是对象，`validatePayload` 当场判「closeConditions 必须是 {kind,…} 数组」，
+ *   待办直接建不成、后面的检查全塌（真机从 717 掉到 663）。
+ *   **契约怎么写就怎么填**，别照自己的直觉给形状。
+ */
+export function withCloseCondition(payload = {}) {
+  if (payload.closeConditions) return payload;
+  return { ...payload, closeConditions: [closeConditionFor(payload)] };
+}
+
 export function autoCloseOnce({ now = Date.now(), minutes = [], dryRun = false } = {}) {
   const s = autoCloseSchedules({ now, minutes, dryRun });
   const t = autoCloseTodos({ now, dryRun });

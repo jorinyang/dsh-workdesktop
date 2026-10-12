@@ -478,9 +478,14 @@ export function clientScript(apiBase) {
   L.push('        payload[k] = (k === "tags") ? v.split(/[,，]/).map(function (x) { return x.trim() }).filter(Boolean) : v;');
   L.push('      }');
   L.push('      // 与契约对齐的补字段（schema.mjs#PAYLOAD_SPEC 的必填项）');
-  L.push('      if (pageType === "messages") { payload.channel = "manual"; payload.source = "manual"; payload.modality = "text"; payload.summary = String(payload.raw || "").slice(0, 60); if (!payload.sender) payload.sender = "我"; }');
+  // ★★ 2026-10-13 改（用户裁定）：「新增一条消息等同于我在钉钉中自己给自己发了一条文本信息…
+  //   发信人不需要显示默认记录为我（月夜），来源渠道也不需要显示默认记录为工作台」
+  //   ⇒ 这两个字段**不在表单里**，由这里写死：发信人 = 我（月夜），来源 = 工作台。
+  //     表单上只让人填「内容」——少填两个框，记录里照样有这两项。
+  L.push('      if (pageType === "messages") { payload.channel = "manual"; payload.source = "workbench"; payload.modality = "text"; payload.summary = String(payload.raw || "").slice(0, 60); payload.sender = "杨瑒(月夜)"; payload.senderType = "self"; }');
   L.push('      if (pageType === "notes") { payload.date = new Date().toISOString().slice(0, 10); if (!payload.topic) payload.topic = String(payload.content_md || "").slice(0, 24) || "未命名笔记"; }');
-  L.push('      if (pageType === "schedules" && payload.participants) payload.participants = String(payload.participants).split(/[、,，]/).map(function (x) { return x.trim() }).filter(Boolean);');
+  // 日程：参与人从"顿号分隔的一行字"拆成数组；类型原样传（契约的 optional 里有 type）
+  L.push('      if (pageType === "schedules") { if (payload.participants) payload.participants = String(payload.participants).split(/[、,，]/).map(function (x) { return x.trim() }).filter(Boolean); else payload.participants = []; }');
   L.push('      btn.disabled = true; say("提交中…", false);');
   L.push('      fetch(API + "/" + pageType, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ payload: payload }) })');
   L.push('        .then(function (r) { return r.json().then(function (b) { return { code: r.status, body: b }; }) })');

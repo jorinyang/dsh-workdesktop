@@ -98,6 +98,10 @@ export function stylesheet() {
   s.push('.inline-form .if-input { font: inherit; font-size: 13px; padding: 4px 6px; border: 1px solid var(--c-hairline); border-radius: 4px; background: transparent; color: var(--c-ink); }');
   s.push('.inline-form .if-msg { font-size: 12px; color: var(--c-mute); }');
   s.push('.inline-form .if-msg.bad { color: var(--c-accent-red); }');
+  // 表单一句话说明（例：消息页那句"等同于在钉钉里给自己发一条文本"）
+  s.push('.inline-form .if-hint { font-size: 12px; color: var(--c-mute); margin-bottom: var(--s-sm); }');
+  // 多行分组之间留一点间距（日程页是两行：主题+起止 / 地点+参与人+详情+类型）
+  s.push('.inline-form .if-grid + .if-grid { margin-top: var(--s-sm); }');
   // ══ 分页条（2026-10-13 加，用户第 5 条）══════════════════════════════════════
   //   样式照用户给的那张图：左侧"总计 N"、中间页码按钮（当前页高亮）+ 省略号 + 末页、
   //   左箭头上一页、右箭头下一页、"1/383"、到第 __ 页 [前往]、右侧"每页显示 [10 ▾]"。
@@ -223,23 +227,78 @@ function statusbar(status, switches, statusDetail) {
  *   schedule 必填 topic/start/end · note 必填 topic/date/content_md
  */
 export function inlineForm(pageKey) {
+  // ★★ 2026-10-13 改（用户第二轮裁定，三条）：
+  //   ① 消息：「新增一条消息 **等同于我在钉钉中自己给自己发了一条文本信息**，只需要填写内容即可，
+  //      发信人不需要显示默认记录为我（月夜），来源渠道也不需要显示默认记录为工作台」
+  //      ⇒ 表单**只留「内容」一个输入框**；发信人与来源由客户端写死成默认值（我 / 工作台），不再让人填。
+  //   ② 待办字段顺序 = 任务主题 · 截止时间 · 执行人 · 任务详情
+  //   ③ 日程字段顺序 = 日程主题 · 开始 · 结束 · 地点 · 参与人 · 日程详情；
+  //      且**主题与起止时间在第一行**、**参与人 / 地点 / 日程详情在第二行**；
+  //      另加「类型」可选项：会议 / 活动 / 课程 / 行程。
+  //   ⇒ 表单按 `rows` 分组渲染（不再是一整片自适应网格）；`select` 类型走下拉。
   const SPEC = {
-    messages: { title: '新增一条消息', btn: '记下这条消息', fields: [['raw', '消息原文', 'text', true], ['sender', '发信人', 'text', false]] },
-    todos: { title: '新增一条待办', btn: '建为待办', fields: [['topic', '任务主题', 'text', true], ['detail', '任务详情', 'text', false], ['due', '截止（YYYY-MM-DD）', 'date', false], ['executor', '执行人', 'text', false]] },
-    schedules: { title: '新增一条日程', btn: '建为日程', fields: [['topic', '日程主题', 'text', true], ['detail', '日程详情', 'text', false], ['start', '开始（YYYY-MM-DDTHH:mm）', 'text', true], ['end', '结束', 'text', true], ['place', '地点', 'text', false], ['participants', '参与人（顿号分隔）', 'text', false]] },
-    notes: { title: '新增一条笔记', btn: '存为笔记', fields: [['topic', '笔记主题', 'text', true], ['content_md', '内容', 'text', true], ['tags', '标签（逗号分隔）', 'text', false]] },
+    messages: {
+      title: '新增一条消息', btn: '记下这条消息',
+      hint: '等同于在钉钉里给自己发一条文本 —— 发信人与来源自动记为我（月夜）/ 工作台',
+      rows: [[['raw', '内容', 'text', true]]],
+    },
+    todos: {
+      title: '新增一条待办', btn: '建为待办',
+      rows: [[
+        ['topic', '任务主题', 'text', true],
+        ['due', '截止时间（YYYY-MM-DD）', 'date', false],
+        ['executor', '执行人', 'text', false],
+        ['detail', '任务详情', 'text', false],
+      ]],
+    },
+    schedules: {
+      title: '新增一条日程', btn: '建为日程',
+      rows: [
+        [
+          ['topic', '日程主题', 'text', true],
+          ['start', '开始（YYYY-MM-DDTHH:mm）', 'text', true],
+          ['end', '结束', 'text', true],
+        ],
+        [
+          ['place', '地点', 'text', false],
+          ['participants', '参与人（顿号分隔）', 'text', false],
+          ['detail', '日程详情', 'text', false],
+          ['type', '类型', 'select', false, ['会议', '活动', '课程', '行程']],
+        ],
+      ],
+    },
+    notes: {
+      title: '新增一条笔记', btn: '存为笔记',
+      rows: [[
+        ['topic', '笔记主题', 'text', true],
+        ['content_md', '内容', 'text', true],
+        ['tags', '标签（逗号分隔）', 'text', false],
+      ]],
+    },
   }[pageKey];
   if (!SPEC) return '';
-  let cells = '';
-  for (const [name, label, type, required] of SPEC.fields) {
-    cells += '<label class="if-cell"><span class="if-lab">' + esc(label) + (required ? '<i class="if-req">必填</i>' : '') + '</span>'
-      + '<input class="if-input" data-if="' + esc(name) + '" type="' + esc(type) + '" placeholder="' + esc(label) + '"></label>';
+  let rowsHtml = '';
+  for (const row of SPEC.rows) {
+    let cells = '';
+    for (const [name, label, type, required, options] of row) {
+      let input;
+      if (type === 'select') {
+        let opts = '<option value=""></option>';
+        for (const o of (options ?? [])) opts += '<option value="' + esc(o) + '">' + esc(o) + '</option>';
+        input = '<select class="if-input" data-if="' + esc(name) + '">' + opts + '</select>';
+      } else {
+        input = '<input class="if-input" data-if="' + esc(name) + '" type="' + esc(type) + '" placeholder="' + esc(label) + '">';
+      }
+      cells += '<label class="if-cell"><span class="if-lab">' + esc(label) + (required ? '<i class="if-req">必填</i>' : '') + '</span>' + input + '</label>';
+    }
+    rowsHtml += '<div class="if-grid">' + cells + '</div>';
   }
   return '<section class="inline-form" data-if-page="' + esc(pageKey) + '">'
     + '<div class="if-head"><h2>' + esc(SPEC.title) + '</h2>'
     + '<button class="btn if-submit" data-if-submit="1">' + esc(SPEC.btn) + '</button>'
     + '<span class="cap if-msg" data-if-msg="1"></span></div>'
-    + '<div class="if-grid">' + cells + '</div></section>';
+    + (SPEC.hint ? '<div class="if-hint">' + esc(SPEC.hint) + '</div>' : '')
+    + rowsHtml + '</section>';
 }
 
 /**

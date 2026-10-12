@@ -119,9 +119,18 @@ function readBody(req, limit = 256 * 1024) {
 
 /** 新增一条事件（四类通用）：校验 → 落运行态 → 交给筛选引擎 */
 export function createEvent(type, payload, { origin = null, at = null } = {}) {
+  // ★★ 2026-10-13 加（用户第 9 条 / 需求 3.3.4）：
+  //   「所有待办创建的时候都应当根据待办的具体事项，**匹配验证/关闭的条件**」——
+  //   实测这个字段**全库没有任何地方在写**（11 条待办，带关闭条件 0 条），
+  //   自动关闭的判定（`close.mjs#autoCloseTodos`）虽然在跑，但创建时从不填条件 ⇒ 这一环是断的。
+  //   ⇒ 在**唯一的创建入口**这里补上（四条路径都经过它：本页新建、消息转待办、日程转待办、采集器）。
+  //     `withCloseCondition` 是幂等的：**已经填过就不覆盖**，尊重人工写的条件。
+  const withCond = type === 'todo' && _deps.withCloseCondition
+    ? _deps.withCloseCondition(payload ?? {})
+    : (payload ?? {});
   const made = makeEvent({
     type,
-    payload,
+    payload: withCond,
     origin: origin ?? { channel: 'manual', sender: '我', messageId: `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, raw: null },
     _at: at ?? Date.now(),
   });
@@ -142,7 +151,17 @@ const EVENT_FOR = { messages: 'message', notes: 'note', todos: 'todo', schedules
  * 若不做这个口子，这个自检要么真烧 token、要么只能不测 —— 两条都不要。
  * 注意它**只**在本文件的导出上（可写），与生产行为无关：不注入就一字不差走原路。
  */
-export const _deps = { reanalyzeNote: null, buildVisualForNote: null, recall: null };
+export const _deps = {
+  reanalyzeNote: null, buildVisualForNote: null, recall: null,
+  // ★ 2026-10-13：创建待办时补"关闭条件"（`close.mjs#withCloseCondition`）。
+  //   放 `_deps` 是为了自检能替换它（不真写库）。**默认在模块加载时就接上**——
+  //   不接的话这个功能只在测试里存在、线上是空的（那正是它此前 0 条的原因）。
+  withCloseCondition: null,
+};
+{
+  const { withCloseCondition } = await import('../processor/close.mjs');
+  _deps.withCloseCondition = withCloseCondition;
+}
 
 export function handler(req, res) {
   const u = new URL(req.url, 'http://127.0.0.1');

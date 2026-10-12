@@ -74,15 +74,36 @@ export function buildNotePrompt(note, hits) {
 export async function analyzeOnce({ limit = 50, dryRun = false, recallFn = null, modelFn = runModel } = {}) {
   const recall = recallFn ?? (await import('./recall.mjs')).recall;
   const errors = [];
-  const todo = [];
+  // ★★ 2026-10-13 修（**笔记永远拿不到分析结论的根因** —— 用户第 11 条报的正是这个）：
+  //   原来是把四种类型**顺序拼成一条长队**（message → note → schedule → todo），
+  //   再 `todo.slice(0, limit)` 截断。而消息有几百条 ⇒ **额度永远被消息吃光，
+  //   笔记/日程/待办一条都轮不到**。实测：`limit:200` 跑完 `message=200, note=0`，
+  //   库里三条笔记的 `analysis` 一直是空的 —— 而详情页"分析与建议"就是读它，
+  //   所以那一栏永远是空的。**这不是显示问题，是分析引擎根本没轮到笔记。**
+  //   ⇒ 改成**轮流取**（每种类型一轮拿一条，拿完再进下一轮）：任何类型都不会被前面的饿死；
+  //     条数少的类型自然先取完，剩余额度继续给条数多的，不浪费。
+  const queues = {};
   for (const type of ['message', 'note', 'schedule', 'todo']) {
-    for (const e of store.list({ type })) {
-      if (e.analysis !== null && e.analysis !== undefined) continue;          // 已分析
-      if ((e.ops ?? []).some((o) => String(o.op ?? '') === 'analyzed')) continue;
-      todo.push(e);
+    queues[type] = store.list({ type }).filter((e) => {
+      if (e.analysis !== null && e.analysis !== undefined) return false;      // 已分析
+      if ((e.ops ?? []).some((o) => String(o.op ?? '') === 'analyzed')) return false;
+      return true;
+    });
+  }
+  const todo = [];
+  {
+    const keys = ['message', 'note', 'schedule', 'todo'];
+    let added = true;
+    while (todo.length < limit && added) {
+      added = false;
+      for (const k of keys) {
+        if (todo.length >= limit) break;
+        const next = queues[k].shift();
+        if (next !== undefined) { todo.push(next); added = true; }
+      }
     }
   }
-  const batch = todo.slice(0, limit);
+  const batch = todo;
   let out = { message: 0, note: 0, schedule: 0, todo: 0, withContext: 0, modelCalls: 0, failed: 0 };
 
   for (const evt of batch) {
