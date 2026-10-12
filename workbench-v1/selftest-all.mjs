@@ -70,6 +70,9 @@ await run('P1k', 'P1 取数层命令拼装', async () => (await import(base + 'c
 await run('P1l', 'P1 飞书妙记通路', async () => (await import(base + 'collector/feishu-minutes.mjs')).selfTest());
 await run('P1m', 'P1 飞书多维表记录段', async () => (await import(base + 'collector/feishu-bitable.mjs')).selfTest());
 await run('P1n', 'P1 飞书聊天实时', async () => (await import(base + 'collector/feishu-events.mjs')).selfTest());
+// ★ 2026-10-13 加：钉钉聊天通路的**入库前过滤**（用户裁定：移除机器人/功能提醒/我发的）。
+//   为什么单开一组：这是"**丢数据**"的一步 —— 判错的后果是消息静默消失，最该被检查钉住。
+await run('P1o', 'P1 钉钉聊天·入库前过滤', async () => (await import(base + 'collector/dingtalk-im.mjs')).selfTest());
 await run('P2', 'P2 意图判定', async () => (await import(base + 'processor/intent.mjs')).selfTest());
 // P2 消息判定与自动创建（用户 Q2：高置信自动建 / 低置信标待处置；幂等）
 await run('P2det', 'P2 消息判定与自动创建', async () => (await import(base + 'processor/detect.mjs')).selfTest());

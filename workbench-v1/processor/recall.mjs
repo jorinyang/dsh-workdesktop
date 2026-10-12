@@ -43,11 +43,25 @@ export function pickHits(raw) {
   return [];
 }
 
-/** 归一一条命中：只要 v1 用得上的字段（路径/片段/相似度），不把底层整包往下传 */
+/**
+ * 归一一条命中：只要 v1 用得上的字段（路径/片段/相似度），不把底层整包往下传。
+ *
+ * ★★ 2026-10-13 修（用户报"相关上下文一直显示**暂无相关资料**"，并要我查清是哪一层的问题）。
+ *   查下来的结论：**知识和检索都是好的，是字段名没接上。**
+ *   实测桥（`_meta/workbench/rag-bridge.mjs`）返回的命中长这样：
+ *     { file_path, heading_path, chunk_id, score, similarity, **snippet**, doc_type, purpose, trust, accepted }
+ *   —— 正文在 **`snippet`** 里。而这里原来只认 `text` / `content` / `chunk`，
+ *   **三个都对不上** ⇒ `text` 一律是空串 ⇒ 详情页判定"没有材料" ⇒ 显示「暂无相关资料」。
+ *   证据链（留档，免得下次又从头查）：
+ *     ① 桥单独调用返回 0.68 相似度的真实片段（`snippet` 有内容）；
+ *     ② 库里那条事件的 `context.recalled[0]` 里 `similarity=0.6957`（**召回确实发生了**）但 `text=""`；
+ *     ③ 所以既不是"没有资料"，也不是"检索没生效"，就是**归一漏了 `snippet` 这个别名**。
+ *   ⇒ 别名表补上 `snippet`；以后桥再加别名，**先看它真返回什么字段**再改这里（别照名字猜）。
+ */
 export function normalizeHit(h) {
   return {
     path: String(h?.path ?? h?.file_path ?? '').split(path.sep).join('/'),
-    text: String(h?.text ?? h?.content ?? h?.chunk ?? '').slice(0, 800),
+    text: String(h?.text ?? h?.content ?? h?.chunk ?? h?.snippet ?? '').slice(0, 800),
     similarity: Number.isFinite(h?.similarity) ? Number(h.similarity) : null,
     heading: h?.heading_path ?? null,
     page: h?.page_no ?? null,
@@ -146,6 +160,35 @@ export function selfTest() {
 
     chk('RCL-11', 'contextBlock 给模型看的块含来源与相似度', /【材料 1】Work\/a\.md · 相似度 0\.70/.test(contextBlock([{ path: 'Work/a.md', similarity: 0.7, text: 'x' }])), contextBlock([{ path: 'Work/a.md', similarity: 0.7, text: 'x' }]));
     chk('RCL-12', '无命中 ⇒ 上下文块为空串（不产出空壳标题）', contextBlock([]) === '');
+
+  // ★★ 2026-10-13 加（**用户报"相关上下文一直显示暂无相关资料"的回归守卫**）：
+  //   根因是归一漏了桥实际使用的字段名 `snippet` ⇒ `text` 恒为空 ⇒ 详情页判定"没有材料"。
+  //   实测桥返回的正是这些字段（`_meta/workbench/rag-bridge.mjs#queryRagBatch`）：
+  //     { file_path, heading_path, chunk_id, score, similarity, **snippet**, doc_type, purpose, trust, accepted }
+  //   ⇒ 这条检查**照桥的真实形状**喂（不是照我想的字段），钉住 `snippet` 能被取到正文。
+  //     ⚠️ 反面教训写在这：上一轮我按"名字看着像"猜字段（text/content/chunk），
+  //        猜到第三个都没猜中真名，而**任何一条检查都没发现**——因为我从没用真实形状喂过。
+  const realShape = {
+    file_path: 'Work/示例客户甲/Output/方案.md',
+    heading_path: '第一章 > 目标',
+    chunk_id: 16356,
+    score: 0.016393,
+    similarity: 0.6813,
+    snippet: '这是桥真实返回的正文片段。',
+    doc_type: 'md',
+    purpose: 'analyze',
+    trust: 'business',
+    accepted: true,
+    stale: false,
+  };
+  const nh = normalizeHit(realShape);
+  chk('RCL-13', '★★ 桥的真实字段 `snippet` 能取到正文（此前只认 text/content/chunk ⇒ text 恒为空）',
+    nh.text === '这是桥真实返回的正文片段。', JSON.stringify({ text: nh.text, path: nh.path }));
+  chk('RCL-14', '归一保留路径/标题/相似度（桥的 file_path / heading_path / similarity）',
+    nh.path === 'Work/示例客户甲/Output/方案.md' && nh.heading === '第一章 > 目标' && nh.similarity === 0.6813, JSON.stringify(nh));
+  // 负向对照：真的没有正文时，text 必须是空串（**不许拿路径或标题冒充正文**）
+  chk('RCL-15', '★ 负向对照：桥没给正文 ⇒ text 为空串（不拿 path/heading 冒充）',
+    normalizeHit({ file_path: 'a.md', heading_path: 'h' }).text === '');
 
     const pass = out.filter((x) => x.ok).length;
     return { pass, fail: out.length - pass, details: out };

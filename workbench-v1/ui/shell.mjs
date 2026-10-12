@@ -82,12 +82,50 @@ export function stylesheet() {
   s.push('.list li { display: flex; gap: var(--s-md); padding: var(--s-sm) 0; border-bottom: 1px solid var(--c-hairline); font-size: 14px; }');
   s.push('.list .when { color: var(--c-mute); min-width: 92px; }');
   s.push('.list .who { color: var(--c-body-mid); min-width: 120px; }');
-  s.push('.overdue { color: var(--c-accent-red); font-weight: var(--w-medium); }');
+  s.push('.list .overdue { color: var(--c-accent-red); font-weight: var(--w-medium); }');
+  // 来源格（2026-10-13 加）：小一号、右对齐、不抢主信息的注意力
+  s.push('.list .src { color: var(--c-mute); font-size: 12px; min-width: 44px; text-align: right; flex: none; }');
+  // ══ 页内平铺的新增表单（2026-10-13 加，用户第 4 条）══════════════════════════
+  //   参考模板里表单与列表同一层级、不藏在弹层后面 ⇒ 这里也摊平。
+  //   网格自适应：窄栏自动折行，不出现横向滚动。
+  s.push('.inline-form { margin-top: var(--s-xl); border: 1px solid var(--c-hairline); border-radius: ' + RADIUS.sm + 'px; padding: var(--s-md); }');
+  s.push('.inline-form .if-head { display: flex; align-items: center; gap: var(--s-md); margin-bottom: var(--s-sm); }');
+  s.push('.inline-form .if-head h2 { font-size: 14px; margin: 0; flex: 1; }');
+  s.push('.inline-form .if-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--s-sm); }');
+  s.push('.inline-form .if-cell { display: flex; flex-direction: column; gap: 2px; }');
+  s.push('.inline-form .if-lab { font-size: 12px; color: var(--c-mute); }');
+  s.push('.inline-form .if-req { font-style: normal; color: var(--c-accent-red); margin-left: 4px; font-size: 11px; }');
+  s.push('.inline-form .if-input { font: inherit; font-size: 13px; padding: 4px 6px; border: 1px solid var(--c-hairline); border-radius: 4px; background: transparent; color: var(--c-ink); }');
+  s.push('.inline-form .if-msg { font-size: 12px; color: var(--c-mute); }');
+  s.push('.inline-form .if-msg.bad { color: var(--c-accent-red); }');
+  // ══ 分页条（2026-10-13 加，用户第 5 条）══════════════════════════════════════
+  //   样式照用户给的那张图：左侧"总计 N"、中间页码按钮（当前页高亮）+ 省略号 + 末页、
+  //   左箭头上一页、右箭头下一页、"1/383"、到第 __ 页 [前往]、右侧"每页显示 [10 ▾]"。
+  s.push('.pager { display: flex; align-items: center; gap: var(--s-sm); flex-wrap: wrap; margin-top: var(--s-md); font-size: 13px; color: var(--c-body-mid); }');
+  s.push('.pager .pg-total { color: var(--c-mute); }');
+  s.push('.pager button { background: transparent; color: var(--c-ink); border: 1px solid var(--c-hairline); border-radius: 4px; padding: 2px 9px; font-size: 13px; cursor: pointer; }');
+  s.push('.pager button[aria-current="page"] { background: var(--c-primary); color: var(--c-canvas); border-color: var(--c-primary); font-weight: var(--w-medium); }');
+  s.push('.pager button:disabled { opacity: 0.4; cursor: default; }');
+  s.push('.pager .pg-gap { color: var(--c-mute); }');
+  s.push('.pager input, .pager select { font: inherit; font-size: 13px; padding: 2px 4px; border: 1px solid var(--c-hairline); border-radius: 4px; background: transparent; color: var(--c-ink); }');
+  s.push('.pager .pg-jump { width: 56px; text-align: center; }');
+  s.push('.pager .grow { flex: 1; }');
+  // 笔记列表单独滚动（用户第 5 条后半句）：**只在列表内出滚动条，整页不出垂直滚动条**。
+  //   做法：给笔记页的列表容器一个最大高度 + overflow-y。为什么只给笔记页：
+  //   用户只点了笔记这一页（别的页先按同样规则留出接口，不擅自改它们的呈现）。
+  s.push('.list-scroll { max-height: 52vh; overflow-y: auto; }');
   // 底部状态栏（横向一行）
   s.push('.statusbar { position: fixed; bottom: 0; left: 0; right: 0; display: flex; flex-direction: row; align-items: center; gap: var(--s-lg); padding: var(--s-sm) var(--s-3xl); background: var(--c-canvas); border-top: 1px solid var(--c-hairline); font-size: 12px; color: var(--c-body-mid); }');
   s.push('.statusbar .dot { display: inline-block; width: 6px; height: 6px; border-radius: 9999px; background: var(--c-accent-green); margin-right: 6px; }');
   s.push('.statusbar .dot.off { background: var(--c-mute-soft); }');
   s.push('.statusbar .grow { flex: 1; }');
+  // ★ 2026-10-13 加：三个能力开关（实时回复 / 响应功能 / 向量检索）的**四态配色与可点感**。
+  //   颜色由客户端按真状态写成行内样式（状态名 → 颜色有唯一产地，见 system-switches.mjs#STATE_COLOR），
+  //   这里只负责"看起来能点"和"点的范围够大"。
+  s.push('.statusbar .switch { display: inline-flex; align-items: center; cursor: pointer; user-select: none; padding: 2px 4px; border-radius: 4px; }');
+  s.push('.statusbar .switch:hover { background: var(--c-hairline); }');
+  s.push('.statusbar .switch[aria-busy="1"] { opacity: 0.55; cursor: progress; }');
+  s.push('.statusbar .switch .dot { transition: background 120ms linear; }');
   // 按钮：品牌几何 4px 矩形，绝不胶囊
   s.push('button { font: inherit; background: var(--c-primary); color: var(--c-canvas); border: 0; border-radius: ' + RADIUS.sm + 'px; padding: var(--s-xs) var(--s-md); font-weight: var(--w-medium); cursor: pointer; }');
   s.push('.empty { color: var(--c-mute); font-size: 13px; padding: var(--s-sm) 0; }');
@@ -129,17 +167,112 @@ function topbar(active) {
   return '<header class="topbar"><div class="brand">' + APP_NAME + '</div><nav class="nav">' + links + '</nav></header>';
 }
 
-function statusbar(status, switches) {
-  status = status || {}; switches = switches || {};
+/**
+ * 底部状态栏：左侧四个系统状态灯（只读探针），右侧三个**能力开关**。
+ *
+ * ★★ 2026-10-13 改（用户裁定，原话）：
+ *   「工作台前端页面下方的状态栏当中的实时回复/响应功能/向量检索这三个状态指示灯应该像之前一样具备切换功能，
+ *     灰色是关闭，红色是离线状态，绿色是空闲中，黄色是运行中，
+ *     鼠标悬停到这三个位置，应该会显示悬浮的文字说明。」
+ *
+ * 改动前的问题：这三个只是「一个点 + 一行字」，**点不动、没有悬浮说明、只有亮/灰两种样子**。
+ * 而它们背后**本来就有完整的四态判定**（库内 `_meta/workbench/system-switches.mjs`：
+ * `off`→灰 · `down`→红 · `ok`→绿 · `busy`→黄，还带 `why` 说明和过渡态 `starting`/`stopping`），
+ * 只是页面上从来没接。
+ *
+ * 所以这里**不自创颜色**：把开关的 key 打到 DOM 上（`data-switch`），
+ * 由客户端脚本去拉真状态（`GET /system-switch`，面板透传库内 CLI）再把
+ * **颜色 / 文案 / 悬浮说明** 一起填上。初值仍按渲染时的开关位给出灰或绿 ——
+ * 「拉不到状态就保持灰」是诚实的：**不知道就不装作知道**（这条在本项目反复强调过）。
+ */
+function statusbar(status, switches, statusDetail) {
+  status = status || {}; switches = switches || {}; statusDetail = statusDetail || {};
   let items = '';
   for (const it of STATUS_ITEMS) {
-    items += '<span><i class="dot' + (status[it.key] === true ? '' : ' off') + '"></i>' + esc(it.label) + '</span>';
+    // 悬浮说明给**探针原话**（有就给），没有就按三态说清楚 —— 别写"状态正常"这种空话
+    const d = statusDetail[it.key];
+    const tip = d || (status[it.key] === true ? '已探明：可用' : status[it.key] === false ? '已探明：不可用' : '未探明（探针没给结论）');
+    items += '<span title="' + esc(it.label + '：' + tip) + '"><i class="dot'
+      + (status[it.key] === true ? '' : ' off') + '"></i>' + esc(it.label) + '</span>';
   }
   let sw = '';
   for (const it of SWITCHES) {
-    sw += '<span><i class="dot' + (switches[it.key] === false ? ' off' : '') + '"></i>' + esc(it.label) + '</span>';
+    sw += '<span class="switch" data-switch="' + esc(it.key) + '" role="button" tabindex="0"'
+      + ' title="' + esc(it.label) + '：状态读取中…">'
+      + '<i class="dot off" data-switch-dot="' + esc(it.key) + '"></i>'
+      + '<span data-switch-label="' + esc(it.key) + '">' + esc(it.label) + '</span></span>';
   }
   return '<div class="statusbar">' + items + '<span class="grow"></span>' + sw + '</div>';
+}
+
+/**
+ * **页内平铺的新增表单**（用户 2026-10-13 裁定，原话）：
+ *   「工作台前端页面的页面结构应当参考"奕伴工作台.html"，例如，工作台中消息/待办/日程/笔记的**新增 1 条
+ *     应该是平铺在一级页面**，而不是作为按钮点击之后打开弹出浮层详情页。」
+ *
+ * 改动前：新增是右上角一个「新增一条」按钮 → 点了弹一个浮层表单。
+ *   ⇒ 现在改成**直接摊在页面上**：四个字段一行，随手就能填。
+ *   参考模板里也是这个形状（表单跟列表在同一层级，不藏在弹层后面）。
+ *
+ * ⚠️ 与旧实现的**一个关键区别**：旧的那份用 `window.prompt()` 逐个问字段，
+ *   而 prompt 在 iframe 里**能弹出来但返回 null**（面板就是这么嵌页面的）⇒ 点了什么都不发生。
+ *   这里全部是页面内的 `<input>`，不依赖任何浏览器原生弹窗。
+ *
+ * 字段与契约对齐（`schema.mjs#PAYLOAD_SPEC`）：
+ *   message 必填 channel/sender/raw（channel 由页面补 manual）· todo 必填 topic/detail
+ *   schedule 必填 topic/start/end · note 必填 topic/date/content_md
+ */
+export function inlineForm(pageKey) {
+  const SPEC = {
+    messages: { title: '新增一条消息', btn: '记下这条消息', fields: [['raw', '消息原文', 'text', true], ['sender', '发信人', 'text', false]] },
+    todos: { title: '新增一条待办', btn: '建为待办', fields: [['topic', '任务主题', 'text', true], ['detail', '任务详情', 'text', false], ['due', '截止（YYYY-MM-DD）', 'date', false], ['executor', '执行人', 'text', false]] },
+    schedules: { title: '新增一条日程', btn: '建为日程', fields: [['topic', '日程主题', 'text', true], ['detail', '日程详情', 'text', false], ['start', '开始（YYYY-MM-DDTHH:mm）', 'text', true], ['end', '结束', 'text', true], ['place', '地点', 'text', false], ['participants', '参与人（顿号分隔）', 'text', false]] },
+    notes: { title: '新增一条笔记', btn: '存为笔记', fields: [['topic', '笔记主题', 'text', true], ['content_md', '内容', 'text', true], ['tags', '标签（逗号分隔）', 'text', false]] },
+  }[pageKey];
+  if (!SPEC) return '';
+  let cells = '';
+  for (const [name, label, type, required] of SPEC.fields) {
+    cells += '<label class="if-cell"><span class="if-lab">' + esc(label) + (required ? '<i class="if-req">必填</i>' : '') + '</span>'
+      + '<input class="if-input" data-if="' + esc(name) + '" type="' + esc(type) + '" placeholder="' + esc(label) + '"></label>';
+  }
+  return '<section class="inline-form" data-if-page="' + esc(pageKey) + '">'
+    + '<div class="if-head"><h2>' + esc(SPEC.title) + '</h2>'
+    + '<button class="btn if-submit" data-if-submit="1">' + esc(SPEC.btn) + '</button>'
+    + '<span class="cap if-msg" data-if-msg="1"></span></div>'
+    + '<div class="if-grid">' + cells + '</div></section>';
+}
+
+/**
+ * **分页条**（用户 2026-10-13 要求，样式照他给的那张图）。
+ *
+ * 图上的要素，逐个对上：
+ *   左侧「总计: 3823」· 左箭头 · 页码按钮（当前页高亮蓝底）· 省略号 · 末页 ·
+ *   右箭头 · 「1/383」· 「到第 __ 页」·「前往」· 右侧「每页显示: [10 ▾]」
+ *
+ * ★ 分页在**端上做**（不重新请求）：页面本来就把这一类型的数据整份渲染进 DOM
+ *   （消息页实测 200 行、待办 11 行），所以翻页只是显示/隐藏。
+ *   ⇒ 零请求、瞬间响应，也不必改接口的分页语义。
+ *   每页条数写进 `localStorage`（`jl.pageSize`），换页/刷新都记得住。
+ *   ⚠️ 为什么不服务端分页：面板那条路由是**读静态文件**，服务端分页要重渲染文件，
+ *     而"点一下页码就重渲染整页"比端上隐藏重得多，且会丢掉当前的筛选状态。
+ */
+export const PAGE_SIZES = Object.freeze([10, 20, 50, 100]);
+export const PAGE_SIZE_DEFAULT = 10;
+
+export function pager(pageKey) {
+  let opts = '';
+  for (const n of PAGE_SIZES) opts += '<option value="' + n + '"' + (n === PAGE_SIZE_DEFAULT ? ' selected' : '') + '>' + n + '</option>';
+  return '<nav class="pager" data-pager="' + esc(pageKey) + '">'
+    + '<span class="pg-total" data-pg-total="1">总计: 0</span>'
+    + '<button type="button" data-pg-prev="1" title="上一页">‹</button>'
+    + '<span data-pg-nums="1"></span>'
+    + '<button type="button" data-pg-next="1" title="下一页">›</button>'
+    + '<span data-pg-pos="1">1/1</span>'
+    + '<span>到第</span><input class="pg-jump" data-pg-jump="1" type="text" inputmode="numeric">'
+    + '<span>页</span><button type="button" data-pg-go="1">前往</button>'
+    + '<span class="grow"></span>'
+    + '<span>每页显示:</span><select data-pg-size="1">' + opts + '</select>'
+    + '</nav>';
 }
 
 function statCards(pairs) {
@@ -150,8 +283,16 @@ function statCards(pairs) {
   return html;
 }
 
-function listBlock(title, rows, cls) {
-  cls = cls || '';
+/**
+ * @param {string} title 小节标题
+ * @param {Array} rows 行（`{id,col1,col2,col3,col4,go,state,overdue}`）
+ * @param {string} cls 第三列的额外类名
+ * @param {{scroll?:boolean,pageKey?:string}} o
+ *   `scroll` = 只让这一块出滚动条（用户第 5 条：笔记列表超高时**不要整页出滚动条**）
+ *   `pageKey` = 给这一块配分页条（用户第 5 条：四个列表都要能自动分页）
+ */
+function listBlock(title, rows, cls, o) {
+  cls = cls || ''; o = o || {};
   if (!rows || !rows.length) return '<div class="section"><h2>' + esc(title) + '</h2><div class="empty">暂无</div></div>';
   let items = '';
   for (const r of rows) {
@@ -165,7 +306,10 @@ function listBlock(title, rows, cls) {
     // `data-state` = 消息页五个 Tab 的归属（待处理/已转待办/已转日程/已回复）⇒ **客户端据此筛行**。
     //   2026-10-12 加：面板路由是读静态文件，服务端筛不生效（见 pageMessages 的注释）⇒ 筛选必须在端上做。
     const stAttr = r.state ? ' data-state="' + esc(r.state) + '"' : '';
-    items += '<li' + idAttr + goAttr + stAttr + '><span class="when">' + esc(r.col1 || '') + '</span><span class="who">' + esc(r.col2 || '') + '</span><span class="' + cls + '">' + esc(r.col3 || '') + '</span></li>';
+    // ★ 2026-10-13 加：第四列 = **来源**（用户第 9/10/11 条都点名要这个字段）。
+    //   待办/日程/笔记三页用它；消息页与总览页没有第四列 ⇒ 不渲染这一格（不留空壳）。
+    const srcAttr = r.col4 ? '<span class="src">' + esc(r.col4) + '</span>' : '';
+    items += '<li' + idAttr + goAttr + stAttr + '><span class="when">' + esc(r.col1 || '') + '</span><span class="who">' + esc(r.col2 || '') + '</span><span class="' + cls + '">' + esc(r.col3 || '') + '</span>' + srcAttr + '</li>';
   }
   // ★★ 2026-10-12 修（**用户报"列表点不动"的最终根因**）：
   //   原来这里给**所有**列表都写 `class="list"`，包括热力图下面那段「动态分析」——
@@ -174,7 +318,13 @@ function listBlock(title, rows, cls) {
   //   实测证据：脚本自报"容器=list · 可点行=**0**"，而同一页面上 `li[data-id]` 其实有 6 个。
   //   ⇒ 数据列表另给一个专用标识 `jl-list`（"接列表"），脚本按它取，不再与别处的 `.list` 撞。
   //     保留 `list` 这个类是为了不破坏既有样式与别处引用。
-  return '<div class="section"><h2>' + esc(title) + '</h2><ul class="list jl-list">' + items + '</ul></div>';
+  //
+  // ★ 2026-10-13 加：`o.scroll`（只让这一块出滚动条）· `o.pageKey`（给这一块配分页条）。
+  const ulCls = 'list jl-list' + (o.scroll ? ' list-scroll' : '');
+  return '<div class="section"' + (o.pageKey ? ' data-pagekey="' + esc(o.pageKey) + '"' : '') + '><h2>' + esc(title) + '</h2>'
+    + '<ul class="' + ulCls + '">' + items + '</ul>'
+    + (o.pageKey ? pager(o.pageKey) : '')
+    + '</div>';
 }
 
 export function pageOverview(snap) {
@@ -221,26 +371,26 @@ export function pageMessages(snap) {
   //   ⇒ 自建一小段导航区块（`<ul class="tabs">`），别再借数据列表那条会转义的通道。
   const navTabs = '<ul class="tabs">' + tabs.join('') + '</ul>';
   const rows = m.list.map(function (r) { return { id: r.id, col1: fmtTime(r.at), col2: r.source, col3: r.summary, state: r.state }; });
-  return '<div class="stats">' + cards + '</div>' + navTabs + listBlock('消息列表', rows);
+  return '<div class="stats">' + cards + '</div>' + navTabs + inlineForm('messages') + listBlock('消息列表', rows, '', { pageKey: 'messages' });
 }
 
 export function pageTodos(snap) {
   const t = (snap && snap.todos) || todos();
   const c = t.counts;
   const cards = statCards([['今日', c.today], ['本周', c.week], ['待定', c.undecided], ['已完成', c.done]]);
-  const rows = t.list.map(function (r) { return { id: r.id, col1: r.dueLabel, col2: r.executor || '—', col3: r.topic + ' ' + (r.detail || ''), overdue: r.overdue }; });
-  return '<div class="stats">' + cards + '</div>' + listBlock('待办列表', rows);
+  const rows = t.list.map(function (r) { return { id: r.id, col1: r.dueLabel, col2: r.executor || '—', col3: r.topic + ' ' + (r.detail || ''), overdue: r.overdue, col4: r.source && r.source.label }; });
+  return '<div class="stats">' + cards + '</div>' + inlineForm('todos') + listBlock('待办列表', rows, '', { pageKey: 'todos' });
 }
 
 export function pageSchedules(snap) {
   const sc = (snap && snap.schedules) || schedules();
   const c = sc.counts;
   const cards = statCards([['今日', c.today], ['未来 7 天', c.next7], ['前 30 日已完成', c.done30]]);
-  const rows = sc.list.map(function (r) { return { id: r.id, col1: String(r.start || '').slice(5, 16), col2: (r.participants || []).join('、') || '—', col3: r.topic + ' ' + (r.place || '') }; });
+  const rows = sc.list.map(function (r) { return { id: r.id, col1: String(r.start || '').slice(5, 16), col2: (r.participants || []).join('、') || '—', col3: r.topic + ' ' + (r.place || ''), col4: r.source && r.source.label }; });
   // ★ 日程密度热力图（需求 3.3.5）：左=当月每天热力，右=动态分析。
   //   数据来自 `api/pages.mjs#scheduleHeatmap`（**纯规则**，不调模型 —— 这页不该偷偷烧 token）。
   const hm = (snap && snap.heatmap) || scheduleHeatmap({});
-  return '<div class="stats">' + cards + '</div>' + heatBlock(hm) + listBlock('日程列表', rows);
+  return '<div class="stats">' + cards + '</div>' + heatBlock(hm) + inlineForm('schedules') + listBlock('日程列表', rows, '', { pageKey: 'schedules' });
 }
 
 /** 热力图分块（左：月历热力；右：动态分析） */
@@ -269,8 +419,10 @@ export function pageNotes(snap) {
   const n = (snap && snap.notes) || notes();
   const c = n.counts;
   const cards = statCards([['笔记总数', c.total], ['本月新增', c.thisMonth], ['标签数', c.tags]]);
-  const rows = n.list.map(function (r) { return { id: r.id, col1: r.date, col2: (r.tags || []).join('、') || '—', col3: r.topic }; });
-  return '<div class="stats">' + cards + '</div>' + listBlock('笔记列表', rows);
+  const rows = n.list.map(function (r) { return { id: r.id, col1: r.date, col2: (r.tags || []).join('、') || '—', col3: r.topic, col4: r.source && r.source.label }; });
+  // ★ 笔记列表：分页 + **单独滚动**（用户第 5 条后半句："如果笔记列表高度超过页面高度不够，
+  //   仅在笔记列表位置出现滚动条，而不是在整体页面出现垂直滚动条"）
+  return '<div class="stats">' + cards + '</div>' + inlineForm('notes') + listBlock('笔记列表', rows, '', { pageKey: 'notes', scroll: true });
 }
 
 export const PAGES = Object.freeze({ overview: pageOverview, messages: pageMessages, todos: pageTodos, schedules: pageSchedules, notes: pageNotes });
@@ -302,7 +454,12 @@ export function renderPage(pageKey, opt) {
   let label = '今日总览';
   for (const p of PAGE_DEFS) if (p.key === key) label = p.label;
   const api = opt.api ? String(opt.api).replace(/\/+$/, '') : '';
-  const addBtn = api && key !== 'overview' ? '<div class="toolbar"><button id="btn-add">新增一条</button></div>' : '';
+  // ★★ 2026-10-13 改（用户第 4 条）：**旧的「新增一条」按钮整个去掉**。
+  //   用户原话：「新增 1 条应该是**平铺在一级页面**，而不是作为按钮点击之后打开弹出浮层详情页。」
+  //   ⇒ 四个页面的新增已经改成页内平铺表单（`inlineForm()`，与列表同一层级），
+  //     这个按钮与它背后的弹层都成了多余的东西 —— 两个入口并存会让人不知道该点哪个。
+  //   ⚠️ 我第一版只加了平铺表单、忘了删这个按钮，真机验证当场抓出来（IF-2 不过）。
+  const addBtn = '';
   const script = api ? ('<script>' + clientScript(api) + '</script>') : '';
   const style = api ? ('<style>' + clientStyle() + '</style>') : '';
   const head = '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8">'
@@ -311,7 +468,7 @@ export function renderPage(pageKey, opt) {
     + '<style>' + stylesheet() + '</style>' + style + '</head>';
   const body = '<body>' + topbar(key)
     + '<main data-page="' + key + '"' + (api ? ' data-api="' + esc(api) + '"' : '') + '>' + addBtn + PAGES[key](snap) + '</main>'
-    + '<footer class="spacer"></footer>' + statusbar(opt.status, opt.switches) + script + '</body></html>';
+    + '<footer class="spacer"></footer>' + statusbar(opt.status, opt.switches, opt.statusDetail) + script + '</body></html>';
   return head + '\n' + body;
 }
 
@@ -366,7 +523,17 @@ export function selfTest() {
   const wired = renderPage('messages', { snap: snap, api: 'http://127.0.0.1:8791/workdesktop/api/v1' });
   chk('SH-22', '★ 给了 api ⇒ 注入客户端脚本与 API 基址', wired.indexOf('<script>') >= 0 && wired.indexOf('data-api="http://127.0.0.1:8791/workdesktop/api/v1"') >= 0);
   chk('SH-23', '★ 页面带 data-page（脚本据此判断类型）', wired.indexOf('data-page="messages"') >= 0);
-  chk('SH-24', '非总览页有「新增一条」按钮，总览页没有', wired.indexOf('id="btn-add"') >= 0 && renderPage('overview', { snap: snap, api: 'http://x' }).indexOf('id="btn-add"') < 0);
+  // ★★ 2026-10-13 改（这条原来是"非总览页有『新增一条』按钮，总览页没有"，用户裁定后行为变了）。
+  //   用户原话：「新增 1 条应该是**平铺在一级页面**，而不是作为按钮点击之后打开弹出浮层详情页。」
+  //   ⇒ 按钮整个去掉了，四个页面改成**页内平铺表单**（`inlineForm`）。
+  //     这条检查于是红了 —— **它红得对**：它守的是旧行为（那个按钮）。
+  //   ⇒ 改成守新行为：**四个数据页都有平铺表单、按钮一个都不许有**（两个入口并存会让人不知道点哪个）。
+  chk('SH-24', '★ 四个数据页都有**页内平铺**新增表单，且旧的「新增一条」按钮**一个都不留**（用户 2026-10-13 裁定）',
+    ['messages', 'todos', 'schedules', 'notes'].every((k) => {
+      const h = renderPage(k, { snap: snap, api: 'http://x' });
+      return h.indexOf('class="inline-form"') >= 0 && h.indexOf('data-if-page="' + k + '"') >= 0 && h.indexOf('id="btn-add"') < 0;
+    })
+    && ['overview'].every((k) => renderPage(k, { snap: snap, api: 'http://x' }).indexOf('id="btn-add"') < 0));
   chk('SH-25', '★ 不给 api ⇒ 不注入脚本（静态可读，不致残）', home.indexOf('<script>') < 0 && home.indexOf('id="btn-add"') < 0);
   chk('SH-26', '★ 注入的脚本语法有效（真编译）', (function () { const m = /<script>([\s\S]*)<\/script>/.exec(wired); if (!m) return false; try { new Function(m[1]); return true; } catch (e) { return false; } })());
 

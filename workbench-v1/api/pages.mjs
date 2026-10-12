@@ -19,6 +19,9 @@
  */
 
 import * as store from '../store.mjs';
+// ★ 2026-10-13 加：**来源标注**的唯一产地（用户第 9/10/11 条都要"来源"字段）——
+//   待办/日程/笔记三页共用同一个 `sourceOf`，不各写一份判法。
+import { sourceOf } from './source.mjs';
 
 const DAY = 86400000;
 export const dayStart = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
@@ -110,6 +113,8 @@ export function todos({ bucket = 'all', now = Date.now() } = {}) {
     dueLabel: e.payload.due ? dueLabel(Date.parse(e.payload.due), now) : '无期限',
     overdue: e.payload.due ? Date.parse(e.payload.due) < dayStart(now) : false,
     closeConditions: e.payload.closeConditions ?? null,   // P5 自动关闭用（需求 3.3.4）
+    // ★ 2026-10-13 加：**来源标注**（用户第 9 条点名要的字段）
+    source: sourceOf(e),
   })).sort((a, b) => String(a.due ?? '9999').localeCompare(String(b.due ?? '9999')));
   return {
     counts: { today: buckets.today.length, week: in7.length, undecided: undecided.length, done: done.length, overdue: overdue.length, total: rows.length },
@@ -132,6 +137,8 @@ export function schedules({ bucket = 'today', now = Date.now() } = {}) {
     //   —— 早先这里读 location，校验器当场判"未登记字段"，否则地点会永远显示为空
     place: e.payload.place ?? null, participants: e.payload.participants ?? [],
     type: e.payload.type ?? null, done: isDone(e),
+    // ★ 2026-10-13 加：**来源标注**（用户第 10 条点名要的字段）
+    source: sourceOf(e),
   })).sort((a, b) => String(a.start).localeCompare(String(b.start)));
   return { counts: { today: today.length, next7: next7.length, done30: done30.length, total: rows.length }, bucket, list };
 }
@@ -228,7 +235,10 @@ export function scheduleHeatmap({ now = Date.now(), month = null } = {}) {
     counts: { total: rows.length, thisMonth: rows.filter((e) => String(e.payload.date ?? '').startsWith(monthPrefix)).length, tags: tags.size },
     list: rows.slice(0, limit).map((e) => ({
       id: e._id, topic: e.payload.topic, date: e.payload.date,
-      tags: e.payload.tags ?? [], source: e.payload.source ?? null,
+      tags: e.payload.tags ?? [],
+      // ★ 2026-10-13 改：这一格原来直接给 `payload.source`（值是 `dingtalk-…` 这类机器名），
+      //   用户要的"来源"是**中文标注**（钉钉/飞书/消息/工作台）⇒ 换成与待办/日程同一套判源。
+      source: sourceOf(e),
       hasAnalysis: !!e.analysis, hasVisual: !!(e.analysis && e.analysis.visual),
     })),
   };

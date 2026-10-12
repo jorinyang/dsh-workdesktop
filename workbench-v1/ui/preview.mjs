@@ -43,13 +43,14 @@ export async function renderAll({ api = '/workdesktop/api/v1' } = {}) {
   // 真实探针：灯亮必须有依据（探测失败 ⇒ null ⇒ 灰灯 + 说明，不假装）
   const probes = await probeAll();
   const status = {};
-  for (const [k, v] of Object.entries(probes)) status[k] = v.ok;
+  const statusDetail = {};
+  for (const [k, v] of Object.entries(probes)) { status[k] = v.ok; statusDetail[k] = String(v.detail ?? '') }
   fs.mkdirSync(OUT, { recursive: true });
   const written = [];
   for (const p of PAGE_DEFS) {
     const f = path.join(OUT, `${p.key}.html`);
     // api 注入 ⇒ 页面可点（详情浮层/新增）；不起服务时页面仍能静态看，只是按钮点了会报"取详情失败"
-    fs.writeFileSync(f, renderPage(p.key, { switches, status, api }), 'utf8');
+    fs.writeFileSync(f, renderPage(p.key, { switches, status, statusDetail, api }), 'utf8');
     written.push(f);
   }
   return { written, switches, switchesOk: ok, updatedAt, why: why ?? null, probes, api };

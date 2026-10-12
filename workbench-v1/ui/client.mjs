@@ -81,9 +81,63 @@ export function clientScript(apiBase) {
   L.push('    document.body.appendChild(back);');
   L.push('  }');
   L.push('');
+  // ★★ 2026-10-13 修（**用户报"四个按钮点了没反应/提示未登记"** —— 这是那批症状的**共同根因**）。
+  //
+  // 原来这里只有一句：`var path = "/" + type + "/" + id + "/act";`
+  //   —— 把"类型 + 动作"**整体压成一个通用路径**。可写路径登记表里**根本没有这条通用路由**：
+  //
+  //     消息  → `/messages/:id/replied`（已回复）或 `/messages/:id/convert`（转待办/转日程/转笔记）
+  //     待办  → `/todos/:id/act`（done/hold/to-schedule）· `/todos/:id/deliverable`（交付物）
+  //     日程  → `/schedules/:id/act`（done/to-todo）
+  //     笔记  → `/notes/:id/analyze` · `/notes/:id/visualize`
+  //
+  //   ⇒ 只有**待办与日程**恰好叫 `act`，消息与笔记**必然 404**（用户看到的正是"未登记"那句提示）。
+  //     用户说待办/日程的按钮也"没有响应"，是同一个 bug 的连坐：`op` 被塞在 `payload.op`，
+  //     而消息/笔记那两条路要求 `payload.to`（转什么）—— 参数形状不同，压成一条就必然对不上。
+  //
+  //   ⇒ 改成**一张动作表**：每个动作写明"打到哪条已登记路由、带什么参数"。
+  //     表格（而非 if 链）有个好处：**加动作时一眼能看出它落在哪条已登记路由上**，
+  //     不会又出现"随手拼一个路径、结果没登记"。
+  L.push('  var OP_ROUTE = {');
+  L.push('    message: {');
+  L.push('      "已回复":   { path: "/messages/{id}/replied" },');
+  L.push('      "转待办":   { path: "/messages/{id}/convert", body: { to: "todo" } },');
+  L.push('      "转日程":   { path: "/messages/{id}/convert", body: { to: "schedule" } },');
+  L.push('      "转笔记":   { path: "/messages/{id}/convert", body: { to: "note" } }');
+  L.push('    },');
+  L.push('    todo: {');
+  L.push('      "已完成":   { path: "/todos/{id}/act", body: { op: "已完成" } },');
+  L.push('      "已搁置":   { path: "/todos/{id}/act", body: { op: "已搁置" } },');
+  L.push('      "转日程":   { path: "/todos/{id}/act", body: { op: "转日程" } },');
+  L.push('      "交付物":   { path: "/todos/{id}/deliverable", body: {} }');
+  L.push('    },');
+  L.push('    schedule: {');
+  L.push('      "已完成":   { path: "/schedules/{id}/act", body: { op: "已完成" } },');
+  L.push('      "转待办":   { path: "/schedules/{id}/act", body: { op: "转待办" } }');
+  L.push('    },');
+  L.push('    note: {');
+  L.push('      "分析笔记": { path: "/notes/{id}/analyze" },');
+  L.push('      "可视化构建": { path: "/notes/{id}/visualize" }');
+  L.push('    }');
+  L.push('  };');
+  L.push('');
   L.push('  function doOp(type, id, name) {');
-  L.push('    var path = "/" + type + "/" + id + "/act";');
-  L.push('    fetch(API + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ payload: { op: name } }) })');
+  // 找不到这个动作 ⇒ **如实说"界面上有、但没接上"**，不要拼一个路径去撞 404 再拿"未登记"当解释
+  L.push('    var spec = (OP_ROUTE[type] || {})[name];');
+  L.push('    if (!spec) { alert("这个动作还没有接线：" + type + " / " + name + "（界面给了按钮，但没对应的已登记写路径）"); return; }');
+  L.push('    var path = spec.path.replace("{id}", id);');
+  L.push('    var payload = { op: name };');
+  L.push('    for (var k in (spec.body || {})) payload[k] = spec.body[k];');
+  // 转日程要具体起止时间（契约不接受空）：先问一次，用户不给就交给服务端按消息解析（它会 409 并说明）
+  L.push('    if (spec.body && spec.body.to === "schedule") {');
+  L.push('      var st = window.prompt("转日程需要具体起止时间（YYYY-MM-DDTHH:mm）。留空则由服务端从消息里解析：", "");');
+  L.push('      if (st) { payload.start = st; payload.end = st; }');
+  L.push('    }');
+  L.push('    if (spec.body && spec.body.to === "todo") {');
+  L.push('      var tp = window.prompt("待办主题（留空则用消息概括）：", "");');
+  L.push('      if (tp) payload.topic = tp;');
+  L.push('    }');
+  L.push('    fetch(API + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ payload: payload }) })');
   L.push('      .then(function (r) { return r.json().then(function (b) { return { code: r.status, body: b }; }); })');
   L.push('      .then(function (x) {');
   L.push('        if (x.code === 404) { alert("这个操作还没有对应的写路径（未登记）：" + path); return; }');
@@ -195,8 +249,19 @@ export function clientScript(apiBase) {
   L.push('      var id = li.getAttribute("data-id"); var kind = li.getAttribute("data-go");');
   L.push('      if (!id || !kind) return;');
   L.push('      var dest = PAGE_OF[kind];');
+  // ★★ 2026-10-13 改（用户裁定，原话）：
+  //   「今日总览当中的重要日程行程下面的清单，点击日程之后，应该是直接打开日程的详情浮窗其中。
+  //     可以直接处置这个日程是转代办，还是已完成，**不需要直接跳转到日程页面**。
+  //     『逾期/临期任务』下面的任务，以及『长期未回复的消息』当中的消息，和日程一样，
+  //     都是点击之后直接打开弹出的浮层详情页。不用跳转到对应的功能页面。」
+  //   原来走到这里是 `location.assign(pageUrl(dest) + "?open=…")` —— **真的跳到目标页**再自动开浮层。
+  //   现在改成**就地开浮层**：处置动作（转待办 / 已完成 / 已回复 …）浮层里本来就有 ——
+  //   详情接口返回 `availableOps`（实测日程那条给的就是「转待办, 已完成」），`overlay()` 会把它渲染成按钮。
+  //   ⇒ 好处：少一次整页跳转与重建；处置完**还停在总览页**，能接着看下一条。
+  //   ⚠️ 其余页面若出现"指向别页"的行，仍保持跳转 —— 那条路是对的（`pageUrl` 的两种后缀场景），别一起改掉。
+  //   ⚠️ 类型仍要先过 `CANON` 归一：路由只认复数（单数会 404），这一条以前栽过。
   L.push('      if (!dest) { openDetail(kind, id); return; }');
-  L.push('      location.assign(pageUrl(dest) + "?open=" + dest + ":" + id);');
+  L.push('      openDetail(CANON[kind] || dest, id);   // 总览页：就地开浮层，不跳页');
   L.push('    });');
   L.push('  }');
   L.push('');
@@ -244,12 +309,18 @@ export function clientScript(apiBase) {
   L.push('    function applyTab(t) {');
   L.push('      var lis = document.querySelectorAll(".jl-list li[data-state]");');
   L.push('      for (var i = 0; i < lis.length; i++) {');
-  L.push('        lis[i].style.display = (t === "all" || lis[i].getAttribute("data-state") === t) ? "" : "none";');
+  // ★ 2026-10-13：筛选结果写进**自己的属性**（`data-tab-hidden`），不去碰 `style.display` ——
+  //   那个属性归分页管。两者共用一个属性就会互相覆盖（真机验证抓出来过）。
+  L.push('        var hide = !(t === "all" || lis[i].getAttribute("data-state") === t);');
+  L.push('        lis[i].setAttribute("data-tab-hidden", hide ? "1" : "0");');
   L.push('      }');
   L.push('      for (var j = 0; j < links.length; j++) {');
   L.push('        if (links[j].getAttribute("data-tab") === t) links[j].setAttribute("aria-current", "page");');
   L.push('        else links[j].removeAttribute("aria-current");');
   L.push('      }');
+  // ★★ 2026-10-13：分页要以**筛选后的可见行**为准 —— 不重算的话，
+  //   筛到 0 行时会翻到整页空白（两个功能各算各的，就会打架）。
+  L.push('      if (window.__wbApplyPager) window.__wbApplyPager();');
   L.push('    }');
   L.push('    for (var k = 0; k < links.length; k++) {');
   L.push('      links[k].addEventListener("click", function (ev) {');
@@ -259,13 +330,245 @@ export function clientScript(apiBase) {
   L.push('        applyTab(t);');
   L.push('      });');
   L.push('    }');
-  L.push('    applyTab(activeTab());');
-  // ★ 把筛选函数挂到 window 上（2026-10-12 加）：
-  //   ① 检查要能"再筛一次" —— 我的探针行是检查**事后插进去**的，而页面加载时已经筛过一轮，
-  //      插进去的行它不认识 ⇒ 判据读到的永远是"仍可见"，看着像"没筛"（假红）。
-  //   ② 顺带修一个真隐患：**以后动态加进来的行**（例如"新增一条"成功之后）不会被筛到。
-  //      挂出来之后，谁加了行都能调 `window.__wbApplyTab()` 重新对齐。
+  // ★ 2026-10-13 挪走：`applyTab(activeTab())` 原来在这里跑，但**分页函数到第 431 行才定义**
+  //   ⇒ 那一刻 `window.__wbApplyPager` 还不存在，筛选结果写不进属性、分页也就没生效
+  //   （真机验证 IF-5/IF-7 抓出来的：消息页 200 行全摊开、没分页）。
+  //   ⇒ "首次筛选"挪到**分页定义之后**执行（见下面 `首屏对齐` 那段）。
   L.push('    window.__wbApplyTab = applyTab;');
+  L.push('  })();');
+  L.push('');
+  // ══════════════════════════════════════════════════════════════════════════
+  // **分页**（2026-10-13 加，用户第 5 条；样式照他给的那张图）
+  //
+  // 图上要素逐个对上：左侧「总计: N」· ‹ 上一页 · 页码按钮（当前页高亮）· 省略号 · 末页 ·
+  //   › 下一页 · 「1/383」· 「到第 __ 页」「前往」· 右侧「每页显示: [10 ▾]」
+  //
+  // ★ 为什么在端上分页（不请求服务端）：
+  //   页面本来就把这一类型的**全部**数据渲染进了 DOM（实测消息 200 行、待办 11 行），
+  //   翻页只是显示/隐藏 ⇒ 零请求、瞬时响应。服务端分页要重渲染静态文件，反而更慢，
+  //   而且会丢掉当前的页签筛选状态。
+  // ★ 与筛选的关系：分页对象是**当前可见的行**（`__wbApplyTab` 跑完会重算），
+  //   否则筛到 0 行时会出现"翻到全是空白的页"。
+  // ★ 每页条数记在 `localStorage.jl.pageSize`，换页/刷新都记得住。
+  // ══════════════════════════════════════════════════════════════════════════
+  L.push('  var PAGERS = {};');
+  L.push('  function pageSizeOf() {');
+  L.push('    var v = 0; try { v = parseInt(localStorage.getItem("jl.pageSize") || "", 10) } catch (e) {}');
+  L.push('    return [10, 20, 50, 100].indexOf(v) >= 0 ? v : 10;');
+  L.push('  }');
+  L.push('  function initPager(box) {');
+  L.push('    var key = box.getAttribute("data-pager");');
+  L.push('    var section = box.parentNode;');
+  L.push('    var ul = section ? section.querySelector("ul.jl-list") : null;');
+  L.push('    if (!ul) return;');
+  L.push('    var all = Array.prototype.slice.call(ul.querySelectorAll("li"));');
+  L.push('    var st = { ul: ul, all: all, size: pageSizeOf(), page: 1 };');
+  L.push('    PAGERS[key] = st;');
+  L.push('    var sel = box.querySelector("[data-pg-size]");');
+  L.push('    if (sel) { sel.value = String(st.size); sel.addEventListener("change", function () { st.size = parseInt(sel.value, 10) || 10; st.page = 1; try { localStorage.setItem("jl.pageSize", String(st.size)) } catch (e) {} render(st, box) }) }');
+  L.push('    var prev = box.querySelector("[data-pg-prev]"); if (prev) prev.addEventListener("click", function () { if (st.page > 1) { st.page--; render(st, box) } });');
+  L.push('    var next = box.querySelector("[data-pg-next]"); if (next) next.addEventListener("click", function () { if (st.page < st.pages) { st.page++; render(st, box) } });');
+  L.push('    var jump = box.querySelector("[data-pg-jump]");');
+  L.push('    var go = box.querySelector("[data-pg-go]");');
+  L.push('    if (go) go.addEventListener("click", function () { var n = parseInt(jump && jump.value, 10); if (n >= 1 && n <= st.pages) { st.page = n; render(st, box) } });');
+  L.push('    if (jump) jump.addEventListener("keydown", function (ev) { if (ev.key === "Enter") { ev.preventDefault(); if (go) go.click() } });');
+  L.push('    render(st, box);');
+  L.push('  }');
+  // 页码序列：首末 + 当前页附近，中间用省略号（与图上「1 2 3 4 … 383」一致）
+  L.push('  function pageList(cur, pages) {');
+  L.push('    var out = []; var i;');
+  L.push('    if (pages <= 7) { for (i = 1; i <= pages; i++) out.push(i); return out }');
+  L.push('    out.push(1);');
+  L.push('    var from = Math.max(2, cur - 1), to = Math.min(pages - 1, cur + 1);');
+  L.push('    if (from > 2) out.push("…");');
+  L.push('    for (i = from; i <= to; i++) out.push(i);');
+  L.push('    if (to < pages - 1) out.push("…");');
+  L.push('    out.push(pages);');
+  L.push('    return out;');
+  L.push('  }');
+  L.push('  function render(st, box) {');
+  // ★★ 2026-10-13 修（**分页与筛选互相打架** —— 真机验证当场抓出来的）：
+  //   第一版这里用 `li.style.display !== "none"` 判"可见"，可**筛选也是改 style.display** ⇒
+  //   两者互相覆盖：翻页时把筛选藏掉的行又放了出来，于是"200 行 × 10/页"本该 20 页，
+  //   点一下下一页变成 1 页（IF-7 的 `1/20 → 1/1` 就是这个毛病）。
+  //   ⇒ **两个状态分开记**：筛选结果写在 `data-tab-hidden` 上，分页只管 `data-pg-hidden`，
+  //     最终可见 = 两个都允许。判据不重叠，才不会互相踩。
+  L.push('    var pool = st.all.filter(function (li) { return li.getAttribute("data-tab-hidden") !== "1" });');
+  L.push('    st.pages = Math.max(1, Math.ceil(pool.length / st.size));');
+  L.push('    if (st.page > st.pages) st.page = st.pages;');
+  L.push('    var a = (st.page - 1) * st.size, b = a + st.size;');
+  L.push('    for (var i = 0; i < st.all.length; i++) {');
+  L.push('      var li = st.all[i];');
+  L.push('      var tabOk = li.getAttribute("data-tab-hidden") !== "1";');
+  L.push('      var idx = pool.indexOf(li);');
+  L.push('      var pgOk = idx >= a && idx < b;');
+  L.push('      li.setAttribute("data-pg-hidden", pgOk ? "0" : "1");');
+  L.push('      li.style.display = (tabOk && pgOk) ? "" : "none";');
+  L.push('    }');
+  L.push('    var t = box.querySelector("[data-pg-total]"); if (t) t.textContent = "总计: " + pool.length;');
+  L.push('    var pos = box.querySelector("[data-pg-pos]"); if (pos) pos.textContent = st.page + "/" + st.pages;');
+  L.push('    var nums = box.querySelector("[data-pg-nums]");');
+  L.push('    if (nums) {');
+  L.push('      nums.innerHTML = "";');
+  L.push('      pageList(st.page, st.pages).forEach(function (n) {');
+  L.push('        if (n === "…") { var g = document.createElement("span"); g.className = "pg-gap"; g.textContent = "…"; nums.appendChild(g); return }');
+  L.push('        var bt = document.createElement("button"); bt.type = "button"; bt.textContent = String(n);');
+  L.push('        if (n === st.page) bt.setAttribute("aria-current", "page");');
+  L.push('        bt.addEventListener("click", function () { st.page = n; render(st, box) });');
+  L.push('        nums.appendChild(bt);');
+  L.push('      });');
+  L.push('    }');
+  L.push('    var pv = box.querySelector("[data-pg-prev]"); if (pv) pv.disabled = st.page <= 1;');
+  L.push('    var nx = box.querySelector("[data-pg-next]"); if (nx) nx.disabled = st.page >= st.pages;');
+  L.push('  }');
+  L.push('  var pboxes = document.querySelectorAll("[data-pager]");');
+  L.push('  for (var pb = 0; pb < pboxes.length; pb++) initPager(pboxes[pb]);');
+  L.push('  // 让筛选跑完能重算分页（两个功能必须对齐，否则会出现整页空白）');
+  L.push('  window.__wbApplyPager = function () {');
+  L.push('    for (var k in PAGERS) if (Object.prototype.hasOwnProperty.call(PAGERS, k)) {');
+  L.push('      var bx = document.querySelector(\'[data-pager="\' + k + \'"]\');');
+  L.push('      if (bx) { PAGERS[k].page = 1; render(PAGERS[k], bx) }');
+  L.push('    }');
+  L.push('  };');
+  L.push('');
+  // ══════════════════════════════════════════════════════════════════════════
+  // **首屏对齐顺序**（2026-10-13 加 —— 这一段的顺序是踩出来的，不是随手排的）
+  //
+  // 必须**先筛选、再分页**：
+  //   分页要按"筛选后剩下的行"算页数；若反过来，分页先按全部行算（消息页 200 行 = 20 页），
+  //   筛选再来改可见性，两者就会各说各话 —— 真机验证实测到过两种坏结果：
+  //     · 200 行全摊开、等于没分页（筛选还没写属性时分页已经算完了）
+  //     · 点下一页 `1/20 → 1/1`（分页把筛选藏掉的行又放了出来）
+  //   ⇒ 所以这一段放在**分页定义之后**。原来它在分页定义之前，`window.__wbApplyPager`
+  //     那一刻还不存在，等于白调。
+  // ⚠️ 必须把**当前页签**传进去：`__wbApplyTab()` 不带参数时内部 `t` 是 `undefined`，
+  //   而它的判据是 `t === "all" || state === t` ⇒ 两者都不成立 ⇒ **把所有行都藏了**
+  //   （真机实测：200 行全部 `data-tab-hidden=1`、可见 0 行、总计 0）。
+  //   页签从地址里读（`?tab=`），与筛选链接用的同一套判法。
+  L.push('  var bootTab = (function () { var m = /[?&]tab=([a-z-]+)/.exec(location.search || ""); return m ? m[1] : "all" })();');
+  L.push('  if (window.__wbApplyTab) window.__wbApplyTab(bootTab);   // 先按地址里的 ?tab= 筛');
+  L.push('  if (window.__wbApplyPager) window.__wbApplyPager();   // 再按筛完的行分页');
+  L.push('');
+  // ══════════════════════════════════════════════════════════════════════════
+  // **页内平铺表单的提交**（2026-10-13 加，用户第 4 条）
+  //
+  // 与旧实现的区别（**这条特别要紧**）：
+  //   旧的是"按钮 → 弹层 → `window.prompt()` 逐个问字段"，而 **prompt 在 iframe 里返回 null**
+  //   （面板就是这么嵌页面的）⇒ 用户点了什么都不发生、连报错都没有。
+  //   现在字段全在页面里（`<input data-if="…">`），提交时读它们的值 —— 不依赖任何原生弹窗。
+  //
+  // 失败**写在表单里**（`[data-if-msg]`），不弹 alert：iframe 里 alert 同样不可靠，
+  //   而且报错要留在眼前，不能一闪而过。
+  // ══════════════════════════════════════════════════════════════════════════
+  L.push('  (function () {');
+  L.push('    var form = document.querySelector(".inline-form[data-if-page]");');
+  L.push('    if (!form) return;');
+  L.push('    var pageType = form.getAttribute("data-if-page");');
+  L.push('    var btn = form.querySelector("[data-if-submit]");');
+  L.push('    var msg = form.querySelector("[data-if-msg]");');
+  L.push('    if (!btn) return;');
+  L.push('    function say(t, bad) { if (!msg) return; msg.textContent = t; msg.className = "cap if-msg" + (bad ? " bad" : "") }');
+  L.push('    btn.addEventListener("click", function () {');
+  L.push('      var payload = {};');
+  L.push('      var inputs = form.querySelectorAll("input[data-if]");');
+  L.push('      for (var i = 0; i < inputs.length; i++) {');
+  L.push('        var k = inputs[i].getAttribute("data-if");');
+  L.push('        var v = String(inputs[i].value || "").trim();');
+  L.push('        if (v === "") continue;');
+  L.push('        payload[k] = (k === "tags") ? v.split(/[,，]/).map(function (x) { return x.trim() }).filter(Boolean) : v;');
+  L.push('      }');
+  L.push('      // 与契约对齐的补字段（schema.mjs#PAYLOAD_SPEC 的必填项）');
+  L.push('      if (pageType === "messages") { payload.channel = "manual"; payload.source = "manual"; payload.modality = "text"; payload.summary = String(payload.raw || "").slice(0, 60); if (!payload.sender) payload.sender = "我"; }');
+  L.push('      if (pageType === "notes") { payload.date = new Date().toISOString().slice(0, 10); if (!payload.topic) payload.topic = String(payload.content_md || "").slice(0, 24) || "未命名笔记"; }');
+  L.push('      if (pageType === "schedules" && payload.participants) payload.participants = String(payload.participants).split(/[、,，]/).map(function (x) { return x.trim() }).filter(Boolean);');
+  L.push('      btn.disabled = true; say("提交中…", false);');
+  L.push('      fetch(API + "/" + pageType, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ payload: payload }) })');
+  L.push('        .then(function (r) { return r.json().then(function (b) { return { code: r.status, body: b }; }) })');
+  L.push('        .then(function (x) {');
+  L.push('          if (x.code >= 400) { say("失败：" + JSON.stringify(x.body.errors || x.body.error || x.body).slice(0, 180), true); btn.disabled = false; return }');
+  L.push('          say("已提交，正在刷新…", false); location.reload();');
+  L.push('        })');
+  L.push('        .catch(function (e) { say("请求失败：" + e.message, true); btn.disabled = false });');
+  L.push('    });');
+  L.push('  })();');
+  L.push('');
+  // ══════════════════════════════════════════════════════════════════════════
+  // 底部状态栏：三个能力开关（实时回复 / 响应功能 / 向量检索）
+  // ★★ 2026-10-13 加（用户裁定）：四态配色 + 可点击切换 + 悬浮文字说明。
+  //
+  // 为什么颜色不写死在这段脚本里：状态名→颜色有**唯一产地**
+  //   （库内 `system-switches.mjs#STATE_COLOR`），页面只是把它渲染出来。
+  //   写死一份就会漂 —— 本项目反复栽过"两份名单各改一半"。
+  //   ⇒ 每次都从 `/system-switch` 取回 `colors` 与 `capabilities[].state/label/why`，照它上色。
+  //
+  // 四态对应用户的话：off=灰（关闭）· down=红（背后服务没跑或报错）· ok=绿（空闲中）· busy=黄（运行中）。
+  //   另有过渡态 starting=紫 / stopping=蓝（点了之后现实还没跟上）——**不许拿四态冒充过渡**：
+  //   那会把"点了关闭但服务还在跑"显示成已关闭，库内注释里专门写了这条。
+  //
+  // 拉不到状态时**保持灰**并如实写"状态读取失败" —— 不知道就不装作知道。
+  // ══════════════════════════════════════════════════════════════════════════
+  L.push('  (function () {');
+  L.push('    var box = document.querySelector(".statusbar");');
+  L.push('    if (!box) return;');
+  L.push('    var nodes = box.querySelectorAll(".switch[data-switch]");');
+  L.push('    if (!nodes.length) return;');
+  L.push('    var BASE = API.replace(/\\/v1$/, "");');
+  L.push('    var busy = false;');
+  L.push('    function paint(doc) {');
+  L.push('      var byName = {};');
+  L.push('      (doc.capabilities || []).forEach(function (c) { byName[c.name] = c });');
+  L.push('      for (var i = 0; i < nodes.length; i++) {');
+  L.push('        var n = nodes[i]; var key = n.getAttribute("data-switch");');
+  L.push('        var c = byName[key]; var dot = n.querySelector(".dot");');
+  L.push('        var lab = n.querySelector("[data-switch-label]");');
+  L.push('        if (!c) { n.setAttribute("title", key + "：状态里没有这个能力（开关词表变了？）"); continue }');
+  L.push('        if (dot) dot.style.background = (doc.colors || {})[c.state] || "";');
+  L.push('        if (lab) {');
+  L.push('          if (!lab.getAttribute("data-base-label")) lab.setAttribute("data-base-label", lab.textContent);');
+  L.push('          lab.textContent = lab.getAttribute("data-base-label") + " · " + c.label;');
+  L.push('        }');
+  L.push('        // 悬浮说明 = 这个能力是什么 + 当前态 + 库内给的理由（理由才是"为什么这盏灯是这个颜色"）');
+  L.push('        n.setAttribute("title", c.title + "：" + c.label + "\\n" + (c.note ? c.note + "\\n" : "") + (c.why || ""));');
+  L.push('        n.setAttribute("data-state", c.state);');
+  L.push('      }');
+  L.push('    }');
+  L.push('    function load() {');
+  L.push('      return fetch(BASE + "/system-switch").then(function (r) { return r.json() }).then(function (d) {');
+  L.push('        if (d && d.ok === false) {');
+  L.push('          for (var i = 0; i < nodes.length; i++) nodes[i].setAttribute("title", "状态读取失败：" + (d.error || "未知原因"));');
+  L.push('          return d;');
+  L.push('        }');
+  L.push('        paint(d || {}); return d;');
+  L.push('      }).catch(function (e) {');
+  L.push('        for (var i = 0; i < nodes.length; i++) nodes[i].setAttribute("title", "状态读取失败：" + e.message);');
+  L.push('        return null;');
+  L.push('      });');
+  L.push('    }');
+  L.push('    function toggle(n) {');
+  L.push('      if (busy) return;');
+  L.push('      var key = n.getAttribute("data-switch");');
+  L.push('      var cur = n.getAttribute("data-state");');
+  L.push('      if (["off", "ok", "busy", "down"].indexOf(cur) < 0) { alert("这个开关正在过渡中（" + cur + "），等它落定再点"); return }');
+  L.push('      var want = (cur === "off");');
+  L.push('      busy = true; n.setAttribute("aria-busy", "1");');
+  L.push('      n.setAttribute("title", "正在" + (want ? "开启" : "关闭") + "…（要拉起或停掉计划任务，请稍候）");');
+  L.push('      fetch(BASE + "/system-switch", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ capability: key, enabled: want }) })');
+  L.push('        .then(function (r) { return r.json() })');
+  L.push('        .then(function (d) {');
+  L.push('          busy = false; n.removeAttribute("aria-busy");');
+  L.push('          if (d && d.ok === false) { n.setAttribute("title", "切换失败：" + (d.error || "未知原因")); alert("切换失败：" + (d.error || "未知原因")); return }');
+  L.push('          if (d && d.capabilities) paint(d); else load();');
+  L.push('        })');
+  L.push('        .catch(function (e) { busy = false; n.removeAttribute("aria-busy"); alert("切换请求失败：" + e.message) });');
+  L.push('    }');
+  L.push('    for (var k = 0; k < nodes.length; k++) {');
+  L.push('      (function (n) {');
+  L.push('        n.addEventListener("click", function () { toggle(n) });');
+  L.push('        n.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(n) } });');
+  L.push('      })(nodes[k]);');
+  L.push('    }');
+  L.push('    load();');
+  L.push('    setInterval(load, 30000);   // 半分钟一次：状态会自己变（在不在会中、在途条数都会动）');
   L.push('  })();');
   L.push('');
   L.push('  var addBtn = document.getElementById("btn-add");');
@@ -378,8 +681,18 @@ export function selfTest() {
   //   现在改为"按 DOM 上的 data-id 直接取详情"。**不是为了让检查变绿而放宽**：
   //   新增 CLI-16/17 守着"真的用 data-id"与"总览能跨页跳转"，覆盖面反而变宽。
   chk('CLI-4', '★ 点击行按 data-id 直接取详情（不再按行序推断）', js.includes('getAttribute("data-id")') && js.includes('/detail/') && !js.includes('indexOf.call(list.children'), '');
-  chk('CLI-16', '★ 跨页跳转：总览三类提醒可跳对应页面（需求 3.3.2）', js.includes('data-go') && js.includes('PAGE_OF') && js.includes('?open='));
-  chk('CLI-17', '★ 目标页接手：地址带 ?open=类型:id ⇒ 自动开那一条的详情', js.includes('openDetail(hm[1], hm[2])') && js.includes('hm[1]'));
+  // ★★ 2026-10-13 改（这条原来是"总览三类提醒**可跳对应页面**"，用户裁定后行为变了）。
+  //   用户原话：「点击日程之后，应该是**直接打开**日程的详情浮窗…**不需要直接跳转到日程页面**。
+  //     『逾期/临期任务』下面的任务，以及『长期未回复的消息』当中的消息，和日程一样，
+  //     都是点击之后直接打开弹出的浮层详情页。不用跳转到对应的功能页面。」
+  //   ⇒ 总览不再生成 `?open=` 跳转链接，改成**就地调 `openDetail`**。
+  //     这条检查于是红了 —— **它红得对**：它守的是旧行为。
+  //   ⇒ 改成守**新行为**（三类提醒都有 data-id + data-go，且点击路径是就地开浮层），
+  //     并且**把类型归一带上**（CANON）—— 路由只认复数，这一步以前栽过，不能漏。
+  chk('CLI-16', '★ 总览三类提醒：带 data-id/data-go，点击**就地开详情浮层**（不跳页 · 用户 2026-10-13 裁定）',
+    js.includes('data-go') && js.includes('PAGE_OF') && js.includes('openDetail(CANON[kind] || dest, id)'));
+  // 目标页接手：**保留**（`?open=` 仍可能从书签/外链进来），但已不再是总览的默认路径
+  chk('CLI-17', '★ 目标页接手（保留）：地址带 ?open=类型:id ⇒ 自动开那一条的详情', js.includes('openDetail(hm[1], hm[2])') && js.includes('hm[1]'));
   // ★ P2：待处置候选与一键创建（用户 Q2 的前端那一半）
   chk('CLI-18', '★ 浮层显示"待处置候选"与"已自动创建"两种结果（Q2：标注待处置）', js.includes('待处置候选') && js.includes('已自动创建'));
   chk('CLI-19', '★ 候选项能一键创建（按 kind 建为日程/待办/笔记）', js.includes('createFromCandidate') && js.includes('"建为" + KIND[c.kind]'));
