@@ -89,6 +89,12 @@ await run('P4d', 'P4 页面数据接口', async () => (await import(base + 'api/
 await run('P7a', 'P7 驾驶舱数据', async () => (await import(base + 'api/cockpit.mjs')).selfTest());
 await run('P7b', 'P7 驾驶舱页面', async () => (await import(base + 'ui/cockpit-page.mjs')).selfTest());
 await run('API', 'P4/P5 本地接口', async () => (await import(base + 'api/server.mjs')).selfTest());
+// ★ EP（2026-10-12 新增）：**直接对接口的检查**。
+//   来由：旧 13 卡面板退役后，真机那组里有 58 条检查失去对象（其中相当一部分验的是**数据出口**）。
+//   那五个出口实测全部 200、全部在产数据 ⇒ 这件事重新管起来，**不经过面板**。
+//   本组是**纯离线**判定自检（样例照真实结构抄的，含负向对照）；
+//   真机那一遍另外跑：`node _meta/workbench/v1/api/endpoints.mjs`。
+await run('EP', '接口产出（离线判定）', async () => (await import(base + 'api/endpoints.mjs')).selfTest());
 
 console.log('');
 const bad = rows.filter((r) => r.fail > 0);
