@@ -298,7 +298,19 @@ export function exportBody({ nodeId, relOut, run = defaultRun, maxPolls = BODY_M
   // ★ 导出是异步任务（提交→轮询→下载），可能远超查询类的 60s ⇒ 单独给 240s 窗口。
   //   80% 的情况 3 秒就回来了（实测），放宽只是兜底，不是常态等待。
   const r = run(args, { timeoutMs: BODY_EXPORT_TIMEOUT_MS });
-  if (r.ok !== true) return { ok: false, why: r.why ?? '导出失败' };
+  if (r.ok !== true) {
+    // ★★ 2026-10-12 加：把「**仍在处理**」和「**失败**」分开。
+    //   来由：实测日志出现 `Export job is still processing (status=INIT)` —— 钉钉那边的导出任务
+    //     连**开始**都没开始（INIT），本地的 `--max-polls` 就用完了。这**不是导出失败**：
+    //     任务在服务端还在排队，**下一次跑再来一次就行**。
+    //   原来两种情况都走 `{ok:false}` ⇒ 既记成失败、又**消耗重试次数**（`BODY_MAX_TRIES`），
+    //     于是同一个文档可能被"失败"耗尽名额，明明只是没轮到。
+    //   ⇒ 单独标 `pending`：调用方（`fetchBodiesOnce`）看到 pending 就**不涨 tries、也不算失败**，
+    //     下次照常再试。**"还没轮到"和"做不了"是两句不同的话** —— 这条规矩这个项目一直在守。
+    const why = String(r.why ?? '导出失败');
+    const stillProcessing = /still processing|status=INIT|处理中/i.test(why);
+    return { ok: false, pending: stillProcessing, why };
+  }
   const p = r.parsed ?? null;
   const d = p?.data ?? null;
   if (!d || typeof d.localPath !== 'string') return { ok: false, why: `返回里没有 localPath：${JSON.stringify(p).slice(0, 200)}` };
@@ -329,7 +341,7 @@ export function fetchBodiesOnce({ run = defaultRun, dryRun = false, max = BODY_M
   all.sort((a, b) => (rank(a.key) - rank(b.key)) || String(a.name ?? '').localeCompare(String(b.name ?? '')) || a.key.localeCompare(b.key));
   cands.push(...all.slice(0, max));
   const remainingPool = all.length - cands.length;   // 池里还剩多少（排序后剩下的就是下一轮的头部）
-  let fetched = 0; let failed = 0;
+  let fetched = 0; let failed = 0; let pending = 0;
   const rows = [];
   for (const c of cands) {
     if (dryRun) { rows.push({ key: c.key, action: 'dryRun', name: c.name ?? '' }); continue; }
@@ -337,6 +349,18 @@ export function fetchBodiesOnce({ run = defaultRun, dryRun = false, max = BODY_M
     const absDir = path.join(v1Out(), '.runtime', 'kb-export', c.key);
     fs.mkdirSync(absDir, { recursive: true });
     const ex = exportBody({ nodeId: c.key, relOut: `${rel}/`, run });
+    // ★★ 2026-10-12 改（见 `exportBody` 里那段注释）：**"还没轮到"不算失败、也不涨重试次数**。
+    //   原来两种情况都走下面这个分支 ⇒ 服务端还在排队（INIT）的文档被记成失败，
+    //   反复几次就把 `BODY_MAX_TRIES` 的名额耗光，之后再也不试了 —— 明明只是没轮到（实测日志就是这个）。
+    if (ex.ok !== true && ex.pending === true) {
+      st[c.key] = {
+        ok: false, pending: true, tries: st[c.key]?.tries ?? 0,   // ⚠️ 不涨 tries
+        why: String(ex.why).slice(0, 240), at: new Date(now).toISOString(), name: c.name ?? '', ext: c.ext ?? '',
+      };
+      saveBodyState(st); pending += 1;
+      rows.push({ key: c.key, action: 'pending', why: '服务端仍在处理（下次再取）' });
+      continue;
+    }
     const tries = (st[c.key]?.tries ?? 0) + 1;
     if (ex.ok !== true) {
       st[c.key] = { ok: false, tries, why: String(ex.why).slice(0, 240), at: new Date(now).toISOString(), name: c.name ?? '', ext: c.ext ?? '' };
@@ -355,9 +379,24 @@ export function fetchBodiesOnce({ run = defaultRun, dryRun = false, max = BODY_M
       if (!fs.existsSync(srcAbs)) throw new Error(`导出说落在这里但文件不在：${ex.localPath}`);
       const md = fs.readFileSync(srcAbs, 'utf8');
       if (md.trim() === '') throw new Error('导出内容为空');
-      fs.writeFileSync(dest, md, 'utf8');
+      // ★★ 2026-10-12 修（**同名文档互相覆盖，内容无声消失**）：
+      //   命名规则是"日期 + 主题"（需求 3.1.2 就是这么要求的），可**同一天里会出现同主题的多篇**——
+      //   实测一次就撞上：三篇不同文档都叫 `2026-10-12-工具方法论.md`，
+      //   而这里直接 `writeFileSync` ⇒ **后写的把先写的盖掉**，目录里最后只剩一个文件、2471 字节，
+      //   另外两篇的内容**没了**，而且**没有任何提示**（这类静默丢数据是最难发现的）。
+      //   ⇒ 落盘前先让名：文件已存在就**用节点短号区分**（`…-工具方法论-2Amq4vjg.md`），
+      //     宁可名字多一截，也不丢内容。同名≠同一篇，节点号才是身份。
+      let finalDest = dest;
+      if (fs.existsSync(finalDest)) {
+        const short = String(c.key).slice(0, 8);
+        const withId = dest.replace(/\.md$/i, `-${short}.md`);
+        finalDest = withId;
+        let n = 2;
+        while (fs.existsSync(finalDest)) finalDest = withId.replace(/\.md$/i, `-${n++}.md`);
+      }
+      fs.writeFileSync(finalDest, md, 'utf8');
       try { fs.rmSync(absDir, { recursive: true, force: true }); } catch { /* noop */ }
-      st[c.key] = { ok: true, tries, at: new Date(now).toISOString(), name: c.name ?? '', ext: c.ext ?? '', file: path.relative(KB_ROOT, dest).replace(/\\/g, '/'), bytes: md.length };
+      st[c.key] = { ok: true, tries, at: new Date(now).toISOString(), name: c.name ?? '', ext: c.ext ?? '', file: path.relative(KB_ROOT, finalDest).replace(/\\/g, '/'), bytes: md.length };
       saveBodyState(st); fetched += 1;
       rows.push({ key: c.key, action: 'fetched', file: st[c.key].file, bytes: md.length });
     } catch (e) {
@@ -368,8 +407,14 @@ export function fetchBodiesOnce({ run = defaultRun, dryRun = false, max = BODY_M
   }
   const allState = Object.values(st);
   return {
-    inCount: cands.length, fetched, failed, remaining: remainingPool,
-    total: { ok: allState.filter((x) => x.ok === true).length, failed: allState.filter((x) => x.ok !== true).length },
+    inCount: cands.length, fetched, failed, pending, remaining: remainingPool,
+    // ★ `failed` 的统计口径也跟着改：**"仍在处理"不再算失败**（原来会把排队中的文档算进去，
+    //   读数看起来像"抓取失败一堆"，实际只是没轮到）。两者分开报，数才对得上。
+    total: {
+      ok: allState.filter((x) => x.ok === true).length,
+      pending: allState.filter((x) => x.ok !== true && x.pending === true).length,
+      failed: allState.filter((x) => x.ok !== true && x.pending !== true).length,
+    },
     rows,
     why: cands.length === 0 ? (remainingPool === 0 ? '候选池已空（该抓的都抓过了）' : `本轮没有可抓的候选（池里剩 ${remainingPool} 条但都到重试上限）`) : null,
   };
@@ -384,11 +429,20 @@ if (process.argv[1] && process.argv[1].endsWith('dingtalk-wiki.mjs') && process.
   const t0 = Date.now();
   try {
     const r = fetchBodiesOnce({ dryRun: dry });
-    console.log(`[kb-bodies] 候选 ${r.inCount} · 抓到 ${r.fetched} · 失败 ${r.failed} · 池里还剩 ${r.remaining}（累计 成功 ${r.total.ok} / 失败 ${r.total.failed}）用时 ${Math.round((Date.now() - t0) / 1000)}s`);
+    console.log(`[kb-bodies] 候选 ${r.inCount} · 抓到 ${r.fetched} · 仍处理中 ${r.pending} · 失败 ${r.failed} · 池里还剩 ${r.remaining}（累计 成功 ${r.total.ok} / 仍处理中 ${r.total.pending} / 失败 ${r.total.failed}）用时 ${Math.round((Date.now() - t0) / 1000)}s`);
     for (const row of r.rows) console.log(`  ${row.action.padEnd(7)} ${row.key} ${row.file ?? row.why ?? ''}`);
     if (r.why) console.log(`  （${r.why}）`);
-    // 有候选却一条都没成功 ⇒ 判失败（否则计划任务会把它记成成功，又是一次假绿）
-    const ok = !(r.inCount > 0 && r.fetched === 0 && !dry);
+    // ★★ 2026-10-12 改（退出码把"等待"和"失败"分开了）：
+    //   原来只有一条规则：`有候选却一条都没成功 ⇒ 判失败`。
+    //   实测撞上：四条候选**全部**是"服务端仍在处理"（钉钉那边任务连开始都没开始），
+    //   于是退出码 1 —— 可这**不是失败**，任务在服务端排着队，**下次再来取就行**。
+    //   把"排队中"报成错误，后果不只是难看：定时任务的告警会被这种噪音淹没，
+    //   真出问题那次反而没人看（这个项目反复栽在"分不清两种坏"上）。
+    //   ⇒ 现在：**真失败**才退出码 1；**全是排队中**退出码 0，但**打印里写清楚**还欠多少条没取到。
+    //     ⚠️ 注意"打印里写清楚"是必须的 —— 只给 0 不说明，就变成了另一种假绿（看着成功、其实没抓完）。
+    const allPending = r.inCount > 0 && r.fetched === 0 && r.failed === 0 && r.pending > 0;
+    const ok = !(r.inCount > 0 && r.fetched === 0 && r.failed > 0 && !dry);
+    if (allPending) console.log(`  （本轮 ${r.pending} 条服务端仍在处理 —— 不是失败，下一轮会再来取；累计还欠 ${r.total.pending} 条正文）`);
     console.log(ok ? 'PASS' : 'FAIL');
     process.exit(ok ? 0 : 1);
   } catch (e) {
@@ -535,11 +589,31 @@ export async function selfTest() {
         const p = Object.values(loadBodyState()).find((x) => x.ok === true && x.file && x.file.includes('课程大纲'));
         return !!p && /2026-10-12-01-课程大纲\.md$/.test(p.file);
       })(), JSON.stringify(Object.values(loadBodyState()).map((x) => x.file)));
-      chk('KB-28', '★ 导出失败 ⇒ 如实记 failed + 原因（正文留空，绝不假装有）', (() => {
+      // ★ 2026-10-12 拆成两条（原来只有 KB-28 一条，它拿"仍处理中"当失败的代表）。
+      //   来由：实测日志出现 `Export job is still processing (status=INIT)` —— 任务在服务端**还没轮到**，
+      //     这**不是失败**。原来两种都记 failed、都涨重试次数 ⇒ 排队的文档会把名额耗光，
+      //     之后再也不试（明明只是没轮到）。行为改完之后**这条检查当场就红了**，而它红得对：
+      //     它守的是"失败要如实记"，可它选的代表（仍在处理）已经不成立。
+      //   ⇒ 拆开，两条都要：
+      //     一条守**真失败要如实记**，一条守**排队中的不算失败、也不涨次数**。
+      //     少任何一条都会往一个方向歪 —— 要么把排队当失败，要么把失败吞掉。
+      chk('KB-28', '★ 真失败 ⇒ 如实记 failed + 原因（正文留空，绝不假装有）', (() => {
         saveSeen({ N4: { kind: 'doc', name: '抓不到的', ext: 'adoc', at: new Date().toISOString() } });
-        const b2 = fetchBodiesOnce({ run: () => ({ ok: false, why: '导出任务仍处理中（模拟）' }) });
+        const b2 = fetchBodiesOnce({ run: () => ({ ok: false, why: '导出失败：权限不足' }) });
         const rec = loadBodyState().N4;
-        return b2.failed === 1 && rec.ok === false && /处理中/.test(rec.why);
+        return b2.failed === 1 && rec.ok === false && rec.pending !== true && /权限不足/.test(rec.why);
+      })());
+      chk('KB-28b', '★ 服务端仍在处理 ⇒ 记 pending：**不算失败、也不涨重试次数**（下次还会再取）', (() => {
+        // 先让它真失败两次，攒下 tries；再来一次"仍在处理"，tries 必须**原地不动**
+        saveSeen({ N4b: { kind: 'doc', name: '排队的', ext: 'adoc', at: new Date().toISOString() } });
+        fetchBodiesOnce({ run: () => ({ ok: false, why: '导出失败：网络断了' }) });
+        fetchBodiesOnce({ run: () => ({ ok: false, why: '导出失败：网络断了' }) });
+        const before = loadBodyState().N4b;
+        const b = fetchBodiesOnce({ run: () => ({ ok: false, why: '导出任务仍处理中 (jobId=1, status=INIT)' }) });
+        const after = loadBodyState().N4b;
+        return b.failed === 0 && b.pending === 1
+          && after.ok === false && after.pending === true
+          && after.tries === before.tries;    // ★ 关键：次数没涨 ⇒ 下次照常再取
       })());
       chk('KB-29', '★ 返回里没有 localPath ⇒ 也算失败（不写空文件）', (() => {
         saveSeen({ N5: { kind: 'doc', name: '形状变了', ext: 'adoc', at: new Date().toISOString() } });
