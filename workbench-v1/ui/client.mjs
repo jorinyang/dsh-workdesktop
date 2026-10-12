@@ -277,23 +277,66 @@ export function clientScript(apiBase) {
   L.push('        schedules: [["topic", "日程主题"], ["start", "开始 YYYY-MM-DDTHH:mm"], ["end", "结束"], ["place", "地点"]],');
   L.push('        notes: [["topic", "笔记主题"], ["content_md", "内容"], ["tags", "标签（逗号分隔）"]]');
   L.push('      }[TYPE] || [];');
+  L.push('      openAddForm(forms);');
+  L.push('    });');
+  L.push('  }');
+  L.push('');
+  // ★★ 2026-10-12 改（**"新增一条"在面板里点了没反应**）：
+  //   原实现是逐个 `window.prompt()` 问字段。实测：
+  //     顶层窗口直接打开 → prompt 正常；
+  //     放进 **iframe**（面板正是这么嵌页面的）→ prompt **能弹出来，但返回值是 null**。
+  //   而代码写的是 `if (v === null) return;` —— 于是连第一个字段都拿不到，**直接返回、什么都不做**，
+  //   用户看到的就是"点了没反应"，而且**连报错都没有**（这类静默失败最难查）。
+  //   ⇒ 改成**页面内表单**（自己画的浮层），不依赖浏览器原生弹窗：
+  //     输入框 → 提交按钮 → POST；失败时把服务端的错误**如实显示在表单里**（不弹 alert，同样因为 iframe）。
+  L.push('  function openAddForm(forms) {');
+  L.push('    var back = el("div", "overlay-back");');
+  L.push('    var box = el("div", "overlay");');
+  L.push('    box.appendChild(el("h2", null, "新增一条"));');
+  L.push('    var inputs = {};');
+  L.push('    forms.forEach(function (f) {');
+  L.push('      var line = el("div", "ov-row");');
+  L.push('      line.appendChild(el("span", "ov-k", f[1]));');
+  L.push('      var inp = document.createElement("input");');
+  L.push('      inp.type = "text"; inp.className = "ov-input"; inp.placeholder = f[1];');
+  L.push('      line.appendChild(inp);');
+  L.push('      box.appendChild(line);');
+  L.push('      inputs[f[0]] = inp;');
+  L.push('    });');
+  L.push('    var bar = el("div", "ov-ops");');
+  L.push('    var ok = el("button", "btn", "提交");');
+  L.push('    var cancel = el("button", "btn", "取消");');
+  L.push('    var msg = el("span", "cap", "");');
+  L.push('    msg.style.cssText = "font-size:12px;color:var(--c-mute);margin-left:8px";');
+  L.push('    bar.appendChild(ok); bar.appendChild(cancel); bar.appendChild(msg);');
+  L.push('    box.appendChild(bar);');
+  L.push('    back.appendChild(box);');
+  L.push('    document.body.appendChild(back);');
+  L.push('    function close() { try { document.body.removeChild(back) } catch (e) {} }');
+  L.push('    cancel.addEventListener("click", close);');
+  L.push('    back.addEventListener("click", function (ev) { if (ev.target === back) close(); });');
+  L.push('    ok.addEventListener("click", function () {');
   L.push('      var payload = {};');
-  L.push('      for (var i = 0; i < forms.length; i++) {');
-  L.push('        var v = window.prompt(forms[i][1], "");');
-  L.push('        if (v === null) return;');
-  L.push('        if (v === "") continue;');
-  L.push('        payload[forms[i][0]] = forms[i][0] === "tags" ? v.split(/[,，]/).map(function (x) { return x.trim(); }).filter(Boolean) : v;');
-  L.push('      }');
+  L.push('      forms.forEach(function (f) {');
+  L.push('        var v = String(inputs[f[0]].value || "").trim();');
+  L.push('        if (v === "") return;');
+  L.push('        payload[f[0]] = f[0] === "tags" ? v.split(/[,，]/).map(function (x) { return x.trim(); }).filter(Boolean) : v;');
+  L.push('      });');
   L.push('      if (TYPE === "messages") { payload.channel = "manual"; payload.source = "manual"; payload.modality = "text"; payload.summary = String(payload.raw || "").slice(0, 60); }');
   L.push('      if (TYPE === "notes") { payload.date = new Date().toISOString().slice(0, 10); }');
+  L.push('      ok.disabled = true; msg.textContent = "提交中…";');
   L.push('      fetch(API + "/" + TYPE, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ payload: payload }) })');
   L.push('        .then(function (r) { return r.json().then(function (b) { return { code: r.status, body: b }; }); })');
   L.push('        .then(function (x) {');
-  L.push('          if (x.code >= 400) { alert("新增失败：" + JSON.stringify(x.body.errors || x.body.error || x.body)); return; }');
+  // ★ 失败**写在表单里**（不弹 alert：iframe 里 alert 一样不可靠，而且报错要留在眼前）
+  L.push('          if (x.code >= 400) { msg.textContent = "失败：" + JSON.stringify(x.body.errors || x.body.error || x.body).slice(0, 160); ok.disabled = false; return; }');
+  L.push('          msg.textContent = "已提交，正在刷新…";');
   L.push('          location.reload();');
   L.push('        })');
-  L.push('        .catch(function (e) { alert("新增请求失败：" + e.message); });');
+  L.push('        .catch(function (e) { msg.textContent = "请求失败：" + e.message; ok.disabled = false; });');
   L.push('    });');
+  L.push('    var first = inputs[forms.length ? forms[0][0] : ""];');
+  L.push('    if (first && first.focus) first.focus();');
   L.push('  }');
   L.push('})();');
   return L.join('\n');
@@ -307,6 +350,8 @@ export function clientStyle() {
   s.push('.overlay h2 { font-size: 16px; margin-bottom: 12px; }');
   s.push('.ov-row { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--c-hairline); font-size: 13px; }');
   s.push('.ov-k { color: var(--c-mute); min-width: 84px; }');
+  // 新增表单的输入框（2026-10-12 加：原来用 window.prompt，iframe 里返回 null ⇒ 改成页内表单）
+  s.push('.ov-input { flex: 1; font: inherit; padding: 4px 6px; border: 1px solid var(--c-hairline); border-radius: 4px; background: transparent; color: var(--c-ink); }');
   s.push('.ov-v { flex: 1; white-space: pre-wrap; }');
   s.push('.ov-ops { display: flex; gap: 8px; margin-top: 14px; }');
   s.push('.ov-close { background: var(--c-canvas); color: var(--c-ink); border: 1px solid var(--c-hairline); margin-top: 10px; }');
