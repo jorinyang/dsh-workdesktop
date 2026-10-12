@@ -23,9 +23,49 @@ import { fileURLToPath } from 'node:url';
 import { makeEvent } from '../schema.mjs';
 import * as store from '../store.mjs';
 import * as pages from './pages.mjs';
-import { health as registryHealth } from '../collector/registry.mjs';
-import { health as stateHealth } from '../collector/state.mjs';
 import { KB_ROOT as ROOT, PKG_ROOT } from '../paths.mjs';   // 路径收口（见 paths.mjs 顶部说明：原先按本文件深度往上数，包一挪就错）
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ★ 为什么通道/水位线**不再静态 import**（2026-10-12 实测定位，不是预防性写法）
+//
+// 现象：面板（DSH 插件 host）上 `GET /workdesktop/api/v1/health` 报 implemented=9/18，
+//       同一个文件在新进程里 `health()` 报 18/18 —— 同文件、同函数，**只差进程**。
+// 真因：插件 host（`Desktop/DSH/plugins/dsh-workdesktop/lib/index.js` L3889）用动态 `import()`
+//       **一次性**加载本文件；ES 模块在**一个 Node 进程里只执行一次**（模块注册表缓存），
+//       而这三条原本是静态 import ⇒ registry/state 的模块态被冻在进程启动那一刻（本机 03:57:55）。
+//       此后三轮开发把 13→18 条通道写进了文件，**进程里没有**。
+// 影响：① 面板显示假读数（实测 9/18）；② 更糟的是**以后每次改 v1 都不生效**，直到重启 —— 会反复骗人。
+//
+// 处置：这两条按**每次请求现读** —— 带 `?v=<文件 mtime>` 的动态 import：
+//       文件一变 URL 就变 ⇒ 模块重新求值；文件没变则命中缓存（不白读盘）。
+//       守卫见自检 API-35/36（真改文件 ⇒ 读数必须跟着变，不许再冻住）。
+// ══════════════════════════════════════════════════════════════════════════════
+const REGISTRY_URL = new URL('../collector/registry.mjs', import.meta.url);
+const STATE_URL = new URL('../collector/state.mjs', import.meta.url);
+const freshCache = new Map();
+
+/** 按文件 mtime 取模块：没改就复用，改了立刻重新求值（绕开 ESM 的进程级只加载一次） */
+export async function freshMod(url, tag) {
+  let mtime = 0;
+  try { mtime = fs.statSync(url).mtimeMs; } catch { mtime = 0; }
+  const key = tag + '@' + mtime;
+  if (freshCache.has(key)) return freshCache.get(key);
+  const u = new URL(url.href);
+  u.searchParams.set('v', String(mtime));
+  const mod = await import(u.href);
+  freshCache.set(key, mod);
+  return mod;
+}
+/** 通道健康（现读；读不到如实回 error，不假装"没接"） */
+export async function registryHealthLive() {
+  try { return (await freshMod(REGISTRY_URL, 'registry')).health(); }
+  catch (e) { return { error: `通道登记表读不到：${e.message}`, total: null, implemented: null, missing: null }; }
+}
+/** 水位线健康（现读；同上） */
+export async function stateHealthLive() {
+  try { return (await freshMod(STATE_URL, 'state')).health(); }
+  catch (e) { return { error: `水位线模块读不到：${e.message}` }; }
+}
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const API_PREFIX = '/workdesktop/api/v1';
@@ -66,6 +106,9 @@ const json = (res, code, obj) => {
 
 function readBody(req, limit = 256 * 1024) {
   return new Promise((resolve) => {
+    // ⚠️ 本函数**一个请求只能调一次** —— 请求流消费完就没了，再调会永久挂起
+    //   （2026-10-12 实测踩到：见下方 `if (act)` 里那条长注释）。加一行守卫，让复用立刻现形而不是挂 180 秒。
+    if (req.readableEnded || req.complete) return resolve({ ok: false, why: '请求体已被读过一次（readBody 不得重复调用）' });
     let n = 0; const chunks = [];
     req.on('data', (c) => { n += c.length; if (n > limit) { req.destroy(); resolve({ ok: false, why: '请求体过大' }); } else chunks.push(c); });
     req.on('end', () => { try { resolve({ ok: true, json: JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }); } catch (e) { resolve({ ok: false, why: `请求体不是合法 JSON：${e.message}` }); } });
@@ -89,13 +132,29 @@ export function createEvent(type, payload, { origin = null, at = null } = {}) {
 
 const EVENT_FOR = { messages: 'message', notes: 'note', todos: 'todo', schedules: 'schedule' };
 
+/**
+ * **可注入的动作实现**（只给自检用；生产路径为 null ⇒ 走动态 import 的真实现）。
+ *
+ * 为什么要有这个口子：ESM 的模块命名空间对象是**只读**的
+ * （实测：`analyzeMod.reanalyzeNote = …` ⇒ `TypeError: Cannot assign to read only property`）
+ * ⇒ 自检没法用"猴子补丁"换掉模型调用，而笔记的「分析笔记」动作**真会调模型**。
+ * 若不做这个口子，这个自检要么真烧 token、要么只能不测 —— 两条都不要。
+ * 注意它**只**在本文件的导出上（可写），与生产行为无关：不注入就一字不差走原路。
+ */
+export const _deps = { reanalyzeNote: null, buildVisualForNote: null };
+
 export function handler(req, res) {
   const u = new URL(req.url, 'http://127.0.0.1');
   const p = u.pathname;
 
   // ── 读路径（GET）────────────────────────────────────────────────────────────
   if (req.method === 'GET') {
-    if (p === `${API_PREFIX}/health`) return json(res, 200, { channels: registryHealth(), watermarks: stateHealth() });
+    if (p === `${API_PREFIX}/health`) {
+      // 现读（见上方长注释）：handler 保持同步签名，这两条是 async ⇒ 内部消化后再回
+      return Promise.all([registryHealthLive(), stateHealthLive()])
+        .then(([ch, wm]) => json(res, 200, { channels: ch, watermarks: wm }))
+        .catch((e) => json(res, 500, { error: `健康读数失败：${e.message}` }));
+    }
 
     // 详情浮层数据：结构化内容 + 原始消息 + 相关上下文 + 可执行操作
     // 路径必须先登记（write-routes.json 里有这条 GET）—— 读路径也守同一条纪律，别偷偷开洞
@@ -182,6 +241,12 @@ export function handler(req, res) {
       const plural = act[1]; const id = act[2]; const action = act[3];
       const t = { messages: 'message', notes: 'note', todos: 'todo', schedules: 'schedule' }[plural];
       if (!t) return json(res, 404, { error: `未知类型：${plural}` });
+      // ★★ 一个请求**只读一次体**（2026-10-12 实测踩到的真 bug）：
+      //   原先这段是 `return readBody(req).then((b) => { … })`，而后面笔记的两个动作**又各自调了一次**
+      //   `readBody(req)`。Node 的请求流只会被消费一次 ⇒ 第二次读时 `readableEnded=true`，
+      //   `'end'` 事件永不触发 ⇒ **Promise 永挂**，客户端只看到 180 秒 Headers Timeout。
+      //   既有分支（消息/待办/日程）都排在前面、抢先返回，所以这个洞一直没被照出来 ——
+      //   直到笔记那两个动作接到链尾才暴露。⇒ 改成读一次、把 `body` 往下传。
       return readBody(req).then((b) => {
         if (b.ok === false) return json(res, 400, { error: b.why });
         const body = b.json ?? {};
@@ -225,9 +290,28 @@ export function handler(req, res) {
           return json(res, 200, { ok: true, id, op: k });
         }
 
-        // ④ 笔记的分析/可视化：分析引擎尚未接线 —— **如实回 501**，不假装成功
-        if (t === 'note' && (action === 'analyze' || action === 'visualize')) {
-          return json(res, 501, { error: '分析引擎尚未接线（P3 待做）⇒ 这个动作暂时无法执行', action, note: '接口与登记都在位，缺的是分析引擎本体' });
+        // ④ 笔记的两个动作（需求 3.3.6 / 用户 Q3）—— 2026-10-12 接线（此前如实回 501）
+        //    · 分析笔记  ⇒ 重新召回 + 重新调模型，**覆盖**上一次结论（visual.built 这类落点保留）
+        //    · 可视化构建 ⇒ 真调工具建模型（坐标系 / 工程图 / 建模中心），**成功才置 built**
+        //    两条都不假装：模型失败 ⇒ 回 502 且事件里只留 error；工具失败 ⇒ 回 502 且 built 不置真
+        if (t === 'note' && action === 'analyze') {
+          // 体已在本分支入口读过一次（见上面那条长注释）——这里**不许再读**
+          return (async () => {
+            const { reanalyzeNote } = await import('../processor/analyze.mjs');
+            const r = await (_deps.reanalyzeNote ?? reanalyzeNote)(evt);
+            if (r.ok !== true) return json(res, 502, { error: `分析未产出：${r.why}`, note: '没有编一段看起来像分析的文本' });
+            return json(res, 200, { ok: true, id, action: 'analyze', text: r.text, visual: r.visual, contextCount: r.contextCount, recallError: r.recallError });
+          })().catch((e) => json(res, 500, { error: `分析失败：${e.message}` }));
+        }
+        if (t === 'note' && action === 'visualize') {
+          return (async () => {
+            const { buildVisualForNote } = await import('../processor/visual.mjs');
+            // 人工点按钮 = 明确要它建（已建过的也允许重建一次）⇒ force
+            const r = await (_deps.buildVisualForNote ?? buildVisualForNote)(evt, { force: true });
+            if (r.action === 'nothing') return json(res, 409, { error: r.reason, note: '这条笔记没有被判定为适合可视化' });
+            if (r.action === 'failed') return json(res, 502, { error: `构建未完成：${r.reason}`, tool: r.tool, note: '失败已留痕，built 未置真' });
+            return json(res, 200, { ok: true, id, action: 'visualize', tool: r.tool, ref: r.ref, detail: r.detail });
+          })().catch((e) => json(res, 500, { error: `可视化构建失败：${e.message}` }));
         }
 
         return json(res, 404, { error: `登记表里有这条路径，但服务端还没实现这个动作：${plural}/${action}` });
@@ -276,6 +360,25 @@ export async function selfTest() {
     const post = async (p, payload) => { const r = await fetch(url + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ payload }) }); return { code: r.status, body: await r.json() }; };
 
     chk('API-1', '健康检查返回通道与水位线', (await get('/health')).body.channels?.total === 18, JSON.stringify((await get('/health')).body.channels?.implemented));
+
+    // ★ 假绿守卫（2026-10-12 实测定位的根因，见文件顶部长注释）：
+    //   插件 host 用动态 import 一次性加载本文件 ⇒ ESM 进程级只求值一次 ⇒ 通道读数会被冻住。
+    //   这两条盯的就是"改了文件读数必须跟着变"，而不是"某次读出来是 18"。
+    {
+      const probeDir = fsx.mkdtempSync(path.join(os.tmpdir(), 'wb-v1-fresh-'));
+      const probeUrl = new URL('file:///' + path.join(probeDir, 'probe.mjs').replace(/\\/g, '/'));
+      fsx.writeFileSync(probeUrl, 'export const MARK = "V1";\n', 'utf8');
+      const a = await freshMod(probeUrl, 'probe');
+      const b = await freshMod(probeUrl, 'probe');
+      chk('API-35', '现读缓存：文件没改 ⇒ 复用同一份（不白读盘）', a === b && a.MARK === 'V1');
+      // 改内容 + 显式推进 mtime（同毫秒内写入会让 mtimeMs 相等，那样测的就不是这条规则了）
+      fsx.writeFileSync(probeUrl, 'export const MARK = "V2";\n', 'utf8');
+      const t = new Date(Date.now() + 2000);
+      fsx.utimesSync(probeUrl, t, t);
+      const c = await freshMod(probeUrl, 'probe');
+      chk('API-36', '★ 文件改了 ⇒ 重新求值（读数不再被进程冻住）', c !== a && c.MARK === 'V2', `a=${a.MARK} c=${c.MARK}`);
+      try { fsx.rmSync(probeDir, { recursive: true, force: true }); } catch { /* noop */ }
+    }
     for (const p of ['overview', 'messages', 'todos', 'schedules', 'notes']) {
       const r = await get('/pages/' + p);
       chk('API-' + p, '页面数据 ' + p + ' 可读', r.code === 200 && typeof r.body === 'object', 'code=' + r.code);
@@ -328,8 +431,88 @@ export async function selfTest() {
     chk('API-27', '★ 不认识的动作 ⇒ 400 且列出允许值', tdBad.code === 400 && Array.isArray(tdBad.body.allowed), JSON.stringify(tdBad.body));
     const sc = await post('/schedules/' + s.body.id + '/act', { op: '已完成' });
     chk('API-28', '日程动作：已完成', sc.code === 200, JSON.stringify(sc.body));
-    const na = await post('/notes/' + n.body.id + '/analyze', {});
-    chk('API-29', '★ 笔记分析 ⇒ 501 如实说"分析引擎尚未接线"（不假装成功）', na.code === 501 && /分析引擎/.test(na.body.error), JSON.stringify(na.body));
+    // ★ API-29 由「断言 501（未接线）」改成「断言真接线」——**这是本轮唯一一处改动既有断言**。
+    //   理由：那条守的是"别假装成功"，当时确实没接线所以回 501；现在真接上了，200 才是如实。
+    //   （不是为了让检查变绿而放宽：成功路径、失败路径、没建议三种都另有断言守着。）
+    //   桩：把 `reanalyzeNote` 与控制台真正的 `globalThis.fetch` 都换掉 —— **本自检不出网、不碰真工具**。
+    const analyzeMod = await import('../processor/analyze.mjs');
+    const vizMod = await import('../processor/visual.mjs');
+    const prevDeps = { reanalyzeNote: _deps.reanalyzeNote, buildVisualForNote: _deps.buildVisualForNote };
+    _deps.reanalyzeNote = async (evt) => {
+      // ★ 桩也要**把建议落进状态**（与真实现同形）：否则下一条断言拿到的笔记没有 suggested，
+      //   会以为"负向"通过 —— 那是最典型的假绿（夹具与实现不同形）。实测踩到过。
+      const visual = { suggested: 'coordinates', why: '桩', built: false, ref: null };
+      store.patch('note', evt._id, { analysis: { ...(evt.analysis ?? {}), by: 'model', text: '判断：桩\n理由：桩\n下一步：桩', visual } }, { op: 'analyzed', rerun: true });
+      return { ok: true, text: '判断：桩\n理由：桩\n下一步：桩', visual, contextCount: 0, recallError: null };
+    };
+    _deps.buildVisualForNote = async (evt) => ({ id: evt._id, action: 'built', tool: 'coordinates', ref: '/stub/coords.json', reason: null, detail: '桩：已建' });
+    const realFetch = globalThis.fetch;
+    const vizNotes = [];
+    // ★ 只拦**建模中心那一个地址**，其余一律放行。
+    //   为什么不是"除了自己全拦"：宽拦会打断本套件里别的真实 HTTP（实测表现为 `TypeError: fetch failed`，
+    //   而且错误信息不带 URL ⇒ 极难定位）。**拦得越窄，假绿越少。**
+    //   坐标系的通路走文件系统（默认实现写 `$DSH_HOME/.dsh-coords/`），这里用 WB_V1_COORDS_DIR 把它指到临时目录，
+    //   免得自检往你真实的坐标系里写东西。
+    process.env.WB_V1_COORDS_DIR = path.join(process.env.WB_V1_OUT, 'coords');
+    globalThis.fetch = async (url, opt) => {
+      const u = String(url);
+      if (!/\/modeling\/api\/model/.test(u)) {
+        try {
+          return await realFetch.call(globalThis, url, opt);
+        } catch (e) {
+          // 诊断：`fetch failed` 不带 URL 时根本没法定位（实测踩到）⇒ 把地址与 cause 一起抛出去
+          const cause = e?.cause?.message ?? e?.cause?.code ?? '';
+          throw new Error(`真实 fetch 失败：${u} :: ${e.message}${cause ? ' :: ' + cause : ''}`);
+        }
+      }
+      let sent = null;
+      try { sent = JSON.parse(opt?.body ?? '{}'); } catch { /* noop */ }
+      vizNotes.push({ url: u, sent });
+      return { ok: true, status: 200, json: async () => ({ model: { id: 'msxstub' } }) };
+    };
+    try {
+      // 自证：注入点真的生效（否则会去调真模型 —— 实测表现为 180 秒 Headers Timeout）
+      const t0 = Date.now();
+      const na = await post('/notes/' + n.body.id + '/analyze', {});
+      chk('API-29d', '自证：分析动作走的是注入桩（不是真模型）', Date.now() - t0 < 5000 && na.code === 200, `用时 ${Date.now() - t0}ms code=${na.code} deps=${typeof _deps.reanalyzeNote}`);
+      chk('API-29', '★ 笔记分析：真跑分析引擎（200 + 分析与建议 + 可视化建议）', na.code === 200 && typeof na.body.text === 'string' && na.body.visual?.suggested === 'coordinates', JSON.stringify(na.body));
+
+      const nv = await post('/notes/' + n.body.id + '/visualize', {});
+      const nEvt = store.getById('note', n.body.id);
+      chk('API-37', '★ 可视化构建：动作接通，成功才置 built + 记落点', nv.code === 200 && nv.body.tool === 'coordinates' && typeof nv.body.ref === 'string', JSON.stringify(nv.body));
+
+      // ② 真实实现（注入掉的是"工具调用"，不是"写状态"）：置 built / 失败留痕 / 没建议 409
+      _deps.buildVisualForNote = prevDeps.buildVisualForNote;
+      const nvReal = await post('/notes/' + n.body.id + '/visualize', {});
+      const nEvt2 = store.getById('note', n.body.id);
+      chk('API-38', '★ 真实现：真调工具（坐标系落盘）⇒ 才置 built=true', nvReal.code === 200 && nEvt2.analysis?.visual?.built === true && typeof nEvt2.analysis.visual.ref === 'string', JSON.stringify({ body: nvReal.body, visual: nEvt2.analysis?.visual }));
+      chk('API-39', '★ 真实现真的落盘了（坐标文件写出去了，不是本地假装）', nvReal.code === 200 && fsx.existsSync(String(nEvt2.analysis?.visual?.ref ?? '')), String(nEvt2.analysis?.visual?.ref));
+
+      // 负向：没被判为适合可视化的笔记 ⇒ 409，且**一个工具都不许动**（按落盘数比，不按调用数）
+      const coordsBefore = fsx.readdirSync(process.env.WB_V1_COORDS_DIR).length;
+      const { makeEvent: mk } = await import('../schema.mjs');
+      const made2 = mk({ type: 'note', payload: { topic: '没有建议的笔记', date: '2026-10-12', content_md: '今天下午开了个会' }, origin: { channel: 'manual', sender: '我' }, _at: Date.now() });
+      store.upsert(made2.event);
+      const nr = await post('/notes/' + made2.event._id + '/visualize', {});
+      chk('API-40', '★ 负向：没被判为适合可视化的笔记 ⇒ 409，且工具一个都没动', nr.code === 409 && fsx.readdirSync(process.env.WB_V1_COORDS_DIR).length === coordsBefore, JSON.stringify(nr.body) + ` coords ${coordsBefore}→${fsx.readdirSync(process.env.WB_V1_COORDS_DIR).length}`);
+
+      // 失败路径：注回"工具失败"的实现（这一条测的是"失败必须留痕、built 不置真"）
+      _deps.buildVisualForNote = async (evt) => {
+        store.patch('note', evt._id, { analysis: { ...(evt.analysis ?? {}), visual: { ...(evt.analysis?.visual ?? {}), built: false, error: '桩：工具不可用' } } }, { op: 'visualize-failed' });
+        return { id: evt._id, action: 'failed', tool: 'modeling', ref: null, reason: '桩：工具不可用', detail: null };
+      };
+      const made3 = mk({ type: 'note', payload: { topic: '会失败的笔记', date: '2026-10-12', content_md: '这里的流程与依赖关系需要理清' }, origin: { channel: 'manual', sender: '我' }, _at: Date.now() });
+      store.upsert(made3.event);
+      store.patch('note', made3.event._id, { analysis: { visual: { suggested: 'modeling', why: '桩' } } });
+      const nf = await post('/notes/' + made3.event._id + '/visualize', {});
+      const after = store.getById('note', made3.event._id);
+      chk('API-41', '★ 构建失败 ⇒ 502 且 built 不置真（失败留痕、不假装）', nf.code === 502 && after.analysis?.visual?.built !== true && String(after.analysis?.visual?.error).includes('桩'), JSON.stringify({ body: nf.body, visual: after.analysis?.visual }));
+    } finally {
+      _deps.reanalyzeNote = prevDeps.reanalyzeNote;
+      _deps.buildVisualForNote = prevDeps.buildVisualForNote;
+      globalThis.fetch = realFetch;
+      void analyzeMod; void vizMod;
+    }
     chk('API-30', '★ 动作路径也受登记守卫（未登记的动作用 404 挡住）', (await post('/messages/' + w.body.id + '/whatever', {})).code === 404);
 
     // ── 驾驶舱"生成入口"（2026-10-12 接线）────────────────────────────────────

@@ -16,6 +16,7 @@
  */
 
 import * as store from '../store.mjs';
+import { isVisualBuilt } from '../store.mjs';   // ★ 唯一判定（收口 P0-2：此前这里有第二套算法，与 store 不一致）
 import { messageState } from './pages.mjs';
 
 const DAY = 86400000;
@@ -37,7 +38,7 @@ export function stats({ now = Date.now() } = {}) {
   const tdOverdue = td.filter((e) => !isDone(e) && e.payload?.due && Date.parse(e.payload.due) < dayStart(now)).length;
   const tags = new Set();
   for (const e of nt) for (const t of (e.payload?.tags ?? [])) tags.add(t);
-  const visualModels = nt.filter((e) => e.analysis?.visual).length;
+  const visualModels = nt.filter(isVisualBuilt).length;
 
   return {
     messages: { total: msgs.length, pending: msgPending, processed: msgs.length - msgPending },
@@ -231,7 +232,14 @@ export async function selfTest() {
     chk('CKT-1', '★ 消息：总数/待处理/已处理', S.messages.total === 2 && S.messages.pending === 1 && S.messages.processed === 1, JSON.stringify(S.messages));
     chk('CKT-2', '★ 日程：总数/已进行/待进行', S.schedules.total === 2 && S.schedules.done === 1 && S.schedules.upcoming === 1, JSON.stringify(S.schedules));
     chk('CKT-3', '★ 待办：总数/已完成/逾期/待完成', S.todos.total === 2 && S.todos.done === 1 && S.todos.overdue === 1 && S.todos.open === 0, JSON.stringify(S.todos));
-    chk('CKT-4', '★ 笔记：总数/标签数/可视化模型数', S.notes.total === 1 && S.notes.tags === 2 && S.notes.visualModels === 1, JSON.stringify(S.notes));
+    chk('CKT-4', '★ 笔记：总数 / 标签数 / 可视化模型数（**只算真建出来的**）', S.notes.total === 1 && S.notes.tags === 2 && S.notes.visualModels === 0, JSON.stringify(S.notes));
+    // ★ CKT-50/51（P0-2 收口）：这个夹具**故意只给建议、不给 built** ——
+    //   收口前 `api/cockpit.mjs` 数的是"`analysis.visual` 存在"，会把这条算成 1 个可视化模型（假绿）。
+    //   现在判定统一走 `store.isVisualBuilt`（唯一一份），所以 0 才是如实；建出来之后才变 1。
+    //   （编号说明：本文件 CKT-1..22 已占用，故新号段取 50 起，避免撞号。）
+    chk('CKT-50', '★ 只有建议、没真建 ⇒ 可视化模型数**不算**它（收口前这里会算成 1）', S.notes.visualModels === 0, `visualModels=${S.notes.visualModels} visual=${JSON.stringify(nt.analysis.visual)}`);
+    { const n2 = store.getById('note', nt._id); store.patch('note', n2._id, { analysis: { ...n2.analysis, visual: { ...n2.analysis.visual, built: true, tool: 'coordinates', ref: '/x.json' } } }); }
+    chk('CKT-51', '★ 真建出来（built=true）⇒ 才计 1（两处口径同源）', stats({ now: NOW }).notes.visualModels === 1 && store.stats(new Date(NOW)).notes.visualized === 1, JSON.stringify({ cockpit: stats({ now: NOW }).notes.visualModels, storeVisualized: store.stats(new Date(NOW)).notes.visualized }));
 
     const T = trend({ from: '2026-10-05', to: '2026-10-12', now: NOW });
     chk('CKT-5', '★ 趋势按日切片且区间正确（8 天）', T.days === 8 && T.from === '2026-10-05' && T.to === '2026-10-12', JSON.stringify({ days: T.days, from: T.from, to: T.to }));

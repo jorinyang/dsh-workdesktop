@@ -138,6 +138,44 @@ export async function analyze({ limit = 50 } = {}) {
   return runEngine('analyze', async () => analyzeOnce({ limit }));
 }
 
+/**
+ * **重跑一条笔记**（供「分析笔记」动作与"工作台新建笔记后立即分析"调用，需求 3.3.6 + 用户 Q3）。
+ *
+ * 为什么要单独一个入口，而不是复用 `analyzeOnce`：
+ *   `analyzeOnce` 按"没有 analysis 的才算待分析"取件 —— 重跑时这条**已经有 analysis**，
+ *   会被它自己跳过。重跑的语义是"**覆盖**上一次的结论"，所以这里显式地重新召回 + 重新调模型，
+ *   再整块写回（`visual.built` 这类落点**保留**，因为那是"建过"的事实，不是分析的结论）。
+ *
+ * 三条纪律照旧：召回失败 ≠ 没有上下文（写 `recallError`）；模型失败 ⇒ **不编分析**、只记 error；
+ * 模型/召回全部**注入**，自检不出网。
+ */
+export async function reanalyzeNote(evt, { recallFn = null, modelFn = runModel, dryRun = false } = {}) {
+  if (!evt || evt.type !== 'note') return { ok: false, why: '只对笔记做分析' };
+  const recall = recallFn ?? (await import('./recall.mjs')).recall;
+  const q = String(evt.payload?.topic ?? evt.payload?.content_md ?? '').slice(0, 200);
+  let hits = []; let recallErr = null;
+  if (q !== '') {
+    const r = await recall(q);
+    if (r.ok === true) hits = r.hits;
+    else recallErr = r.why;
+  }
+  const prevVisual = evt.analysis?.visual ?? null;
+  // 可视化建议**重新判定**，但**已建成的落点保留**（built/ref/name/tool 是事实，不是结论）
+  const fresh = suggestVisual(String(evt.payload?.content_md ?? ''));
+  const visual = fresh
+    ? { ...fresh, built: prevVisual?.built === true, ref: prevVisual?.ref ?? null, name: prevVisual?.name ?? null, tool: prevVisual?.tool ?? null, at: prevVisual?.at ?? null }
+    : (prevVisual?.built === true ? prevVisual : null);
+  const m = await modelFn(buildNotePrompt(evt, hits));
+  const at = new Date().toISOString();
+  const analysis = m.ok === true
+    ? { by: 'model', text: m.text, visual, at, contextCount: hits.length, recallError: recallErr, rerun: true }
+    : { by: 'model', error: m.why, visual, at, contextCount: hits.length, recallError: recallErr, rerun: true };
+  if (!dryRun) {
+    store.patch('note', evt._id, { context: { recalled: hits, at }, analysis }, { op: 'analyzed', rerun: true, recallError: recallErr });
+  }
+  return { ok: m.ok === true, why: m.ok === true ? null : m.why, text: m.text ?? null, visual, contextCount: hits.length, recallError: recallErr };
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // 自检（注入桩：召回与模型都不出网）
 // ══════════════════════════════════════════════════════════════════════════════

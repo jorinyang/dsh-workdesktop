@@ -75,6 +75,8 @@ await run('P2b', 'P2 链接队列', async () => (await import(base + 'processor/
 await run('P2c', 'P2 筛选主链', async () => (await import(base + 'processor/filter.mjs')).selfTest());
 await run('P2d', 'P3 召回层', async () => (await import(base + 'processor/recall.mjs')).selfTest());
 await run('P3', 'P3 分析引擎', async () => (await import(base + 'processor/analyze.mjs')).selfTest());
+// P1 可视化构建器（需求 3.2.2 后半句）：真调工具建模型，**成功才置 built**；失败留痕
+await run('P3v', 'P3 可视化构建器', async () => (await import(base + 'processor/visual.mjs')).selfTest());
 await run('P5b', 'P5 审计与归档', async () => (await import(base + 'processor/archive.mjs')).selfTest());
 await run('P5', 'P5 自动关闭', async () => (await import(base + 'processor/close.mjs')).selfTest());
 await run('P6', 'P6 存储周期', async () => (await import(base + 'storage/cycles.mjs')).selfTest());

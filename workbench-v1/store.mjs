@@ -26,6 +26,19 @@ import { KB_ROOT as ROOT } from './paths.mjs';   // 路径收口（见 paths.mjs
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * ★ **"可视化模型数"的唯一判定**（2026-10-12 收口，P0-2）。
+ *
+ * 为什么要有这个函数，而不是各处写 `e.analysis?.visual`：
+ *   收口前有两处**算法不同**的统计 ——
+ *     · 本文件（store.mjs）统计的是 `analysis.visual.built === true`（**真建出来的**）；
+ *     · `api/cockpit.mjs` 统计的是 `analysis.visual` **存在**（**只是给了建议的**）。
+ *   同一个数（驾驶舱"笔记数 / 可视化模型数"）在两处口径不一致 ⇒ 页面上的数会骗人：
+ *   一条只被建议、从没建过的笔记，也被算成"可视化模型"。
+ *   ⇒ 现在**只有这一份判定**，两处都 import 它。要改口径只改这里（改一处、只有一个真相）。
+ */
+export const isVisualBuilt = (e) => e?.analysis?.visual?.built === true;
+
 export function storeDir() {
   return process.env.WB_V1_OUT || path.join(ROOT, '_meta', 'out', 'v1');
 }
@@ -179,7 +192,7 @@ export function stats(now = new Date()) {
     total: notes.length,
     thisMonth: notes.filter((e) => dayOf(e.payload?.date) .startsWith(month)).length,
     tags: tagSet.size,
-    visualized: notes.filter((e) => e.analysis?.visual?.built === true).length,
+    visualized: notes.filter(isVisualBuilt).length,
   };
 
   return {
