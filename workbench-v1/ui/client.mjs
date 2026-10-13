@@ -645,11 +645,18 @@ export function clientScript(apiBase) {
   L.push('        payload[k] = (k === "tags") ? v.split(/[,，]/).map(function (x) { return x.trim() }).filter(Boolean) : v;');
   L.push('      }');
   L.push('      // 与契约对齐的补字段（schema.mjs#PAYLOAD_SPEC 的必填项）');
-  // ★★ 2026-10-13 改（用户裁定）：「新增一条消息等同于我在钉钉中自己给自己发了一条文本信息…
-  //   发信人不需要显示默认记录为我（月夜），来源渠道也不需要显示默认记录为工作台」
-  //   ⇒ 这两个字段**不在表单里**，由这里写死：发信人 = 我（月夜），来源 = 工作台。
-  //     表单上只让人填「内容」——少填两个框，记录里照样有这两项。
-  L.push('      if (pageType === "messages") { payload.channel = "manual"; payload.source = "workbench"; payload.modality = "text"; payload.summary = String(payload.raw || "").slice(0, 60); payload.sender = "杨瑒(月夜)"; payload.senderType = "self"; }');
+  // ★★ 2026-10-13 修（**我上一轮改错了，这一条是真机验证抓出来的**）：
+  //   契约 `schema.mjs` 里 `source` 只认这几个值：
+  //     im / mail / minutes / self-voice / doc / bitable / task / calendar / kb / **manual**
+  //   —— **没有 `workbench`**。我上一轮按用户第 9/10/11 条的"来源标注为工作台"，
+  //   顺手把 payload 的 source 写成了 `"workbench"`，结果**提交直接 400（校验未通过）**。
+  //   ⇒ 那三个表单当时是全坏的（真机实测：source=workbench → 400；source=manual → 200）。
+  //
+  //   ★ 关键认识：**"来源显示为工作台"和"payload 里写什么"是两件事**。
+  //     显示那边的标签由 `api/source.mjs#sourceOf()` 从 `channel === 'manual'` 推出来
+  //     （它认得 manual 就是"工作台"）—— **不需要**、也**不能**往 payload 里塞 `workbench`。
+  //     我把"给人看的标签"和"契约字段的取值"混成一件事了，这正是本项目的教训之一。
+  L.push('      if (pageType === "messages") { payload.channel = "manual"; payload.source = "manual"; payload.modality = "text"; payload.summary = String(payload.raw || "").slice(0, 60); payload.sender = "杨瑒(月夜)"; payload.senderType = "self"; }');
   L.push('      if (pageType === "notes") { payload.date = new Date().toISOString().slice(0, 10); if (!payload.topic) payload.topic = String(payload.content_md || "").slice(0, 24) || "未命名笔记"; }');
   // 日程：参与人从"顿号分隔的一行字"拆成数组；类型原样传（契约的 optional 里有 type）
   L.push('      if (pageType === "schedules") { if (payload.participants) payload.participants = String(payload.participants).split(/[、,，]/).map(function (x) { return x.trim() }).filter(Boolean); else payload.participants = []; }');
@@ -899,6 +906,15 @@ export function selfTest() {
     js.includes('window.parent === window') && js.includes('要在工作台面板里点才有效'));
   chk('CLI-26', '★ 消息详情：原始消息里的图片链接换成「［图片消息］」（只换显示，payload 不动）',
     js.includes('rawShown') && js.includes('［$1消息］'));
+  // ★★ 2026-10-13 加：**表单填的字段值必须在契约的白名单里**。
+  //   来由：我按"来源标注为工作台"把 payload 的 `source` 写成了 `"workbench"`，
+  //   而契约只认 im/mail/minutes/self-voice/doc/bitable/task/calendar/kb/**manual** ——
+  //   三个表单于是全部 400（真机实测：workbench → 400、manual → 200）。
+  //   ⇒ "给人看的标签"和"契约字段的取值"是两件事：显示标签由 `sourceOf()` 从 channel 推，
+  //     payload 里只能写契约认的值。这条检查就是钉住这一点。
+  chk('CLI-27', '★ 表单不发契约不认的 source（曾因写 "workbench" 导致提交全部 400）',
+    !js.includes('source = "workbench"') && !js.includes("source = 'workbench'"),
+    '契约允许：im/mail/minutes/self-voice/doc/bitable/task/calendar/kb/manual');
   chk('CLI-5', '浮层有可执行操作按钮', js.includes('availableOps') && js.includes('ov-ops'));
   chk('CLI-6', '★ 操作失败如实提示（含"未登记"这种明确原因）', js.includes('未登记') && js.includes('操作失败'));
   chk('CLI-7', '新增入口与四类表单都在', js.includes('btn-add') && js.includes('messages:') && js.includes('todos:') && js.includes('schedules:') && js.includes('notes:'));
