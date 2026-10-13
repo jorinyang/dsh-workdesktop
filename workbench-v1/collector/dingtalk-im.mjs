@@ -220,12 +220,12 @@ export async function ingestOnce({ hooks = {}, dryRun = false, maxBytes = MAX_RE
   const ident = await loadSelfIdentity();
   const errors = [];
   const sinceMs = since === null ? null : (typeof since === 'number' ? since : Date.parse(String(since).replace(' ', 'T')));
-  if (since !== null && !Number.isFinite(sinceMs)) return { inCount: 0, outCount: 0, deferred: 0, quarantined: 0, skipped: 0, offset: 0, truncated: false, errors: [`--since 解析失败：${since}`] };
+  if (since !== null && !Number.isFinite(sinceMs)) return { inCount: 0, outCount: 0, deferred: 0, quarantined: 0, skipped: 0, offset: 0, truncated: false, errors: [`--since 解析失败：${since}`], scopeTally: emptyTally(), scopeDropped: 0 };
   const st = getState(STATE_KEY);
   let offset = Number.isFinite(st?.offset) ? st.offset : 0;
 
   if (!fs.existsSync(eventFile())) {
-    return { inCount: 0, outCount: 0, deferred: 0, quarantined: 0, offset, truncated: false, errors, why: `事件文件不存在（生产端未产事件）：${eventFile()}` };
+    return { inCount: 0, outCount: 0, deferred: 0, quarantined: 0, offset, truncated: false, errors, scopeTally: emptyTally(), scopeDropped: 0, why: `事件文件不存在（生产端未产事件）：${eventFile()}` };
   }
   const size = fs.statSync(eventFile()).size;
   if (size < offset) {                       // 文件被轮转/截断 ⇒ 从头读（事件层幂等兜底）
@@ -241,7 +241,14 @@ export async function ingestOnce({ hooks = {}, dryRun = false, maxBytes = MAX_RE
   //   我在这上面来回试了三轮（放到收尾处 ⇒ extra 没透传；挂到通路行 ⇒ 早返回没这个字段），
   //   **停在这里不再纠缠** —— 它不影响正确性，也不影响"有没有挡对"。
   //   要在无新内容时也看到读数，最小改法是给这几条早返回补上 `scopeTally: emptyTally()`（初始全 0）。
-  if (want <= 0) return { inCount: 0, outCount: 0, deferred: 0, quarantined: 0, offset, truncated: false, errors, why: '无新内容' };
+  // ⚠️ 2026-10-13 记一笔（**为什么这几条早返回也带 `scopeTally`**）：
+  //   范围闸的读数要在**每一轮**都打得出来 —— 包括"这一轮没有新内容"。
+  //   否则采集器那一行会时有时无：有消息时才显示闸的计数，没消息时一片空白。
+  //   而"没消息"与"闸把它全挡了"在显示上**长得一模一样**，正是最该分清的两种情况。
+  //   ⇒ 这几条早返回统一补 `scopeTally: emptyTally()`（初始全 0，读作"这一轮闸没经手任何消息"）。
+  //   （我在这上面试过三轮：放到收尾处 ⇒ 计数没透传；只挂通路行 ⇒ 早返回没这个字段。
+  //     最后就是这么一行 —— 把字段补全，而不是再找地方打。）
+  if (want <= 0) return { inCount: 0, outCount: 0, deferred: 0, quarantined: 0, offset, truncated: false, errors, scopeTally: emptyTally(), scopeDropped: 0, why: '无新内容' };
 
   const len = Math.min(want, maxBytes);
   const truncated = want > len;
