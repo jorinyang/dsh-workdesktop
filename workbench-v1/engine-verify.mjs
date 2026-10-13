@@ -39,7 +39,13 @@ const countFiles = (dir, re = /.*/) => {
   const all = Object.keys(routes);
   const health = typeof mod.health === 'function' ? mod.health() : null;
   const implemented = health?.implemented ?? all.length;
-  chk('E1-1', '18 个采集通道全部接线', all.length === 18 && implemented === 18, `已接线 ${implemented}/${all.length}`);
+  // ★★ 2026-10-13 改：原来这条写的是 `all.length === 18 && implemented === 18`。
+  //   加了「跨组织白名单群」那条通路之后变成 19，这条当场红了 —— **它红得对**，
+  //   只是它顺手把**通路数量**也写进去了，而数量会随拆法漂移 ⇒ **等于每加一条通路就要改一次检查**。
+  //   ⇒ 改成只守那个真正要守的不变式：**登记了多少条，就有多少条接线**（且至少有一条）。
+  chk('E1-1', '★ 每条登记的采集通路都已接线（不写死数量 —— 数量会随拆法漂移）',
+    all.length > 0 && implemented === all.length,
+    `登记 ${all.length} 条 · 已接线 ${implemented} 条`);
   chk('E1-2', '采集范围起点 = 2026-10-12T00:00（本次补采的窗口起点）',
     String(mod.V1_START ?? '').startsWith('2026-10-12'), `V1_START = ${mod.V1_START}`);
   // 幂等：已经采过的不会被二次采（看水位线台账）
