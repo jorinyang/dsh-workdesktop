@@ -131,7 +131,7 @@ export function runCli(bin, args, { timeoutMs = 60000, maxBuffer = 8 * 1024 * 10
   const cmd = resolved === String(bin)
     ? buildCommand(bin, args)
     : `& ${quotePowerShell(resolved)} ` + buildArgs(args);
-  return runCmd(cmd, { timeoutMs, maxBuffer });
+  return runCmd(cmd, { timeoutMs, maxBuffer, bin: String(bin) });
 }
 
 /** 单引号包住一个路径（PowerShell 单引号内反斜杠是字面量；内部单引号写两遍） */
@@ -143,7 +143,7 @@ function buildArgs(args) {
   return full.slice(2);                      // 去掉 `x `
 }
 
-function runCmd(cmd, { timeoutMs, maxBuffer }) {
+function runCmd(cmd, { timeoutMs, maxBuffer, bin = '?' }) {
   const PS = 'powershell.exe';
   const r = spawnSync(PS, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', cmd], {
     encoding: 'utf8', timeout: timeoutMs, windowsHide: true, maxBuffer,
@@ -151,6 +151,12 @@ function runCmd(cmd, { timeoutMs, maxBuffer }) {
   const out = String(r.stdout ?? '').trim();
   const err = String(r.stderr ?? '').trim();
   if (r.error) return { ok: false, why: `调用失败：${r.error.message}` };
+  // ★★ 这里曾经引用了一个**不存在的 `bin`** —— 而我重构时把参数名换掉了却没改这一行。
+  //   后果不是"报错不清楚"，而是**只要任何一次 CLI 调用失败，整个采集进程就崩**
+  //   （实测：`ReferenceError: bin is not defined`，钉钉知识库那条通路一失败，
+  //    19 条通路**全部没跑完**，采集节拍从此停摆）。
+  //   为什么检查没抓到：已有那些检查全走**成功路径**，"命令失败时报什么"这条分支**一条都没覆盖**。
+  //   ⇒ 现在既修好这行，也在 `selfTest` 里补一条**专门让它失败**的检查。
   if (r.status !== 0) return { ok: false, why: `${bin} 退出码 ${r.status}：${(err || out).slice(0, 240)}` };
   try {
     // ★ 有些命令会**先打几行进度/说明再打 JSON**：
@@ -250,6 +256,30 @@ export function selfTest() {
     const c = buildCommand('lark-cli', ['api', 'GET', '/x', '--params', '{"a":1}']);
     const body = c.slice(c.indexOf("'") + 1, c.lastIndexOf("'"));
     return !/^[^\\]*"[^\\]*$/.test(body) && body.includes('\\"');
+  })());
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // ★★ 2026-10-13 加：**命令失败那条分支**必须单独钉住。
+  //
+  // 为什么补这一条 —— 这是一次真实停摆的根因：
+  //   我重构 `runCli` 时把参数名换了，而 `runCmd` 里有一行仍引用旧的 `bin`。
+  //   后果不是"报错文字难看"，而是**只要任何一次 CLI 调用失败，整个采集进程就崩**：
+  //   实测 `ReferenceError: bin is not defined`，钉钉知识库那条通路一失败，
+  //   **19 条通路全部没跑完**，采集节拍从 11:58 停到晚上，四五个小时没进新消息。
+  //
+  // 为什么原来的检查抓不到：**所有 CLI 检查走的都是成功路径**（拼命令、解析 JSON）。
+  //   "命令失败时返回什么"这条分支**一条检查都没有** —— 于是那个错字安安稳稳活到了线上。
+  //   ⇒ 这一条**故意让命令失败**，要求它**如实返回原因、且绝不抛异常**。
+  //     用一个必定非 0 退出的命令（不存在的子命令），不必联网也不必真调 CLI。
+  chk('CLI-15', '★★ 命令失败时如实返回原因、**不抛异常**（曾因引用错变量名把整个采集打停）', (() => {
+    try {
+      const r = runCli('dws', ['chat', '+这个子命令不存在-cli-15']);
+      if (r.ok !== false) return false;                        // 失败就该是 ok:false
+      if (typeof r.why !== 'string' || r.why.length === 0) return false;   // 必须给得出原因
+      return r.why.includes('dws');                            // 原因里要能看出是哪个命令
+    } catch (e) {
+      return false;                                            // ★ 抛了就是这条检查要抓的病
+    }
   })());
 
   const pass = out.filter((x) => x.ok).length;
