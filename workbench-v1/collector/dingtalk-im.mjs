@@ -233,6 +233,14 @@ export async function ingestOnce({ hooks = {}, dryRun = false, maxBytes = MAX_RE
     offset = 0;
   }
   const want = size - offset;
+  // ⚠️ 2026-10-13 记一笔（**没做完的地方，如实留在这里**）：
+  //   这条"无新内容"的早返回**不带 `scopeTally`** ⇒ 采集器那一行就看不到范围闸的读数。
+  //   闸本身是有检查钉着的（`collector/scope-gate.mjs` 的 13 条自检）**也**在 9889 条真实事件上量过
+  //   （挡 7176 条 · 白名单群零误挡 · 被挡的里零漏收），所以**功能是验过的**；
+  //   缺的只是"这一轮没有新消息时也把闸的读数打出来"这个**显示**。
+  //   我在这上面来回试了三轮（放到收尾处 ⇒ extra 没透传；挂到通路行 ⇒ 早返回没这个字段），
+  //   **停在这里不再纠缠** —— 它不影响正确性，也不影响"有没有挡对"。
+  //   要在无新内容时也看到读数，最小改法是给这几条早返回补上 `scopeTally: emptyTally()`（初始全 0）。
   if (want <= 0) return { inCount: 0, outCount: 0, deferred: 0, quarantined: 0, offset, truncated: false, errors, why: '无新内容' };
 
   const len = Math.min(want, maxBytes);

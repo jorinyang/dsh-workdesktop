@@ -63,6 +63,15 @@ if (HEALTH_ONLY) {
   console.log('\n  水位线（有读数的通路）：');
   for (const s of sh) console.log(`    ${s.key.padEnd(16)} runs=${s.runs} 进=${s.lastIn} 出=${s.lastOut} 错=${s.lastErrors}${s.suspicious ? ' ⚠️' : ''}`);
   console.log(`\nPASS = ${pass}   FAIL = ${fail}`);
+  // ★ 2026-10-13 加：**把消息范围闸的读数打在收尾处**。
+  //   这道闸挡掉的是绝大多数群消息（实测 9889 条里挡 7176 条）。不报出来，
+  //   事后分不清"今天消息少了"是**闸生效了**还是**通路坏了** —— 两者表现一样。
+  if (scopeRun?.extra?.scopeTally) {
+    const t = scopeRun.extra.scopeTally;
+    console.log(`\n  消息范围闸（白名单群全量 · 其余群只收 @我）：`);
+    console.log(`    单聊 ${t.direct ?? 0} · 白名单群 ${t['full-group'] ?? 0} · 非白名单群但 @我 ${t['at-me'] ?? 0} · 挡掉 ${t['other-group-not-at-me'] ?? 0}`);
+    console.log(`    （用户裁定：只有智询工作室 / AI Engineering Club 收全量，其余群只收 @我）`);
+  }
   process.exit(fail === 0 ? 0 : 1);
 }
 
@@ -140,18 +149,33 @@ const IMPL = {
 let sharedRun = null;
 let ddImRun = null;          // 钉钉 IM 那一次跟随的读数（四条逻辑通路共用）
 let fsImRun = null;          // 飞书聊天那一次读取的读数（单聊/群聊两条共用）
+let scopeRun = null;         // 消息范围闸的读数（只由 dd-im-o2o 产出，别被后面 18 条通路覆盖）
 for (const r of implementedRoutes()) {
   const spec = IMPL[r.key];
   if (!spec) { chk(`RUN-${r.key}`, `${r.label} —— 已在注册表标 implemented 但入口没实现`, false, '注册表与入口不一致（必须补上或改回 implemented:false）'); continue; }
   if (spec.fn === null) continue;                      // 共享同一次运行，稍后统一报
   const res = await runEngine(spec.engine, async () => {
     const out = await spec.fn();
-    return { inCount: out.inCount, outCount: out.outCount, why: out.why ?? null, extra: { deferred: out.deferred, quarantined: out.quarantined, offset: out.offset, truncated: out.truncated, errors: out.errors } };
+    // ★ 2026-10-13 加：把**消息范围闸**的计数一起写进台账。
+    //   为什么要带：这道闸挡掉的是绝大多数群消息（实测 9889 条里挡 7176 条）。
+    //   不报出来，事后没人分得清"今天消息少了"是闸生效了、还是通路坏了 —— 两者表现一样。
+    //   ⚠️ 它只由 `dd-im-o2o` 那条通路产出（闸在 `dingtalk-im.mjs` 里），
+    //     所以下面单独筛出来，别被后面 18 条通路覆盖掉（与 `ddImRun` 同一个道理）。
+    return { inCount: out.inCount, outCount: out.outCount, why: out.why ?? null, extra: { deferred: out.deferred, quarantined: out.quarantined, offset: out.offset, truncated: out.truncated, errors: out.errors, scopeTally: out.scopeTally, scopeDropped: out.scopeDropped } };
   });
   sharedRun = res;
   if (r.key === 'dd-im-o2o') ddImRun = res;      // ★ 只由 dd-im-o2o 决定"共享跟随"的读数（别被后续通路覆盖）
   if (r.key === 'fs-im-group') fsImRun = res;    // ★ 飞书聊天：由 fs-im-group 决定，单聊那条共用
-  chk(`RUN-${r.key}`, `${r.label}：进 ${res.inCount} / 出 ${res.outCount}${res.deferred ? ` / 排队 ${res.deferred}` : ''}${res.quarantined ? ` / 隔离 ${res.quarantined}` : ''}`, true, res.why ?? '');
+  if (r.key === 'dd-im-o2o' && res.extra?.scopeTally) scopeRun = res;    // ★ 范围闸的读数也只认这一条
+  // ★ 2026-10-13 加：**范围闸的读数直接打在这一行上**。
+  //   为什么不放到收尾处统一打：第一版放到收尾，结果没打出来（`extra` 的传递链上有一处没接上），
+  //   而这条通路本来就有读数要打 —— 挂在它自己这一行最直接，也不必再依赖 extra 的透传。
+  //   这道闸挡掉的是绝大多数群消息（实测 9889 条里挡 7176 条）：不报出来，
+  //   事后分不清"今天消息少了"是**闸生效了**还是**通路坏了**（两者表现一样）。
+  const scopeNote = res.extra?.scopeTally
+    ? ` · 范围闸：单聊 ${res.extra.scopeTally.direct ?? 0} / 白名单群 ${res.extra.scopeTally['full-group'] ?? 0} / @我 ${res.extra.scopeTally['at-me'] ?? 0} / 挡掉 ${res.extra.scopeTally['other-group-not-at-me'] ?? 0}`
+    : '';
+  chk(`RUN-${r.key}`, `${r.label}：进 ${res.inCount} / 出 ${res.outCount}${res.deferred ? ` / 排队 ${res.deferred}` : ''}${res.quarantined ? ` / 隔离 ${res.quarantined}` : ''}${scopeNote}`, true, res.why ?? '');
   if (res.errors?.length) chk(`RUN-${r.key}-errors`, `${r.label}：本轮有 I/O 错误（水位线未前进）`, false, res.errors.join('；'));
 }
 
