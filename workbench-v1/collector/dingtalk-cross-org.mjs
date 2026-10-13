@@ -66,6 +66,22 @@ export const FULL_MESSAGE_GROUPS = Object.freeze([
 ]);
 
 export function stateFile() { return path.join(v1Out(), 'dd-cross-org-seen.json'); }
+
+/**
+ * 把 `YYYY-MM-DD HH:mm:ss` 往前挪 n 分钟。
+ * 为什么需要：水位线是**闭区间**的起点 ⇒ 从水位线原样继续会把**边界那一条**每轮重读一次
+ *   （实测：连跑两次都在"进 1 条"）。往前挪 1 分钟既消掉边界重复，也顺带覆盖**时钟偏差**
+ *   （别的机器写的消息时间戳略早于我的水位线）。
+ *   多读几条不要紧：**幂等键（`ddx-<messageId>`）会去重**，不会重复入库。
+ */
+export function shiftBack(ts, minutes = 1) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(String(ts).trim());
+  if (!m) return ts;
+  const ms = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) - minutes * 60000;
+  const d = new Date(ms);
+  const p = (x) => String(x).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+}
 export function loadSeen() { try { return JSON.parse(fs.readFileSync(stateFile(), 'utf8')) ?? {} } catch { return { messages: {} } } }
 export function saveSeen(doc) {
   fs.mkdirSync(path.dirname(stateFile()), { recursive: true });
@@ -159,8 +175,15 @@ export function ingestOnce({ since = '2026-10-12 00:00:00', maxPages = 40, group
   let inCount = 0; let added = 0; let updated = 0; let skipped = 0;
 
   for (const g of groups) {
-    let from = seen.groups?.[g.cid]?.cursor ?? since;   // 水位线：上次读到哪，就从哪继续
-    let newest = from;
+    // ★★ 2026-10-13 修：**水位线的用法改对了**。
+    //   原来写的是 `seen.groups?.[cid]?.cursor ?? since` —— 看起来对，实际有个坑：
+    //   每轮跑完 `newest` 都会被推到**最新一条的时间**，于是下一轮从"最新"再读一遍窗口起点到最新；
+    //   更要紧的是**窗口起点被当成每轮的起点**时，`--since` 传进来的 V1_START 会让每轮都重读一遍全窗口
+    //   （靠幂等跳过，结果是"不错但白读"，且随消息量线性变慢）。
+    //   ⇒ 现在的规矩：**有水位线就从水位线继续；没有才用窗口起点**（第一次跑）。
+    const prev = seen.groups?.[g.cid];
+    let from = prev?.cursor ? shiftBack(prev.cursor, 1) : since;   // 有水位线 ⇒ 从水位线**前 1 分钟**继续
+    let newest = prev?.cursor ?? from;
     let gotTotal = 0;
     let pages = 0;
     let lastHasMore = false;
@@ -207,7 +230,10 @@ export function ingestOnce({ since = '2026-10-12 00:00:00', maxPages = 40, group
   }
 
   saveSeen(seen);
-  return { ok: errors.length === 0, inCount, added, updated, skipped, errors, detail };
+  // ★ 回执的键名要对齐调度器的约定（`collector/run.mjs` 读 `inCount` / `outCount`）。
+  //   第一版只给了 `added` / `updated` ⇒ 调度器报 `出 undefined`（真机抓到的）。
+  //   `inCount` = 本轮**读到**多少条；`outCount` = 其中**真正写进库**的（新增 + 刷新）。
+  return { ok: errors.length === 0, inCount, outCount: added + updated, added, updated, skipped, errors, detail };
 }
 
 /** 健康读数：**分开报**"授权在不在"与"这两个群各有多少条"，别混成一个数。 */
