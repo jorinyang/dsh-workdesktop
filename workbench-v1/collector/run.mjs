@@ -23,6 +23,8 @@ import { runEngine } from '../ledger.mjs';
 import { health as registryHealth, implementedRoutes, missingRoutes, ROUTES, POLL_INTERVAL_SEC, V1_START } from './registry.mjs';
 import { health as stateHealth } from './state.mjs';
 import { ingestOnce, STATE_KEY } from './dingtalk-im.mjs';
+// 跨组织白名单群（API 拉取型）——与上面那条 Stream 通路是两回事，见 registry.mjs `dd-cross-org` 的说明
+import { ingestOnce as crossOrgIngest } from './dingtalk-cross-org.mjs';
 import { dwsDownloadHook } from './media.mjs';
 import { ingestOnce as minutesIngest } from './minutes.mjs';
 import { ingestOnce as mailIngest } from './mail.mjs';
@@ -73,6 +75,11 @@ const IMPL = {
   'dd-im-group':     { engine: 'collector', fn: null, shareWith: 'dd-im-o2o' },   // 与上面同一次运行
   'dd-im-at':        { engine: 'collector', fn: null, shareWith: 'dd-im-o2o' },
   'dd-im-selfvoice': { engine: 'collector', fn: null, shareWith: 'dd-im-o2o' },
+  // ★ 2026-10-13 加（用户裁定）：**跨组织白名单群的全量**。
+  //   单独一条、不共用上面的跟随器 —— 它走的是 **API 拉取**（`dws chat +chat-messages`），
+  //   与 Stream 那条完全不同的路：跨组织群的事件不会推过来，只能主动去拉。
+  //   前提是跨组织读取授权在；不在时这一步报 `CrossOrgPermissionDenied`（**如实报错，不静默空转**）。
+  'dd-cross-org':    { engine: 'collector', fn: async () => crossOrgIngest({ since: SINCE ?? '2026-10-12 00:00:00' }) },
   // 2026-10-12 新增：飞书聊天实时（Stream 长链接）。**一条事件流同时含单聊与群聊** ⇒ 两条登记共用一次读取。
   // 事件由常驻消费者 `collector/feishu-events.mjs` 写进 NDJSON，本步只读文件（与钉钉那条同款做法）。
   'fs-im-group':     { engine: 'collector', fn: async () => fsEvtIngest({ dryRun: DRY }) },

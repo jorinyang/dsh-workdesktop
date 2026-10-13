@@ -515,7 +515,10 @@ export async function selfTest() {
     const get = async (p) => { const r = await fetch(url + p); return { code: r.status, body: await r.json() }; };
     const post = async (p, payload) => { const r = await fetch(url + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ payload }) }); return { code: r.status, body: await r.json() }; };
 
-    chk('API-1', '健康检查返回通道与水位线', (await get('/health')).body.channels?.total === 18, JSON.stringify((await get('/health')).body.channels?.implemented));
+    // ★ 2026-10-13 改：18 → **19**。新增了「钉钉 · 跨组织白名单群（全量）」这条通路
+    //   （用户裁定：智询工作室 / AI Engineering Club 两个群的全量信息；它们跨组织、Stream 收不到，
+    //    只能走 API 拉取 + 跨组织授权）。**这是如实跟随真实通路数，不是为了让检查过而放宽**。
+    chk('API-1', '健康检查返回通道与水位线', (await get('/health')).body.channels?.total === 19, JSON.stringify((await get('/health')).body.channels?.implemented));
 
     // ★ 假绿守卫（2026-10-12 实测定位的根因，见文件顶部长注释）：
     //   插件 host 用动态 import 一次性加载本文件 ⇒ ESM 进程级只求值一次 ⇒ 通道读数会被冻住。

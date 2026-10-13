@@ -71,8 +71,28 @@ export function saveType(type, doc) {
   const body = { ...doc, schema: SCHEMA_VERSION, type, updatedAt: new Date().toISOString() };
   const tmp = `${p}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, JSON.stringify(body, null, 2) + '\n', 'utf8');
-  fs.renameSync(tmp, p);            // 原子落盘
-  return body;
+  // ★★ 2026-10-13 加：**改名要重试**（真机撞出来的，不是防患于未然）。
+  //
+  // 实测：计划任务里的采集器（每 5 分钟一轮）与另一次采集**同时**写同一个文件时，
+  //   `fs.renameSync(tmp, p)` 直接抛 `EPERM: operation not permitted, rename …`，
+  //   整个采集进程当场死掉、这一轮的数据全丢。
+  //   （Windows 上原子改名的语义：**目标文件被别的进程打开着就不许改名**。）
+  //
+  // ⇒ 这里退避重试几次（占用通常极短，就是另一次写入的几毫秒～几十毫秒）。
+  //   全部失败才抛 —— 抛之前**把临时文件留着**（它就是完整内容，能人工救回来），
+  //   并在报错里写清"和谁撞了、去哪找那份内容"，不要只说一句 EPERM。
+  let lastErr = null;
+  for (let i = 0; i < 12; i += 1) {
+    try { fs.renameSync(tmp, p); return body } catch (e) {
+      lastErr = e;
+      if (!/EPERM|EBUSY|EACCES/.test(String(e.code ?? ''))) break;   // 不是"被占用"就立刻抛，别掩盖真错
+      // 退避：5ms → 10 → 20 …（合计约 20 秒上限），同步等待（本函数的调用方都是同步的）
+      const until = Date.now() + Math.min(2000, 5 * (2 ** i));
+      while (Date.now() < until) { /* 自旋等待 */ }
+    }
+  }
+  throw new Error(`${type}.json 改名失败（可能正有另一个采集方在写同一个文件）：${lastErr?.code ?? ''} ${lastErr?.message ?? ''}`
+    + ` —— 完整内容已留在 ${path.basename(tmp)}，可人工改名回去`);
 }
 
 /**

@@ -83,6 +83,20 @@ export const ROUTES = Object.freeze([
   { key: 'dd-im-o2o',        channel: 'dingtalk', kind: 'stream', label: '钉钉 · 单聊',           scope: 'user_im_message_receive_o2o_all', consumedBy: 'collector/dingtalk-im.mjs', implemented: true },
   { key: 'dd-im-group',      channel: 'dingtalk', kind: 'stream', label: '钉钉 · 白名单群全部信息', scope: 'user_im_message_receive_group_all', consumedBy: 'collector/dingtalk-im.mjs', implemented: true },
   { key: 'dd-im-at',         channel: 'dingtalk', kind: 'stream', label: '钉钉 · 群内@我',         scope: 'user_im_message_receive_at', consumedBy: 'collector/dingtalk-im.mjs', implemented: true },
+
+  // ── 钉钉 · 跨组织白名单群（API 拉取，**不是 Stream**）────────────────────────
+  //   用户 2026-10-13 裁定：「白名单群（智询工作室 / AI Engineering Club）这两个群组的**全量信息**。
+  //     其他群组的**非@我**的信息不进入消息。」
+  //
+  //   ★ 为什么必须单开这条（实测，不是设计选择）：
+  //     这两个群**都在别的组织下**（跨组织）。两条后果都实测过：
+  //       ① API 拉取：不授权时直接 `CrossOrgPermissionDenied`；授权后立刻可读。
+  //       ② **Stream 订阅收不到跨组织群的事件** —— 库里这两个群长期 0 条，
+  //          而同一时间库里躺着 38 个**别的**群会话。
+  //     ⇒ 结论：**"白名单群"不能指望 Stream**；这两个群的全量只能走 API 拉取 + 跨组织授权。
+  { key: 'dd-cross-org',     channel: 'dingtalk', kind: 'poll', intervalSec: POLL_INTERVAL_SEC, label: '钉钉 · 跨组织白名单群（全量）', scope: 'dws chat +chat-messages --group <cid>（两个群，见 im-scope.yml 与 FULL_MESSAGE_GROUPS）', consumedBy: 'collector/dingtalk-cross-org.mjs', implemented: true,
+    note: '★ **前提：跨组织读取授权要在**（`dws chat data-auth cross-org --all --grant-type timed --ttl 24h`，限时、过期后本通路会如实报错而不是假装"没消息"）。'
+      + '留在这里的原因：本通路与 Stream 那条是**互补**的 —— Stream 给"订阅范围内的群"，本通路给"跨组织的两个白名单群"，谁也替不了谁。' },
   { key: 'dd-im-selfvoice',  channel: 'dingtalk', kind: 'stream', label: '钉钉 · 给自己发的语音（→笔记）', scope: 'conversation_id = SELF_CID', consumedBy: 'collector/dingtalk-im.mjs', implemented: true,
     note: 'Q6：采集侧只打标（source=self-voice），**命令 / 笔记的判定交给筛选引擎**' },
 
@@ -165,6 +179,12 @@ export const REQUIRED_COVERAGE = Object.freeze({
   '钉钉·聊天（单聊）': ['dd-im-o2o'],
   '钉钉·聊天（白名单群全部）': ['dd-im-group'],
   '钉钉·聊天（群内@我）': ['dd-im-at'],
+  // ★ 2026-10-13 加（用户裁定）：跨组织白名单群的**全量**信息。
+  //   与上面那条「白名单群全部」**不是同一件事**，别合并：
+  //     · `dd-im-group` 走 Stream，给的是"订阅范围内所有群"，**跨组织群根本不会推过来**；
+  //     · `dd-cross-org` 走 API 拉取，专治那两个跨组织群，**需要跨组织授权**。
+  //   实测依据：这两个群在库里长期 0 条，而同一时间库里躺着 38 个别的群会话。
+  '钉钉·聊天（跨组织白名单群全量）': ['dd-cross-org'],
   '钉钉·知识库': ['dd-kb'],
   '钉钉·日程': ['dd-calendar'],
   '钉钉·待办': ['dd-todo'],
