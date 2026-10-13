@@ -17,6 +17,7 @@
     { "route": "POST /workdesktop/api/v1/cockpit/:kind", "engine": "dashboard", "reason": "生成驾驶舱的一块分析（insight 业务洞察 / state 状态分析 / advice 发展建议）：按真实数据切片调模型，没数据则拒绝生成" },
     { "route": "POST /workdesktop/api/v1/system-switch", "engine": "process", "reason": "底部状态栏三个能力开关（实时回复 / 响应功能 / 向量检索）的状态置位" },
     { "route": "GET /workdesktop/api/v1/state", "engine": "store", "reason": "只读：前端一次性取回四类运行态与统计（非写路径，登记以便守卫核对方法）" },
+    { "route": "GET /workdesktop/api/v1/file", "engine": "store", "reason": "只读：把消息里的图片取出来给详情页显示（用户第 7 条）。**只允许 Inflow 下的文件**，且拒绝路径穿越，读不到知识库其它位置" },
     { "route": "GET /workdesktop/api/v1/detail/:type/:id", "engine": "store", "reason": "只读：详情浮层取单条事件的完整内容（结构化字段/原始消息/相关上下文/可执行操作）；登记以便守卫核对方法" }
   ]
 }

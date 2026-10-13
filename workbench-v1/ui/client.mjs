@@ -42,7 +42,7 @@ export function clientScript(apiBase) {
   L.push('');
   L.push('  function el(tag, cls, text) { var d = document.createElement(tag); if (cls) d.className = cls; if (text !== undefined) d.textContent = text; return d; }');
   L.push('');
-  L.push('  function overlay(title, rows, ops, onOp, det) {');
+  L.push('  function overlay(title, rows, ops, onOp, det, extraNode) {');
   L.push('    var back = el("div", "overlay-back");');
   L.push('    var box = el("div", "overlay");');
   L.push('    box.appendChild(el("h2", null, title || "详情"));');
@@ -52,6 +52,9 @@ export function clientScript(apiBase) {
   L.push('      line.appendChild(el("span", "ov-v", r[1] === null || r[1] === undefined || r[1] === "" ? "—" : String(r[1])));');
   L.push('      box.appendChild(line);');
   L.push('    });');
+  // ★ 2026-10-13 加：允许塞一个**自定义 DOM 节点**进来（图片那行要用 `<img>`，不是纯文本行）。
+  //   挂在"结构化内容 / 原始消息 / 相关上下文"之后 —— 图紧跟原文，便于对照。
+  L.push('    if (extraNode) box.appendChild(extraNode);');
   L.push('    if (ops && ops.length) {');
   L.push('      var bar = el("div", "ov-ops");');
   L.push('      ops.forEach(function (name) {');
@@ -185,6 +188,24 @@ export function clientScript(apiBase) {
   L.push('        ? rec.slice(0, 3).map(function (h) { return h.path + "（" + (h.similarity === null || h.similarity === undefined ? "-" : h.similarity) + "）"; }).join("\\n")');
   L.push('        : (recallError ? ("召回不可用：" + recallError) : "暂无相关材料");');
   L.push('      var rows = [["结构化内容", seen.topic || seen.raw || seen.summary || ""], ["原始消息", (orig.sender || "") + " · " + (orig.raw || "")], ["相关上下文", ctxText]];');
+  // ★★ 2026-10-13 加（用户第 7 条）：「点击消息列表中的对应图片消息进入详情后，**需要能够显示出该图片**。」
+  //   实测：图片消息的 `payload.fileRef` 指向 `Other/Inflow/文件/<月>/<mediaId>.<ext>`，文件都在（35/35）。
+  //   而浏览器取不到 —— 所以新开了一条只读取图通道 `GET /v1/file?p=<相对路径>`
+  //   （**只允许 Other/Inflow 之下、拒路径穿越、限扩展名**，见 server.mjs 里那段安全注释）。
+  //   这一行把图**直接嵌进浮层**：用 `<img>`，不用新窗口，处置动作还在同一屏。
+  //   取不到时**如实说**（文件被清掉 / 通道 403），不留一个破图占位。
+  L.push('      var imgRef = (type === "messages") ? (orig.fileRef || (det.structured && det.structured.fileRef) || null) : null;');
+  L.push('      var imgRow = null;');
+  L.push('      if (imgRef) {');
+  L.push('        imgRow = document.createElement("div"); imgRow.className = "ov-row";');
+  L.push('        var k = el("span", "ov-k", "图片"); imgRow.appendChild(k);');
+  L.push('        var box2 = el("span", "ov-v", "载入中…"); imgRow.appendChild(box2);');
+  L.push('        var img = document.createElement("img");');
+  L.push('        img.alt = "消息图片"; img.className = "ov-img";');
+  L.push('        img.onload = function () { box2.textContent = ""; box2.appendChild(img) };');
+  L.push('        img.onerror = function () { box2.textContent = "取不到图片（" + imgRef + "）—— 文件可能已被清理，或取图通道拒绝了这一条" };');
+  L.push('        img.src = API + "/file?p=" + encodeURIComponent(imgRef);');
+  L.push('      }');
   // ══════════════════════════════════════════════════════════════════════════
   // ★★ 2026-10-13 改（用户第 11 条）：笔记详情要有**分析与建议**和**可视化构建**两项，
   //    且可视化那一项**没建时要显示"待构建"**、建过时要能看到结果。
@@ -236,7 +257,7 @@ export function clientScript(apiBase) {
   L.push('      if (det.detect && det.detect.created && det.detect.created.length) {');
   L.push('        rows.push(["已自动创建", det.detect.created.map(function (c) { return KIND[c.kind] + "（" + c.action + "）"; }).join("\\n")]);');
   L.push('      }');
-  L.push('      overlay(seen.topic || seen.raw || seen.summary || "详情", rows, det.availableOps || [], function (name) { doOp(type, id, name); }, det.detect);');
+  L.push('      overlay(seen.topic || seen.raw || seen.summary || "详情", rows, det.availableOps || [], function (name) { doOp(type, id, name); }, det.detect, imgRow);');
   L.push('    }).catch(function (e) { alert("取详情失败：" + e.message); });');
   L.push('  }');
   L.push('');
@@ -694,6 +715,9 @@ export function clientStyle() {
   s.push('.overlay h2 { font-size: 16px; margin-bottom: 12px; }');
   s.push('.ov-row { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--c-hairline); font-size: 13px; }');
   s.push('.ov-k { color: var(--c-mute); min-width: 84px; }');
+  // 消息图片（2026-10-13 加，用户第 7 条）：限制最大边长，别把浮层撑破；
+  //   圆角与边框跟卡片一致（4px 直角，不用胶囊）。
+  s.push('.ov-img { display: block; max-width: min(560px, 100%); max-height: 60vh; border: 1px solid var(--c-hairline); border-radius: 4px; margin-top: 4px; }');
   // 新增表单的输入框（2026-10-12 加：原来用 window.prompt，iframe 里返回 null ⇒ 改成页内表单）
   s.push('.ov-input { flex: 1; font: inherit; padding: 4px 6px; border: 1px solid var(--c-hairline); border-radius: 4px; background: transparent; color: var(--c-ink); }');
   s.push('.ov-v { flex: 1; white-space: pre-wrap; }');

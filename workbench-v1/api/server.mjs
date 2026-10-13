@@ -176,6 +176,39 @@ export function handler(req, res) {
         .catch((e) => json(res, 500, { error: `健康读数失败：${e.message}` }));
     }
 
+    // ★★ 2026-10-13 加（用户第 7 条）：**把消息里的图片取出来给详情页显示**。
+    //   用户原话：「点击消息列表中的对应图片消息进入详情后，需要能够显示出该图片。」
+    //   实测：消息的 `payload.fileRef` 指向 `Other/Inflow/文件/<月>/<mediaId>.<ext>`，文件**都在**（35/35）。
+    //   但浏览器取不到它 —— 面板那条路由只供 `/yishu/<页>`，没有取文件的通道 ⇒ 页面上没法显示。
+    //
+    //   ⚠️ 安全边界（这是**唯一**能让外部按路径读知识库文件的入口，必须收紧）：
+    //     ① 只允许 `Other/Inflow/` 之下（图片/文件/文档的落点），别的目录一律 403；
+    //     ② 解析成绝对路径后**再确认它仍在允许目录内**（挡 `..` 穿越）；
+    //     ③ 只回**图片与常见文档**这几类扩展名，不回 `.mjs` / `.json` / `.env` 这类；
+    //     ④ 只读，绝不写。
+    const fm = new RegExp(`^${API_PREFIX}/file$`).exec(p);
+    if (fm) {
+      if (!isRegistered('GET', `${API_PREFIX}/file`)) return json(res, 404, { error: '取文件路径未登记（先去 write-routes.json 登记）' });
+      const rel = String(u.searchParams.get('p') ?? '').replace(/\\/g, '/');
+      if (rel === '') return json(res, 400, { error: '缺少参数 p（形如 Other/Inflow/文件/2026-10/x.jpg）' });
+      const ALLOW_DIR = path.join(ROOT, 'Other', 'Inflow');
+      const ALLOW_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.pdf', '.md', '.txt', '.docx', '.xlsx', '.pptx', '.zip']);
+      const abs = path.resolve(ROOT, rel);
+      const within = abs === ALLOW_DIR || abs.startsWith(ALLOW_DIR + path.sep);
+      if (!within) return json(res, 403, { error: '只允许读 Other/Inflow 下的文件' });
+      if (!ALLOW_EXT.has(path.extname(abs).toLowerCase())) return json(res, 403, { error: `这类扩展名不给：${path.extname(abs)}` });
+      if (!fs.existsSync(abs)) return json(res, 404, { error: `文件不在：${rel}` });
+      const MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp', '.pdf': 'application/pdf', '.md': 'text/markdown; charset=utf-8', '.txt': 'text/plain; charset=utf-8' };
+      const buf = fs.readFileSync(abs);
+      res.writeHead(200, {
+        'content-type': MIME[path.extname(abs).toLowerCase()] ?? 'application/octet-stream',
+        'content-length': String(buf.length),
+        'cache-control': 'private, max-age=300',
+      });
+      res.end(buf);
+      return true;
+    }
+
     // 详情浮层数据：结构化内容 + 原始消息 + 相关上下文 + 可执行操作
     // 路径必须先登记（write-routes.json 里有这条 GET）—— 读路径也守同一条纪律，别偷偷开洞
     const d = new RegExp(`^${API_PREFIX}/detail/([a-z]+)/([A-Za-z0-9_]+)$`).exec(p);

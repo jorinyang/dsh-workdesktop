@@ -19,6 +19,32 @@
  */
 
 import * as store from '../store.mjs';
+
+/**
+ * 把"图片消息"的机器标记从**给人看的文字**里剥掉（用户 2026-07-…→2026-10-13 第 7 条）。
+ *
+ * 实测原始形态：`[图片消息](mediaId=@lQLPKck4jBI_1I3NAYvNAcGwrBt7GU_5sHcKnJMKiTWkAA)@老陈  我今…`
+ *   · `[图片消息](mediaId=…)` 是采集时留下的**机器标记**（媒体要另取，标记只是索引）；
+ *   · 后面那句才是人真正要看的内容。
+ *   原来整串直接当概括显示 ⇒ 列表里全是 mediaId，把内容挤没了。
+ *
+ * ⇒ 剥掉标记里的 `(mediaId=…)` 部分，保留"图片"这个词（**让人知道这条是图**），其余文字照旧。
+ *   ⚠️ 只处理**呈现**：`payload.raw` 一个字都不改 —— 原始记录必须完整可回查。
+ *   同理 `mediaId` / `fileRef` 两个字段都留着（详情页要靠它们取图）。
+ */
+export function stripImageMark(s) {
+  return String(s ?? '')
+    // ★ 字符集要放宽：实测 mediaId 有两种形态 —— `@lQLPKck4…` 与 `$iwEdAqNq…`（`$` 开头），
+    //   另外被截断的概括里还会以 `…` 收尾。第一版只列了 `[A-Za-z0-9@_\-+/=]`，
+    //   结果**13 条 mediaId 没剥掉**（真机读数抓出来的）。
+    //   ⇒ 改成"到 `)` 或空白为止"，不枚举字符。
+    .replace(/\[(图片|视频|语音|文件)消息\]\(mediaId=[^)\s]*\)?/g, '［$1］')
+    .replace(/\((?:mediaId=[^)\s]*)\)/g, '')          // 括号还在、里面只剩 mediaId 的残壳
+    .replace(/mediaId=[^)\s]*/g, '')                  // 兜底：任何还露着的 mediaId
+    .replace(/［图片］(?=［)/g, '')                    // 连着两个标记时去掉重复的
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
 // ★ 2026-10-13 加：**来源标注**的唯一产地（用户第 9/10/11 条都要"来源"字段）——
 //   待办/日程/笔记三页共用同一个 `sourceOf`，不各写一份判法。
 import { sourceOf } from './source.mjs';
@@ -69,7 +95,14 @@ export function messages({ tab = 'all', limit = 200, now = Date.now() } = {}) {
       id: e._id, at: e._at, state: st,
       source: senderLine(e),
       sender: e.payload.sender,
-      summary: e.payload.summary ?? String(e.payload.raw ?? '').slice(0, 60),
+      // ★★ 2026-10-13 改（用户第 7 条）：
+      //   「消息列表中，**显示图片消息及其他文字即可，不需要显示图片的链接**」
+      //   实测 raw 长这样：`[图片消息](mediaId=@lQLP…AA)10月11日 …`
+      //   —— `[图片消息](mediaId=…)` 这段是**机器标记**，占了大半行、对人毫无用处，
+      //   而后面那句「10月11日 …」才是内容。原来直接把 raw 当概括 ⇒ 列表里满屏 mediaId。
+      //   ⇒ 把这段标记从**给人看的概括**里剥掉，只留「图片」两个字 + 其余文字。
+      //     正文本身（raw）不动 —— 原始记录要完整，剥的只是列表里的呈现。
+      summary: stripImageMark(e.payload.summary ?? String(e.payload.raw ?? '').slice(0, 60)),
       channel: e.payload.channel,
     };
   });
