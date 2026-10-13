@@ -31,6 +31,9 @@ import { makeEvent } from '../schema.mjs';
 import * as store from '../store.mjs';
 import { get as getState, advanceIfClean } from './state.mjs';
 import { convert, detectModality, extractMediaId, stripDownloadHint } from './modality.mjs';
+// ★ 2026-10-13 加（用户裁定）：**范围闸**（白名单群全量 / 其余群只收 @我）。
+//   判定与理由独立成模块，便于单跑自检；采集器只负责"在哪一步判"。
+import { scopeDecision, fromAtSubscription, emptyTally, tallyOf } from './scope-gate.mjs';
 // ★★ 2026-10-13 改（**发布包内跑不通的根因**）：原来这里是一行静态相对引用
 //     `import { SELF_CID, SELF_NAMES } from '../../voice-command.mjs';`
 //   在知识库里这个相对路径是对的（`_meta/workbench/v1/collector/` 往上两级就是 `_meta/workbench/`），
@@ -245,6 +248,12 @@ export async function ingestOnce({ hooks = {}, dryRun = false, maxBytes = MAX_RE
   const newOffset = offset + consumed;
 
   let inCount = 0; let outCount = 0; let deferred = 0; let deferredDup = 0; let quarantined = 0; let skipped = 0;
+  // ★ 2026-10-13 加（用户裁定）：**范围闸**的计数与逐类明细。
+  //   用户要的是"这两个群全量、其余群只收 @我" ⇒ 挡掉的量会很大（实测：467 条群消息只留 58 条），
+  //   所以回执里必须**逐类报出来**（单聊 / 白名单群 / @我 / 非@我挡掉 / @我订阅但正文没@我挡掉），
+  //   否则"今天怎么少了这么多"没人说得清。
+  let scopeDropped = 0;
+  const scopeTally = emptyTally();
   // ★ 2026-10-13 加：被过滤掉的逐条留痕（只记发信人 + 原因 + 概括，**不把正文抄一遍** ——
   //   过滤的目的是不污染消息页，不是另建一份副本）。回执里给条数与样例，可核"过滤得对不对"。
   const skippedRows = [];
@@ -267,6 +276,20 @@ export async function ingestOnce({ hooks = {}, dryRun = false, maxBytes = MAX_RE
     if (sinceMs !== null && at0 < sinceMs) { skipped += 1; continue; }
 
     const sc = scopeOf(ev);
+    // ★★ 2026-10-13 加（用户裁定）：「白名单群（智询工作室 / AI Engineering Club）这两个群组的**全量信息**。
+    //   其他群组的**非@我**的信息**不进入消息**。」
+    //   ⇒ 在**转码之前**先判范围：挡掉的消息不需要付转码/下载的代价，也不必进库再删。
+    //   判法（两道都过才收"非白名单群的 @我"）与理由见 `scope-gate.mjs` 顶部那段长注释。
+    {
+      const dec = scopeDecision({
+        conversationId: String(ev.conversation_id ?? ''),
+        isDirect: sc.isDirect,
+        fromAtSubscription: fromAtSubscription(ev),
+        text: String(ev.content ?? ''),
+      });
+      tallyOf(scopeTally, dec.rule);
+      if (!dec.keep) { scopeDropped += 1; continue; }
+    }
     const raw0 = String(ev.content ?? '');
     const at = atOf(ev);
     // 把 CLI 需要的三个 id 一起交给 hook：download-media 要 messageId + openConversationId（实测无需转换）
@@ -364,6 +387,9 @@ export async function ingestOnce({ hooks = {}, dryRun = false, maxBytes = MAX_RE
   return {
     inCount, outCount, deferred, deferredDup, quarantined, skipped, offset: newOffset, truncated, errors, why: adv.why,
     // ★ 被过滤的逐条留痕（见上面 `dropReason` 那段）：回执里能看到"丢了哪些、为什么" —— 过滤不该是黑箱
+    // 范围闸的逐类计数（用户裁定：白名单群全量、其余群只收 @我）
+    scopeDropped,
+    scopeTally,
     skippedRows: skippedRows.slice(0, 20),
     // 自我身份取到了没（取不到 ⇒ 上面那两处判定退化为保守，见 `loadSelfIdentity` 的注释）
     selfIdentity: { ok: ident.ok === true, names: SELF_NAMES.length, why: ident.why ?? null },

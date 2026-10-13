@@ -77,6 +77,10 @@ await run('P1o', 'P1 钉钉聊天·入库前过滤', async () => (await import(b
 //   为什么单开一组：那两个群**Stream 收不到**（跨组织事件不推），只能走 API 拉取 + 跨组织授权；
 //   而"授权不在"必须被单独认出来，不能与"这个群没消息"混同 —— 这条错了的后果是**静默收不到**。
 await run('P1p', 'P1 钉钉·跨组织白名单群（全量）', async () => (await import(base + 'collector/dingtalk-cross-org.mjs')).selfTest());
+// ★ 2026-10-13 加：**范围闸**（用户裁定：两个白名单群全量，其余群只收 @我）。
+//   单开一组的原因：这道闸**挡掉的是绝大多数群消息**（实测 467 → 58），
+//   判错的方向是"该收的没收到"或"无关的污染进来"，两种都难在事后发现 ⇒ 值得各自钉住。
+await run('P1q', 'P1 钉钉·消息范围闸（白名单群全量 / 其余只收@我）', async () => (await import(base + 'collector/scope-gate.mjs')).selfTest());
 await run('P2', 'P2 意图判定', async () => (await import(base + 'processor/intent.mjs')).selfTest());
 // P2 消息判定与自动创建（用户 Q2：高置信自动建 / 低置信标待处置；幂等）
 await run('P2det', 'P2 消息判定与自动创建', async () => (await import(base + 'processor/detect.mjs')).selfTest());
