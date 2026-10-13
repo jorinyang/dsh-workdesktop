@@ -30,10 +30,11 @@ import path from 'node:path';
 import { makeEvent } from '../schema.mjs';
 import * as store from '../store.mjs';
 import { v1Out, kbPath } from '../paths.mjs';
-import { buildCommand } from './cli.mjs';
-import { spawnSync } from 'node:child_process';
+// ★ 走 `runCli`（它内部先解析可执行文件的绝对路径）—— **不要自己 buildCommand + spawn**，
+//   那会绕过解析，在"PATH 里没有 npm 目录"的环境（计划任务）下直接报"dws 不是可识别的 cmdlet"。
+import { runCli } from './cli.mjs';
 
-const PS = 'powershell.exe';
+// 说明：原来这里有个 `const PS = 'powershell.exe'` —— 改成走 `runCli` 之后不再自己 spawn，已去掉。
 
 /** 跨组织白名单群：**从库内 `_meta/im-scope.yml` 读**，不在这里再抄一份名单（两份必然漂）。 */
 export function crossOrgGroups({ file = null } = {}) {
@@ -72,10 +73,19 @@ export function saveSeen(doc) {
 }
 
 export function defaultRun(args) {
-  const cmd = buildCommand('dws', args);
-  return spawnSync(PS, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', cmd], {
-    encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, windowsHide: true,
-  });
+  // ★★ 2026-10-13 改：**走 `runCli`，不要自己拼命令**。
+  //   第一版这里是 `buildCommand('dws', args)` + 自己 spawn —— 结果**绕过了 `runCli` 里的可执行文件解析**，
+  //   在"PATH 里没有 npm 目录"的环境（计划任务就是）下报 `dws 不是可识别的 cmdlet`。
+  //   实测抓出来的：把 PATH 收成"只有 node + powershell"再跑，健康读数立刻红。
+  //   ⇒ `runCli` 才是那个"先 Get-Command、再按已知位置兜底"的调用点；这里复用它。
+  const r = runCli('dws', args, { timeoutMs: 120000, maxBuffer: 64 * 1024 * 1024 });
+  // `runCli` 回的是解析后的 `{ok, json, why}`；本模块后面的解析逻辑吃的是 `{stdout, stderr}`，
+  // 所以这里**把两种形状都带上**（json 给解析用，stdout 兼容旧路径，why 用于报错）。
+  return {
+    status: r.ok ? 0 : 1,
+    stdout: r.ok ? JSON.stringify(r.json) : '',
+    stderr: r.ok ? '' : String(r.why ?? ''),
+  };
 }
 
 /**

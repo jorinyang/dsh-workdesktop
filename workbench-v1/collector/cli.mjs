@@ -20,6 +20,74 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+
+/**
+ * ★★ 2026-10-13 加：**把 CLI 名解析成绝对路径再说**（`dws` / `lark-cli` 都是 npm 装的 `.cmd` 垫片）。
+ *
+ * 为什么必须做 —— 这是本项目一个**已经付过代价**的坑：
+ *   计划任务环境里 **PATH 不一定展开**（`%NVM_SYMLINK%` 那次）。后果不是报错，而是
+ *   **"exit=0、0 秒、零输出"连续 9 天**，看起来一切正常，实际 node 根本没启动。
+ *   `_meta/tools/v1-collect.ps1` 就是为这件事存在的（它对 node 用 `Get-Command` + 绝对路径兜底）。
+ *   而 `dws` 走的是**另一条路**（node 起来之后，由本文件经 powershell 去调），
+ *   所以它**没有被那个包装脚本保护到** —— 实测去掉 PATH 里的 npm 目录，`dws` 就找不到了。
+ *
+ * 做法与那个包装脚本一致：**先 `Get-Command`，再按已知位置兜底**，全程不假设 PATH 可用。
+ * 解析结果**缓存**（每个采集进程只解析一次）。
+ */
+const _cliCache = new Map();
+export function resolveCli(bin) {
+  const b = String(bin);
+  if (_cliCache.has(b)) return _cliCache.get(b);
+  let found = null;
+
+  // ① 先问系统（登录会话里通常这一步就够）
+  //   ★★ 两个实测教训（第一版都踩了）：
+  //     ① `where.exe dws` 回的是 **`…\npm\dws`（没有扩展名）** —— 直接 `existsSync` 是 false，
+  //        真机上第一版就这么先判成"找不到"；
+  //     ② 但**那个无扩展名的 shim 在 PowerShell 里根本执行不了**
+  //        （实测 `"…\npm\dws" chat …` → 退出码 1、`CommandNotFoundException` 一类）。
+  //        ⇒ 所以**只认可执行的扩展名**（`.cmd` / `.exe` / `.bat`），无扩展名的一律不要。
+  //        第二版曾把它排在候选里"能用就用"，结果**比不改还糟**（PATH 正常时反而不通）。
+  const exts = ['.cmd', '.exe', '.bat'];
+  try {
+    const r = spawnSync('where.exe', [b], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
+    const rows = String(r.stdout ?? '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+    for (const row of rows) {
+      for (const e of exts) {
+        const p = row + e;
+        // 同名但**扩展名不同**的文件是两回事（`dws` 无扩展名 ≠ `dws.cmd`），必须都验
+        if (fs.existsSync(p)) { found = p; break }
+      }
+      if (found) break;
+    }
+  } catch { /* 下面兜底 */ }
+
+  // ② 按已知位置兜底（不依赖 PATH）。npm 全局目录在 Windows 上就这两处常见：
+  if (!found) {
+    const cands = [];
+    if (process.env.APPDATA) cands.push(path.join(process.env.APPDATA, 'npm', `${b}.cmd`), path.join(process.env.APPDATA, 'npm', `${b}.ps1`));
+    if (process.env.ProgramFiles) cands.push(path.join(process.env.ProgramFiles, 'nodejs', `${b}.cmd`));
+    // nvm 的当前版本目录（本机在 %LOCALAPPDATA%\nvm\<版本>\ 下）
+    if (process.env.LOCALAPPDATA) {
+      const nvm = path.join(process.env.LOCALAPPDATA, 'nvm');
+      try {
+        for (const d of fs.readdirSync(nvm)) cands.push(path.join(nvm, d, `${b}.cmd`));
+      } catch { /* 没装 nvm 就算了 */ }
+    }
+    // ★ 注意：**不要把本机的绝对路径写死在这里**。
+    //   第一版写了一处 `C:\nvm4w\nodejs`（顺手从 `$env:PATH` 抄的），
+    //   **被发布前的脱敏核对当场拦下**（"本机绝对路径 0 → 1"）。
+    //   上面这些候选**全部来自环境变量**，换机器也能用；写死的路径换台机器就是错的。
+    found = cands.find((p) => { try { return fs.existsSync(p) } catch { return false } }) ?? null;
+  }
+
+  // ③ 都没找到 ⇒ **原样返回名字**（让调用方照旧按 PATH 试一次，并在失败时报出来）
+  const out = found ?? b;
+  _cliCache.set(b, out);
+  return out;
+}
 
 /** 只放行这些字符；其余（含 `& ? = 空格 " ' 中文` 等）一律加引号。
  *  `+` 必须在白名单里：两个 CLI 的快捷子命令都写作 `+get-my-tasks` 这种形式
@@ -48,12 +116,35 @@ export function buildCommand(bin, args) {
 
 /**
  * 经 PowerShell 跑一条 CLI 命令，并把结果解析成 `{ok, json}` / `{ok:false, why}`。
- * @param {string} bin 可执行名（`dws` / `lark-cli` / …）
- * @param {string[]} args 参数（**多词子命令要拆开传**）
+ *
+ * ★★ 2026-10-13 加：**在这里把可执行名解析成绝对路径**（`resolveCli`），不是在 `buildCommand`。
+ *   为什么分开放：`buildCommand` 是**纯拼串函数**，有自己的一组检查钉着它的输出形状
+ *   （安全参数不加引号、多词子命令拆开、JSON 参数的引号规则）。把路径解析塞进去会改掉它的形状，
+ *   那三条检查当场就红了 —— **它们红得对**：拼串与"去哪儿找可执行文件"是两件事。
+ *   实测去掉 PATH 里的 npm 目录时 `dws` 找不到；而计划任务环境**PATH 不一定展开**（项目已付过代价），
+ *   所以真正的调用点必须自己解析。
  */
 export function runCli(bin, args, { timeoutMs = 60000, maxBuffer = 8 * 1024 * 1024 } = {}) {
+  const resolved = resolveCli(bin);
+  // 解析到了绝对路径 ⇒ 用 `&` 调用运算符拼（带引号的路径加 `&` 最稳，不与后面的参数歧义）；
+  // 没解析到 ⇒ 照旧按名字跑（让 PATH 再试一次；失败会如实报出来，不会静默）。
+  const cmd = resolved === String(bin)
+    ? buildCommand(bin, args)
+    : `& ${quotePowerShell(resolved)} ` + buildArgs(args);
+  return runCmd(cmd, { timeoutMs, maxBuffer });
+}
+
+/** 单引号包住一个路径（PowerShell 单引号内反斜杠是字面量；内部单引号写两遍） */
+function quotePowerShell(p) { return `'${String(p).replace(/'/g, "''")}'` }
+
+/** 只拼参数部分（与 `buildCommand` 同一套引号规则 —— 从它那里复用，不再抄一份） */
+function buildArgs(args) {
+  const full = buildCommand('x', args);      // `x` 一定过 SAFE_ARG，拿到的是 `x <参数...>`
+  return full.slice(2);                      // 去掉 `x `
+}
+
+function runCmd(cmd, { timeoutMs, maxBuffer }) {
   const PS = 'powershell.exe';
-  const cmd = buildCommand(bin, args);
   const r = spawnSync(PS, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', cmd], {
     encoding: 'utf8', timeout: timeoutMs, windowsHide: true, maxBuffer,
   });
