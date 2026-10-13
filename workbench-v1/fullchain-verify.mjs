@@ -106,11 +106,45 @@ let probeEvent = null;
     ar = await analyzeOnce({ limit: 5 });
   } catch (e) { ar = { error: e.message } }
   step('FC-5', '分析引擎跑得动（真调用一次）', ar !== null && ar.error === undefined, ar?.error ? String(ar.error) : JSON.stringify({ in: ar?.inCount, withContext: ar?.withContext, failed: ar?.failed }).slice(0, 200));
-  const after = store.getById('message', probeEvent._id);
-  const rec = after?.context?.recalled ?? [];
+  // ★★ 2026-10-13 重写（这条原来**偶发** —— 三次跑里红两次）。
+  //
+  // 原来的写法（错的）：跑一次分析，看**探针自己**有没有拿到召回。
+  //   实测查清了为什么不能这么写：
+  //     · 探针**归档成功**（`Other/Inflow/消息/2026-10.jsonl` 里确有原文）；
+  //     · 但检索层**搜不到它** —— 等 0 / 15 / 60 / 120 秒后分别检索，四次都搜不到；
+  //     · 也就是说**新归档的消息不会立刻进检索索引**，索引是另走一条路定时构建的。
+  //   ⇒ 拿"刚造的探针能不能立刻被召回"当检查，等于在赌索引恰好跑过 —— **那不是检验功能，那是碰运气**。
+  //     一次偶然的过（那次探针文本恰好与库里已有内容相似）掩盖了这一点。
+  //
+  // 现在的写法（照真实行为分两步，各自可判）：
+  //   ① 分析引擎**确实把探针取去分析了** —— 看它身上有没有 `context` 这个字段（有 = 分析过，哪怕召回为空）；
+  //   ② 检索层**当下是通的、且返回的内容带正文** —— 拿索引里已有的内容去查（这是能立刻判的部分）。
+  //   两件事分开查，谁也不冒充谁。索引什么时候把新消息收进去，**另有其责**，不在这条链路里假装。
+  let rec = [];
+  const deadline = Date.now() + 30000;
+  let rounds = 0;
+  for (;;) {
+    rounds += 1;
+    const after = store.getById('message', probeEvent._id);
+    rec = after?.context?.recalled ?? [];
+    if (rec.length > 0) break;
+    if (after?.context !== undefined || after?.analysis !== undefined) break;   // 分析过了（召回为空也算）
+    if (Date.now() > deadline) break;
+    try {
+      const { analyzeOnce } = await import('./processor/analyze.mjs');
+      await analyzeOnce({ limit: 5 });
+    } catch { /* 下一轮再试 */ }
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+  const afterProbe = store.getById('message', probeEvent._id);
+  const analyzed = afterProbe?.context !== undefined || afterProbe?.analysis !== undefined;
   const withText = rec.filter((h) => String(h.text ?? '').length > 0);
-  step('FC-6', '★ 探针自己拿到了召回上下文（分析引擎检索过它）', rec.length > 0,
-    rec.length > 0 ? `召回 ${rec.length} 条 · 有正文 ${withText.length} 条 · 首条 similarity=${rec[0]?.similarity}` : '探针没有 context.recalled');
+  step('FC-6', '★ 分析引擎**把探针取去分析了**（看它身上有没有 context 字段，不赌索引）',
+    analyzed, analyzed
+      ? `分析过 · 召回 ${rec.length} 条 · 有正文 ${withText.length} 条${rec[0]?.similarity !== undefined ? ' · 首条 similarity=' + rec[0].similarity : ''} · 等了 ${rounds} 轮`
+      : `等了 ${rounds} 轮（约 ${rounds * 3}s）分析引擎都没取到这条探针`);
+  report.recallRounds = rounds;
+  report.probeRecalled = rec.length;
 }
 
 // ── ④ 处理：给探针一个关闭条件，走一次真关闭路径 ──────────────────────────────
