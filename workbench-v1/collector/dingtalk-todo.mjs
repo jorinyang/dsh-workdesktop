@@ -23,6 +23,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { makeEvent } from '../schema.mjs';
+// 「关闭条件」的产地只有一处（`processor/close.mjs`）—— 采集器与服务端共用同一个函数，不各写一份。
+import { withCloseCondition } from '../processor/close.mjs';
 import * as store from '../store.mjs';
 import { inScope } from './registry.mjs';
 import { v1Out } from '../paths.mjs';
@@ -185,7 +187,14 @@ export function ingestOnce({ run = defaultRun, dryRun = false, maxNew = 200, sin
       continue;
     }
 
-    const made = makeEvent({ type: 'todo', payload: mapped.payload, origin: mapped.origin, _at: mapped._at });
+    // ★★ 2026-10-13 加（需求 3.3.4 / 用户第 9 条）：**采集进来的待办也要有"关闭条件"**。
+    //
+    // 我上一轮把这个功能加在了服务端的 `createEvent` 里，并以为那是"唯一的创建入口"——
+    //   **错了**：采集器不走 `createEvent`，它们是 `makeEvent` + `store.upsert` 各自建事件。
+    //   所以**采集进来的待办永远拿不到关闭条件**，而库里那 11 条恰好全是从这里进来的
+    //   （真机跑出来的：11 条待办、带关闭条件 0 条）。
+    //   教训：**"唯一入口"要在全库范围内确认，不能只看一个文件里那条路。**
+    const made = makeEvent({ type: 'todo', payload: withCloseCondition(mapped.payload), origin: mapped.origin, _at: mapped._at });
     if (made.ok === false) { quarantined += 1; errors.push(`待办 ${taskId} 归一失败：${made.errors.join('；')}`); continue; }
 
     const r = store.upsert(made.event);

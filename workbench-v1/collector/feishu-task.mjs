@@ -26,6 +26,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { makeEvent } from '../schema.mjs';
+// 「关闭条件」的产地只有一处（`processor/close.mjs`）—— 采集器与服务端共用同一个函数，不各写一份。
+import { withCloseCondition } from '../processor/close.mjs';
 import * as store from '../store.mjs';
 import { v1Out } from '../paths.mjs';
 import { inScope } from './registry.mjs';
@@ -144,7 +146,11 @@ export function ingestOnce({ run = defaultRun, dryRun = false, maxNew = 200 } = 
       continue;
     }
 
-    const made = makeEvent({ type: 'todo', payload: mapped.payload, origin: mapped.origin, _at: mapped._at });
+    // ★★ 2026-10-13 加（需求 3.3.4 / 用户第 9 条）：**飞书任务进来的待办也要有"关闭条件"**。
+    //   原因同 `dingtalk-todo.mjs` 那一段：采集器不走服务端的 `createEvent`，
+    //   所以只在那边补的话，采集进来的待办永远拿不到关闭条件。
+    //   ⇒ 两条采集路径 + 服务端创建路径，**三处都补**，共用 `close.mjs` 同一个函数。
+    const made = makeEvent({ type: 'todo', payload: withCloseCondition(mapped.payload), origin: mapped.origin, _at: mapped._at });
     if (made.ok === false) { quarantined += 1; errors.push(`任务 ${guid} 归一失败：${made.errors.join('；')}`); continue; }
     const r = store.upsert(made.event);
     if (r.action === 'rejected') { quarantined += 1; errors.push(`任务 ${guid} 落库被拒：${r.reason}`); continue; }
