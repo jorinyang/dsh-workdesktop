@@ -47,14 +47,18 @@ export function clientScript(apiBase) {
   L.push('    var box = el("div", "overlay");');
   L.push('    box.appendChild(el("h2", null, title || "详情"));');
   L.push('    rows.forEach(function (r) {');
+  // ★ 2026-10-13：`["__NODE__", <DOM 节点>]` 表示"这一行不是文字，是现成的节点"——
+  //   给"跳转"那种要放按钮的行用（纯文本行塞不下按钮）。
+  L.push('      if (r[0] === "__NODE__" && r[1] && r[1].nodeType) { box.appendChild(r[1]); return }');
   L.push('      var line = el("div", "ov-row");');
   L.push('      line.appendChild(el("span", "ov-k", r[0]));');
   L.push('      line.appendChild(el("span", "ov-v", r[1] === null || r[1] === undefined || r[1] === "" ? "—" : String(r[1])));');
   L.push('      box.appendChild(line);');
   L.push('    });');
-  // ★ 2026-10-13 加：允许塞一个**自定义 DOM 节点**进来（图片那行要用 `<img>`，不是纯文本行）。
+  // ★ 2026-10-13 加：允许塞**自定义 DOM 节点**进来（图片那行要用 `<img>`，不是纯文本行）。
   //   挂在"结构化内容 / 原始消息 / 相关上下文"之后 —— 图紧跟原文，便于对照。
-  L.push('    if (extraNode) box.appendChild(extraNode);');
+  //   ★ 同日改：也接受**数组** —— 待办详情要同时挂"图片行"和"交付物表单"两块，顺序照传。
+  L.push('    (function putExtra(nd) { if (!nd) return; if (Array.isArray(nd)) { nd.forEach(putExtra); return } box.appendChild(nd) })(extraNode);');
   L.push('    if (ops && ops.length) {');
   L.push('      var bar = el("div", "ov-ops");');
   L.push('      ops.forEach(function (name) {');
@@ -168,8 +172,81 @@ export function clientScript(apiBase) {
   L.push('      .catch(function (e) { alert("创建请求失败：" + e.message); btn.disabled = false; });');
   L.push('  }');
   L.push('');
-  L.push('  function openDetail(type, id) {');
-  // ★ 2026-10-12 修：**类型一律先归一成复数**再拼路径。
+  // ══════════════════════════════════════════════════════════════════════════
+  // **待办的结果交付物入口**（2026-10-13 加，用户第 9 条）
+  //
+  // 用户原话：「待办的详情页应该还有一个**结果交付物提交的入口**，
+  //   可以**直接粘贴文件 / 填写链接 / 填写文字**。」
+  //
+  // 走的是**已经登记的**写路径 `POST /todos/:id/deliverable`（实测 HTTP 200，服务端会：
+  //   把 `text` 追加进 `deliverables`；`file` 是本机路径时**复制进 `Other/Inflow/文件/`** 并记 `attachment`；
+  //   同名同大小**不重复复制**（幂等））。
+  //
+  // ⚠️ 关于"**直接粘贴文件**"：浏览器里粘贴一个文件，拿到的是**文件内容**，拿不到本机路径
+  //   （安全模型如此）。服务端那条路收的是**路径**（它和你在同一台机器上，所以路径是可用的）。
+  //   ⇒ 这一步给的是**填本机文件路径**；真要"粘贴即上传"，得再加一条收 multipart 的上传通道
+  //     （服务端目前没有收 body 存文件的入口，查过）。**这一条我如实标出来，不假装已经支持。**
+  // ══════════════════════════════════════════════════════════════════════════
+  L.push('  function deliverForm(todoId) {');
+  L.push('    var wrap = el("div", "dv-form");');
+  L.push('    wrap.appendChild(el("div", "dv-title", "提交结果 / 交付物"));');
+  L.push('    var F = [["text", "文字说明", "写清楚做了什么、结论是什么"], ["link", "链接", "https://…"], ["file", "附件（本机文件路径）", "例如 C:\\\\Users\\\\…\\\\方案.docx"]];');
+  L.push('    var inputs = {};');
+  L.push('    F.forEach(function (f) {');
+  L.push('      var row = el("div", "dv-row");');
+  L.push('      row.appendChild(el("span", "ov-k", f[1]));');
+  L.push('      var inp = document.createElement("input");');
+  L.push('      inp.type = "text"; inp.className = "ov-input"; inp.placeholder = f[2] || f[1];');
+  L.push('      row.appendChild(inp); wrap.appendChild(row); inputs[f[0]] = inp;');
+  L.push('    });');
+  L.push('    var bar = el("div", "ov-ops");');
+  L.push('    var ok = el("button", null, "提交交付物");');
+  L.push('    var msg = el("span", "cap", ""); msg.style.cssText = "font-size:12px;color:var(--c-mute);margin-left:8px";');
+  L.push('    bar.appendChild(ok); bar.appendChild(msg); wrap.appendChild(bar);');
+  L.push('    ok.addEventListener("click", function () {');
+  L.push('      var payload = {};');
+  L.push('      ["text", "link", "file"].forEach(function (k) { var v = String(inputs[k].value || "").trim(); if (v !== "") payload[k] = v });');
+  L.push('      if (!payload.text && !payload.file) { msg.textContent = "至少填一项：文字说明 或 附件路径"; return }');
+  L.push('      ok.disabled = true; msg.textContent = "提交中…";');
+  L.push('      fetch(API + "/todos/" + todoId + "/deliverable", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ payload: payload }) })');
+  L.push('        .then(function (r) { return r.json().then(function (b) { return { code: r.status, body: b } }) })');
+  L.push('        .then(function (x) {');
+  L.push('          if (x.code >= 400) { msg.textContent = "失败：" + JSON.stringify(x.body.error || x.body.errors || x.body).slice(0, 150); ok.disabled = false; return }');
+  L.push('          msg.textContent = "已提交（" + (x.body.count || 0) + " 条交付物）"; location.reload();');
+  L.push('        })');
+  L.push('        .catch(function (e) { msg.textContent = "请求失败：" + e.message; ok.disabled = false });');
+  L.push('    });');
+  L.push('    return wrap;');
+  L.push('  }');
+  L.push('');
+  // ══════════════════════════════════════════════════════════════════════════
+  // **跨层通道：请求面板切换**（2026-10-13 加，用户第 11 条）
+  //
+  // 用户原话：「『可视化构建』字段…如果该笔记已经被可视化，在此处应该显示的是
+  //   **跳转到对应可视化构建的按钮**，点击之后可以直接跳转到工程图/坐标系/建模中心
+  //   的笔记对应的可视化构建文档。」
+  //
+  // 这一页跑在**插件 iframe 里**，够不到插件的 `ctx` ⇒ 只能**请求父窗口去切**。
+  //   两端约定（**必须与插件侧那段一致**，改一处要同时改另一处）：
+  //     `window.parent.postMessage({ type: 'dsh-workbench:open-panel', panel: '<id>' }, location.origin)`
+  //   插件侧校验：来源站 + 发消息的确实是它嵌的 iframe + panel 在白名单里，然后调 `openTab`。
+  //
+  // ⚠️ 两种打开方式要区别对待：
+  //   · 面板内嵌（`/workdesktop/api/yishu/<页>`）：`window.parent !== window` ⇒ 真发消息；
+  //   · **本地直开**（双击 `./notes.html`）：没有父窗口可切 ⇒ **如实说"这个按钮要在面板里点才有效"**。
+  //     不给一个点了什么都不发生的按钮 —— 这个项目为此返工过好几轮。
+  // ══════════════════════════════════════════════════════════════════════════
+  L.push('  var VISUAL_PANEL = { coordinates: "dsh-coords:center", project_graph: "dsh-workdesktop:project-graph", modeling: "dsh-modeling:center" };');
+  L.push('  function askOpenPanel(tool, btn) {');
+  L.push('    var panel = VISUAL_PANEL[tool];');
+  L.push('    if (!panel) { alert("这个可视化工具还没有对应的面板：" + tool); return }');
+  L.push('    if (window.parent === window) { alert("这个按钮要在工作台面板里点才有效（现在是单独打开这一页）"); return }');
+  L.push('    try { window.parent.postMessage({ type: "dsh-workbench:open-panel", panel: panel }, location.origin); }');
+  L.push('    catch (e) { alert("请求切换面板失败：" + e.message); return }');
+  L.push('    if (btn) { var old = btn.textContent; btn.disabled = true; btn.textContent = "已请求切换…"; window.setTimeout(function () { btn.disabled = false; btn.textContent = old; }, 2500) }');
+  L.push('  }');
+  L.push('');
+  L.push('  function openDetail(type, id) {');  // ★ 2026-10-12 修：**类型一律先归一成复数**再拼路径。
   //   为什么必须：服务端路由是 `^/detail/([a-z]+)/([A-Za-z0-9_]+)$`，而**只有复数能取到**
   //   （`/detail/schedules/x` = 200，`/detail/schedule/x` = 404）。
   //   而"跨页跳转"那一路是从总览的 `data-go` 拿的类型，那是**单数**（`schedule`）
@@ -187,7 +264,20 @@ export function clientScript(apiBase) {
   L.push('      var ctxText = rec.length');
   L.push('        ? rec.slice(0, 3).map(function (h) { return h.path + "（" + (h.similarity === null || h.similarity === undefined ? "-" : h.similarity) + "）"; }).join("\\n")');
   L.push('        : (recallError ? ("召回不可用：" + recallError) : "暂无相关材料");');
-  L.push('      var rows = [["结构化内容", seen.topic || seen.raw || seen.summary || ""], ["原始消息", (orig.sender || "") + " · " + (orig.raw || "")], ["相关上下文", ctxText]];');
+  // ★★ 2026-10-13 改（用户第二次提到图片显示）：
+  //   「显示图片在详情页中这个能力，**在红色框中应该直接显示图片消息几个字即可，不需要有这么长的链接**。」
+  //   原来「原始消息」这一行把 `[图片消息](mediaId=@lQLPKck4…AA)…` **整串**打出来了 ——
+  //   那串 mediaId 又长又没有任何阅读价值，把正文挤到看不见。
+  //   ⇒ 显示上换成「［图片消息］」四个字（**只换呈现**；`payload.raw` 一个字都不动，
+  //     原始记录必须完整可回查 —— 这与列表那边用的是同一条规矩）。
+  L.push('      var rawShown = String(orig.raw || "").replace(/\\[(图片|视频|语音|文件)消息\\]\\(mediaId=[^)\\s]*\\)?/g, "［$1消息］").replace(/mediaId=[^)\\s]*/g, "").replace(/\\s{2,}/g, " ").trim();');
+  // ★「结构化内容」那一行同样要去链接：实测它取的是 `seen.raw`（消息的结构化原文），
+  //   与「原始消息」是同一段文字的两种取法 ⇒ 只改一处的话，**mediaId 会从另一行漏出来**
+  //   （真机验证抓到的：原始消息干净了、结构化内容还挂着两处）。
+  L.push('      var seenShown = String(seen.topic || seen.raw || seen.summary || "")');
+  L.push('        .replace(/\\[(图片|视频|语音|文件)消息\\]\\(mediaId=[^)\\s]*\\)?/g, "［$1消息］")');
+  L.push('        .replace(/mediaId=[^)\\s]*/g, "").replace(/\\s{2,}/g, " ").trim();');
+  L.push('      var rows = [["结构化内容", seenShown], ["原始消息", ((orig.sender || "") + " · " + rawShown)], ["相关上下文", ctxText]];');
   // ★★ 2026-10-13 加（用户第 7 条）：「点击消息列表中的对应图片消息进入详情后，**需要能够显示出该图片**。」
   //   实测：图片消息的 `payload.fileRef` 指向 `Other/Inflow/文件/<月>/<mediaId>.<ext>`，文件都在（35/35）。
   //   而浏览器取不到 —— 所以新开了一条只读取图通道 `GET /v1/file?p=<相对路径>`
@@ -237,6 +327,17 @@ export function clientScript(apiBase) {
   // 已构建：把**落点**写清楚（工具 + 名字/路径/id）—— 这是人能据此找过去的凭据
   L.push('          var loc = String(v.ref || v.name || "");');
   L.push('          rows.push(["可视化构建", "已构建：" + (TOOL[v.tool] || v.tool || "") + "\\n" + loc]);');
+  // ★★ 2026-10-13 加（用户第 11 条）：已可视化时给一个**真的能跳**的按钮。
+  //   走上面那条跨层通道（本页 postMessage → 插件切面板）；落点仍旧一并写出来，
+  //   因为"跳过去之后看哪一份"也得让人知道（面板里可能有好几份）。
+  L.push('          if (VISUAL_PANEL[v.tool]) {');
+  L.push('            var vrow = el("div", "ov-row");');
+  L.push('            vrow.appendChild(el("span", "ov-k", "跳转"));');
+  L.push('            var vbtn = el("button", null, "打开" + (TOOL[v.tool] || "可视化"));');
+  L.push('            vbtn.addEventListener("click", function () { askOpenPanel(v.tool, vbtn) });');
+  L.push('            var vcell = el("span", "ov-v"); vcell.appendChild(vbtn); vrow.appendChild(vcell);');
+  L.push('            rows.push(["__NODE__", vrow]);');
+  L.push('          }');
   L.push('        } else if (v && v.suggested) {');
   L.push('          rows.push(["可视化构建", "待构建 —— 建议用「" + (TOOL[v.suggested] || v.suggested) + "」\\n" + (v.why || "") + (v.error ? ("\\n（上次构建失败：" + v.error + "）") : "")]);');
   L.push('        } else if (v && v.error) {');
@@ -257,7 +358,16 @@ export function clientScript(apiBase) {
   L.push('      if (det.detect && det.detect.created && det.detect.created.length) {');
   L.push('        rows.push(["已自动创建", det.detect.created.map(function (c) { return KIND[c.kind] + "（" + c.action + "）"; }).join("\\n")]);');
   L.push('      }');
-  L.push('      overlay(seen.topic || seen.raw || seen.summary || "详情", rows, det.availableOps || [], function (name) { doOp(type, id, name); }, det.detect, imgRow);');
+  // ★ 待办额外挂"结果交付物"表单（用户第 9 条）；消息额外挂图片行（第 7 条）。
+  //   两块都用数组传给 overlay，顺序：图片在前（紧跟原文），交付物表单在后（动作区上方）。
+  L.push('      var extras = [];');
+  L.push('      if (imgRow) extras.push(imgRow);');
+  L.push('      if (type === "todos") extras.push(deliverForm(id));');
+  // ★ 浮层**标题**也要用剥过的文字：实测标题取的是 `seen.raw`（结构化原文），同一串链接会从
+  //   第三处漏出来（真机验证连抓两次：先修「原始消息」、再修「结构化内容」，最后才轮到标题）。
+  //   三处都是"同一段文字的三种取法" —— 所以**统一走 `seenShown`**，别再各取各的。
+  L.push('      var titleShown = String(seen.topic || seenShown || "").slice(0, 80);');
+  L.push('      overlay(titleShown || "详情", rows, det.availableOps || [], function (name) { doOp(type, id, name); }, det.detect, extras);');
   L.push('    }).catch(function (e) { alert("取详情失败：" + e.message); });');
   L.push('  }');
   L.push('');
@@ -718,6 +828,12 @@ export function clientStyle() {
   // 消息图片（2026-10-13 加，用户第 7 条）：限制最大边长，别把浮层撑破；
   //   圆角与边框跟卡片一致（4px 直角，不用胶囊）。
   s.push('.ov-img { display: block; max-width: min(560px, 100%); max-height: 60vh; border: 1px solid var(--c-hairline); border-radius: 4px; margin-top: 4px; }');
+  // 待办的"结果交付物"表单（2026-10-13 加，用户第 9 条）：与新增表单同一套输入框样式，视觉一致。
+  s.push('.dv-form { margin-top: var(--s-md); padding-top: var(--s-sm); border-top: 1px solid var(--c-hairline); }');
+  s.push('.dv-form .dv-title { font-size: 13px; color: var(--c-body-mid); font-weight: var(--w-medium); margin-bottom: var(--s-xs); }');
+  s.push('.dv-form .dv-row { display: flex; align-items: center; gap: var(--s-sm); padding: 3px 0; }');
+  s.push('.dv-form .dv-row .ov-k { flex: none; }');
+  s.push('.dv-form .dv-row .ov-input { flex: 1; }');
   // 新增表单的输入框（2026-10-12 加：原来用 window.prompt，iframe 里返回 null ⇒ 改成页内表单）
   s.push('.ov-input { flex: 1; font: inherit; padding: 4px 6px; border: 1px solid var(--c-hairline); border-radius: 4px; background: transparent; color: var(--c-ink); }');
   s.push('.ov-v { flex: 1; white-space: pre-wrap; }');
@@ -764,6 +880,25 @@ export function selfTest() {
   chk('CLI-20', '★ 转日程解析不出时间 ⇒ 单独话术（不与普通失败混同）', js.includes('x.code === 409') && js.includes('解析不出具体时间'));
   chk('CLI-21', '创建中按钮禁用（防连点重复建）', js.includes('btn.disabled = true') && js.includes('btn.disabled = false'));
   // 注：日程热力图那条断言在 `shell.mjs`（SH-30）—— 热力图是服务端渲染的，不属客户端脚本。
+  // ══════════════════════════════════════════════════════════════════════════
+  // ★★ 2026-10-13 加：**跨层通道的契约检查**（用户第 11 条要的"跳转到可视化面板"）。
+  //
+  // 为什么值得单开几条：这条通道**两端各写一半** ——
+  //   页面侧（本文件）负责"发什么"；插件侧（`lib/client.js`）负责"收什么、校验什么、调什么"。
+  //   两端一旦漂了，表现是**点了没反应**，而且不报错 —— 这正是本项目返工最多的那一类。
+  //   ⇒ 这里把**约定本身**钉住：消息类型名、三种工具到面板 id 的映射、以及"不在面板里时如实说"。
+  //     （插件侧那三条纪律 —— 白名单 / 来源校验 / 短重试 —— 归插件仓自己的检查管。）
+  // ══════════════════════════════════════════════════════════════════════════
+  chk('CLI-22', '★ 跨层通道：消息类型名与插件侧一致（改一处必须同时改另一处）',
+    js.includes('dsh-workbench:open-panel'), '约定为 dsh-workbench:open-panel');
+  chk('CLI-23', '★ 跨层通道：三种工具都映射到**真实存在的面板 id**（不是拼出来的名字）',
+    js.includes('"dsh-coords:center"') && js.includes('"dsh-workdesktop:project-graph"') && js.includes('"dsh-modeling:center"'));
+  chk('CLI-24', '★ 跨层通道：只往父窗口发、且**带 origin**（不群发、不用 * 通配）',
+    js.includes('window.parent.postMessage') && js.includes('location.origin') && js.indexOf('postMessage(..., "*")') < 0);
+  chk('CLI-25', '★ 本地直开（没有父窗口可切）时**如实说**，不给点了没反应的按钮',
+    js.includes('window.parent === window') && js.includes('要在工作台面板里点才有效'));
+  chk('CLI-26', '★ 消息详情：原始消息里的图片链接换成「［图片消息］」（只换显示，payload 不动）',
+    js.includes('rawShown') && js.includes('［$1消息］'));
   chk('CLI-5', '浮层有可执行操作按钮', js.includes('availableOps') && js.includes('ov-ops'));
   chk('CLI-6', '★ 操作失败如实提示（含"未登记"这种明确原因）', js.includes('未登记') && js.includes('操作失败'));
   chk('CLI-7', '新增入口与四类表单都在', js.includes('btn-add') && js.includes('messages:') && js.includes('todos:') && js.includes('schedules:') && js.includes('notes:'));

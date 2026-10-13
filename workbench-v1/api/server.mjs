@@ -393,7 +393,14 @@ export function handler(req, res) {
             const text = String(body.payload?.text ?? body.text ?? '').trim();
             const src = String(body.payload?.file ?? body.file ?? '').trim();     // 本机已有的文件路径
             const note = String(body.payload?.note ?? '').trim();
-            if (text === '' && src === '') return json(res, 400, { error: '至少给一个：text（文字说明）或 file（附件路径）' });
+            // ★★ 2026-10-13 加（用户第 9 条：「可以直接粘贴文件 / **填写链接** / 填写文字」）：
+            //   原来这里**没有 `link`** —— 客户端发上来的链接被**无声丢弃**。
+            //   真机验证 DV-5 抓出来的：交付物里只有 text 与 attachment，链接不见了。
+            //   这类"字段悄悄没了"最难发现：不报错，也看不出少了什么。
+            const link = String(body.payload?.link ?? body.link ?? '').trim();
+            if (text === '' && src === '' && link === '') {
+              return json(res, 400, { error: '至少给一个：text（文字说明）/ file（附件路径）/ link（链接）' });
+            }
             const list = Array.isArray(evt.deliverables) ? [...evt.deliverables] : [];
             let attachment = null;
             if (src !== '') {
@@ -413,7 +420,7 @@ export function handler(req, res) {
                 attachment = { ref: path.relative(ROOT, dest).replace(/\\/g, '/'), bytes: st.size, reused: false };
               }
             }
-            list.push({ at: new Date().toISOString(), by: 'manual', text: text || null, note: note || null, attachment });
+            list.push({ at: new Date().toISOString(), by: 'manual', text: text || null, link: link || null, note: note || null, attachment });
             const pr = store.patch('todo', id, { deliverables: list }, { op: 'deliverable', by: 'manual', evidence: { text: !!text, attachment: attachment?.ref ?? null } });
             if (pr.ok === false) return json(res, 500, { error: `交付物写入被拒：${pr.why}` });
             return json(res, 200, { ok: true, id, count: list.length, attachment, note: '结果已记在待办上，归档时随待办一起进知识库（处理引擎负责）' });
