@@ -110,9 +110,28 @@ export function mapTodo(d) {
   //     · `ddTaskId` —— 任务号已经有登记的归属：`origin.messageId = dd-todo-<taskId>`，不必再抄一份；
   //     · `isDone`   —— 完成状态也有登记的归属：`ops` 里的 `done`（且带依据）。放进 payload 会与 ops 形成两份真相。
   //   （第一条命中的就是这两个字段，被 `makeEvent` 的 PAYLOAD_SPEC 校验挡住 —— 守卫是对的。）
+  // ★★ 2026-10-14 改：**「待办详情」那一格原来只有"OA审批"这种来源名，信息量太低。**
+  //   查了详情的真实字段（20 个），发现一个**该用而没用**的：`detailUrl` ——
+  //   它是指回**钉钉里那条待办**的链接（实测形如
+  //   `dingtalk://dingtalkclient/page/link?url=https%3A%2F%2Fqbrupk.aliwork.com%2FAPP_…`）。
+  //   用户第 5.2 条点名要「待办详情」这一格 —— 一个能点回去的链接比"OA审批"两个字有用得多。
+  //
+  //   ⚠️ 为什么不加一个新字段 `detailUrl`：契约（`schema.mjs#PAYLOAD_SPEC.todo`）只认
+  //     `topic/detail/due/publisher/executor/source/closeConditions` 七项，**加字段会被守卫挡下**
+  //     （那份守卫是对的：新字段前端不读，等于没加）。⇒ 折进 `detail` 里，用 ` · ` 分隔。
+  //   ⚠️ 详情里**没有**"描述"这类字段（实测列了全部 20 个键：只有 subject / sourceTitle /
+  //     detailUrl / 时间戳 / 人员 id），所以别指望能填出更长的正文。
+  const srcName = String(d.sourceTitle ?? d.source ?? '').trim();
+  const link = (() => {
+    const u = d.detailUrl;
+    if (typeof u === 'string') return u.trim();
+    if (u && typeof u === 'object') return String(u.appUrl ?? u.pcUrl ?? u.url ?? '').trim();
+    return '';
+  })();
+  const detailText = [srcName, link ? `打开：${link}` : ''].filter(Boolean).join(' · ') || topic;
   const payload = {
     topic,
-    detail: String(d.sourceTitle ?? d.source ?? '').trim() || topic,
+    detail: detailText,
     due: localDate(d.dueTime),                       // 无期限 ⇒ null（不是编一个日期）
     publisher: String(d.creatorInfo?.name ?? '').trim() || (d.creatorId ? String(d.creatorId) : ''),
     executor,
@@ -156,11 +175,29 @@ export function ingestOnce({ run = defaultRun, dryRun = false, maxNew = 200, sin
     //   ★ `!have && !prev?.outOfScope`：界外项永远不入库，不能只看 `!have` ——
     //     否则每轮都为它重复拉一次详情（实测 DTD-12 抓到这个低效）。
     //   ★ 把 `dueMs` 纳入比较：界外项若被改了截止时间，要重新评估能不能入流。
-    const needDetail = !prev || prev.stage !== stage || prev.dueMs !== rowDue || (!have && !prev?.outOfScope);
+    // ★★ 2026-10-14 加：**映射版本**（`MAP_REV`）。
+    //
+    //   来由：上面那个"跳过"是为了不每轮重复拉详情（对的做法），但它有个副作用 ——
+    //   **我改了 `mapTodo` 之后，库里已有的记录不会更新**：实测改完"待办详情"加上
+    //   回链之后跑了一轮，结果是「进 20 · 出 0 · 跳过 20」，新增的链接一个字都没进去。
+    //   ⇒ 给 seen 里记一个映射版本；版本对不上就**重新拉一次详情并覆盖**（只拉一次，
+    //     下一轮版本就对上了）。这样"映射改了"能自己传到已有记录上，不必手工补。
+    //   ⚠️ 版本号**只在映射的输出真的会变时才动** —— 无谓地改它会引发一次全量重拉。
+    const MAP_REV = 2;   // v2 = 「待办详情」里带上 detailUrl 回链（2026-10-14）
+    const needDetail = !prev || prev.stage !== stage || prev.dueMs !== rowDue
+      || (prev.mapRev ?? 1) !== MAP_REV
+      || (!have && !prev?.outOfScope);
     let d = null;
     if (needDetail) {
       if (dryRun) { outCount += 1; continue; }
-      if (outCount >= maxNew) { errors.push(`达到上限 ${maxNew} 条，其余下一轮再来`); break; }
+      // ★★ 2026-10-14 修（**真机抓到的**）：名额原来卡在这里 ——
+      //   `if (outCount >= maxNew) break`。而 `outCount` 数的是"这一轮新采了几条"，
+      //   却被拿来同时卡"拉详情" ⇒ **界外项也占名额**。
+      //   实测：名单里 20 条界外项（历史任务，永远不入库）排在前面，把 20 个名额全部吃光 ⇒
+      //   循环 `break`，**排在后面的、真正需要更新的 9 条永远轮不到**
+      //   （表现：改完映射跑三轮，带回链的始终停在 2/11）。
+      //   ⇒ 名额只管**新采**：拉详情不占名额，"库里已存在的这条要不要刷新"更不该被别人的名额挡住。
+      //     上限的本意是"别一轮塞太多新事件"，不是"别一轮看太多条"。
       const got = fetchDetail(taskId, { run });
       detailFetches += 1;
       if (got.ok !== true) { errors.push(`待办 ${taskId} 详情取不到：${got.why}`); continue; }
@@ -175,6 +212,15 @@ export function ingestOnce({ run = defaultRun, dryRun = false, maxNew = 200, sin
       continue;
     }
 
+    // ★★ 2026-10-14 加：**名额只管"新采"**（与上面拉详情那条同一个道理）。
+    //   判断依据：库里已有这条（`have`）⇒ 这是**刷新**，不该占名额；
+    //   库里没有 ⇒ 这是**新采**，超过 `maxNew` 就停下（其余的下一轮再来）。
+    //   放在这里而不是更早，是因为"是新采还是刷新"要到这一步才知道。
+    if (!have && outCount >= maxNew) {
+      errors.push(`这一轮新采已达上限 ${maxNew} 条，其余下一轮再来`);
+      break;
+    }
+
     const mapped = mapTodo(d);
     if (mapped.ok !== true) { quarantined += 1; errors.push(`待办 ${taskId} 映射失败：${mapped.errors.join('；')}`); continue; }
     // ★ 采集起点判据（用户 2026-10-12 裁定）：待办**按截止时间**；**没有截止时间 ⇒ 算起点之后**。
@@ -183,7 +229,7 @@ export function ingestOnce({ run = defaultRun, dryRun = false, maxNew = 200, sin
     if (!scope.inScope) {
       skipped += 1; outOfScope += 1;
       // 界外项也记进 seen（带 dueMs），否则每轮都要为它再拉一次详情（DTD-12 抓到的低效）
-      seen[taskId] = { stage, dueMs: rowDue, outOfScope: true, why: scope.why, at: new Date().toISOString() };
+      seen[taskId] = { stage, dueMs: rowDue, mapRev: MAP_REV, outOfScope: true, why: scope.why, at: new Date().toISOString() };
       continue;
     }
 
@@ -209,7 +255,7 @@ export function ingestOnce({ run = defaultRun, dryRun = false, maxNew = 200, sin
         store.patch('todo', id, {}, { op: 'done', by: 'dingtalk-todo', evidence: `钉钉待办已标记完成（isDone=true，taskId=${taskId}）` });
       }
     }
-    seen[taskId] = { stage, dueMs: rowDue, at: new Date().toISOString(), done: mapped.isDone };
+    seen[taskId] = { stage, dueMs: rowDue, mapRev: MAP_REV, at: new Date().toISOString(), done: mapped.isDone };
   }
 
   if (!dryRun) saveSeen(seen);
@@ -306,6 +352,26 @@ export async function selfTest() {
     const before = store.list({ type: 'todo' }).length;
     ingestOnce({ run: fakeRun2, dryRun: true });
     chk('DTD-17', '干跑不写盘', store.list({ type: 'todo' }).length === before);
+
+    // ★★ 2026-10-14 加（用户第 5.2 条要「待办详情」这一格有用）：
+    //   实测详情返回里有 `detailUrl`（指回钉钉里那条待办），而原来那一格只存了
+    //   `sourceTitle`（"OA审批"这种，信息量极低）。现在折进 detail：
+    //   `来源 · 打开：<链接>` —— 一个能点回去的链接比"OA审批"两个字有用得多。
+    chk('DTD-18', '★★「待办详情」里带上**回链**（detailUrl），不再只有"OA审批"这种来源名', (() => {
+      const m = mapTodo({
+        taskId: 'X', subject: '一条带链接的待办', dueTime: 0, isDone: false,
+        sourceTitle: 'OA审批', detailUrl: { appUrl: 'dingtalk://dingtalkclient/page/link?url=https%3A%2F%2Fexample' },
+      });
+      return m.ok === true && /打开：/.test(m.payload.detail) && /OA审批/.test(m.payload.detail);
+    })());
+    chk('DTD-19', '★ detailUrl 缺失时**不编**一个链接（只写来源名）', (() => {
+      const m = mapTodo({ taskId: 'Y', subject: '没有链接的待办', dueTime: 0, isDone: false, sourceTitle: 'teambition' });
+      return m.ok === true && m.payload.detail === 'teambition' && !/打开：/.test(m.payload.detail);
+    })());
+    chk('DTD-20', '★ 契约守卫：`detailUrl` **没有**被加成新字段（会拒未登记字段，挡得对）', (() => {
+      const m = mapTodo({ taskId: 'Z', subject: 'x', dueTime: 0, isDone: false, detailUrl: 'https://x' });
+      return m.ok === true && m.payload.detailUrl === undefined;
+    })());
   } finally {
     if (prevOut === undefined) delete process.env.WB_V1_OUT; else process.env.WB_V1_OUT = prevOut;
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* noop */ }
