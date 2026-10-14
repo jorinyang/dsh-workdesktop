@@ -112,6 +112,10 @@ await run('P4c', 'P4 客户端脚本', async () => (await import(base + 'ui/clie
 await run('P4d', 'P4 页面数据接口', async () => (await import(base + 'api/pages.mjs')).selfTest());
 await run('P7a', 'P7 驾驶舱数据', async () => (await import(base + 'api/cockpit.mjs')).selfTest());
 await run('P7b', 'P7 驾驶舱页面', async () => (await import(base + 'ui/cockpit-page.mjs')).selfTest());
+// ★ 2026-10-14 加：**驾驶舱每日生成**（用户第 8 节：「驾驶舱每天幂等执行…所有内容不断积累，无上限」）。
+//   单开一组的理由：这条要求的失效方式**特别安静** —— 不幂等不会报错，
+//   只会每天白烧五次模型调用，**没人会发现**。
+await run('P7c', 'P7 驾驶舱每日生成（幂等 · 逐块独立 · 记账）', async () => (await import(base + 'cockpit/daily.mjs')).selfTest());
 await run('API', 'P4/P5 本地接口', async () => (await import(base + 'api/server.mjs')).selfTest());
 // ★ EP（2026-10-12 新增）：**直接对接口的检查**。
 //   来由：旧 13 卡面板退役后，真机那组里有 58 条检查失去对象（其中相当一部分验的是**数据出口**）。

@@ -19,6 +19,10 @@
  */
 
 import { spawnSync } from 'node:child_process';
+// ★ 2026-10-14 加：`runModelViaFile` 要写临时文件（提示词不进命令行）
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { runEngine } from '../ledger.mjs';
 import * as store from '../store.mjs';
 
@@ -27,6 +31,16 @@ const PS = 'powershell.exe';
 export const DEFAULT_MODEL_CMD = 'bl text chat --message';
 
 /** 真跑模型（经 powershell 调 bl；失败如实返回，不编内容） */
+/**
+ * 调模型。
+ *
+ * ⚠️ **多行提示词不要走这条路**（2026-10-14 真机实测抓到的）：
+ *   这里是 `bl text chat --message '<整段提示词>'` —— 整段提示词**塞在命令行里**。
+ *   短提示词没事（恰恰是单行），但**多行提示词会被拆成多个参数**，`bl` 当场报错：
+ *     `Error: Unexpected argument: +` / `Unexpected argument: /`
+ *   表现是"模型没产出"，**看不出是命令行拆参数**，很容易被当成模型的问题。
+ *   ⇒ 多行提示词用 `runModelViaFile()`（走 `--messages-file`，不经过命令行）。
+ */
 export function runModel(prompt, { timeoutMs = 180000 } = {}) {
   const q = String(prompt).replace(/'/g, "''");
   const cmd = `bl text chat --message '${q}'`;
@@ -40,6 +54,45 @@ export function runModel(prompt, { timeoutMs = 180000 } = {}) {
 }
 
 /**
+ * 调模型 —— **提示词写文件，走 `--messages-file`**（2026-10-14 加）。
+ *
+ * 为什么不复用 `runModel`：那条把整段提示词塞进命令行，而 `bl text chat` 官方支持
+ *   `--messages-file <path>`。多行提示词在命令行里会被拆成多个参数，
+ *   `bl` 直接报 `Unexpected argument: +` / `Unexpected argument: /`，
+ *   而**报出来的样子像模型故障**（真机实测：驾驶舱五块全部"失败"，
+ *   实际是提示词里的加号、斜杠、星号被当成了独立参数）。
+ *
+ * 做法：
+ *   一、把提示词写成临时 JSON（**用 `node:fs` 写，不经 shell**）；
+ *   二、命令就一句 `bl text chat --messages-file '<路径>'` —— 命令行里只有路径，没有正文；
+ *   三、跑完把临时文件删掉（`finally`，成功失败都删）。
+ *
+ * ⚠️ **文件内容必须是一个数组** `[{role,content}]`，不是 `{messages:[…]}`。
+ *   第一版写成了后者，`bl` 报 `Error: i is not iterable`（它在迭代那个数组）
+ *   —— 报错同样看不出是格式问题。**实测出来的格式，不是照文档猜的。**
+ *
+ * ⚠️ 临时文件写在 `os.tmpdir()`，**不写知识库**（那是一次性输入，不是产物）。
+ */
+export function runModelViaFile(prompt, { timeoutMs = 180000, role = 'user' } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-model-'));
+  const file = path.join(dir, 'messages.json');
+  try {
+    // ★ 数组，不是 {messages:[…]}（见上面那条说明）
+    fs.writeFileSync(file, JSON.stringify([{ role, content: String(prompt) }]), 'utf8');
+    const cmd = `bl text chat --messages-file '${file.replace(/'/g, "''")}'`;
+    const r = spawnSync(PS, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', cmd], { encoding: 'utf8', timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 });
+    const out = String(r.stdout ?? '').trim();
+    const err = String(r.stderr ?? '').trim();
+    if (r.error) return { ok: false, why: `调用失败：${r.error.message}` };
+    if (r.status !== 0) return { ok: false, why: `模型返回非 0（exit=${r.status}）：${(err || out).slice(0, 300)}` };
+    if (out === '') return { ok: false, why: '模型无输出' };
+    return { ok: true, text: out };
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* 删不掉不该影响结果 */ }
+  }
+}
+
+/**
  * 调模型，**失败重试一次**（2026-10-14 加）。
  *
  * 来由：真机实测里，同一段提示词有时**第一次拿不回来**（`spawnSync powershell.exe ETIMEDOUT`），
@@ -50,10 +103,13 @@ export function runModel(prompt, { timeoutMs = 180000 } = {}) {
  * ⚠️ 重试的是**同一段提示词**；"减料重试"是调用方的事（见 `cockpit.mjs#narrative`）——
  *   两者治的不是同一个病：这里治"偶发"，那里治"内容让它想太久"。
  */
-export function runModelWithRetry(prompt, { timeoutMs = 180000, retries = 1 } = {}) {
-  let last = runModel(prompt, { timeoutMs });
+export function runModelWithRetry(prompt, { timeoutMs = 180000, retries = 1, viaFile = false } = {}) {
+  // ★ 2026-10-14：`viaFile` 让**多行提示词**走文件那条路（见 `runModelViaFile` 的说明）。
+  //   驾驶舱的提示词是多行的，必须开它；单行短提示词的调用方走原来那条就行。
+  const call = viaFile ? runModelViaFile : runModel;
+  let last = call(prompt, { timeoutMs });
   for (let i = 0; i < retries && last.ok !== true; i += 1) {
-    last = runModel(prompt, { timeoutMs });
+    last = call(prompt, { timeoutMs });
     if (last.ok === true) return { ...last, retried: i + 1 };
   }
   return last;

@@ -311,6 +311,17 @@ export async function narrative(kind, { from = null, to = null, now = Date.now()
   //     然后写出"切片里没有这方面的材料" —— 那是被我自己截出来的假象。
   const slimSeries = (sl.trend.series ?? []).slice(-40);
   const materialObj = {
+    // ★★ 2026-10-14 加这段说明（**真机生成的结果逼出来的**）：
+    //   模型在「执行」那一条里写了「stats.todos.done=11、stats.schedules.done=9 显示完成；
+    //   但 totals.todoDone=0、totals.scheduleDone=0 与前者冲突」—— 它把这个当成了数据矛盾。
+    //   **它没看错，是我没说清**：`stats` 是**全时**的口径，`totals` 是**这个区间内**的口径。
+    //   两个数都真，只是范围不同。不说清就会出现两种坏结果：
+    //     ① 模型花一段去"解释矛盾"（浪费篇幅，而且听起来像发现了问题）；
+    //     ② 更坏的是它据此怀疑整份数据不可信，后面几条都写"看不清"。
+    //   ⇒ 把口径写在材料里，并明确"两个数范围不同、不是矛盾"。
+    scopeNote: '【口径说明，先看这一条】stats 是**全时**（从有记录起到现在），trend.totals 是**本区间内**的和。'
+      + '所以 stats.todos.done 与 totals.todoDone 数字不同是**正常的**（范围不同），**不是数据矛盾**，不要拿它们互相印证或据此说数据不可信。'
+      + '判断"某件事有没有在推进"要看**本区间的 totals 与 series**；判断"总共积累了多少"才看 stats。',
     stats: sl.stats,
     totals: sl.trend.totals,
     series: slimSeries,
@@ -363,7 +374,12 @@ export async function narrative(kind, { from = null, to = null, now = Date.now()
   const callOnce = async (p) => {
     if (modelFn) return modelFn(p);
     const { runModelWithRetry } = await import('../processor/analyze.mjs');
-    return runModelWithRetry(p, { timeoutMs: 240000, retries: 1 });
+    // ★★ 2026-10-14：**这一块的提示词是多行的，必须走文件那条路**（`viaFile: true`）。
+    //   真机实测的经过：五块全部"失败"，报的是 `Unexpected argument: +` / `/` ——
+    //   提示词里的加号、斜杠、星号在命令行里被当成了**独立参数**，
+    //   而报出来的样子**像模型故障**（我先怀疑模型、又怀疑提示词太长，都猜错了方向）。
+    //   `runModel`（走 `--message`）只适合**单行短提示词**；多行的走 `--messages-file`。
+    return runModelWithRetry(p, { timeoutMs: 240000, retries: 1, viaFile: true });
   };
   let m = await callOnce(prompt);
   // ★ 只有**超时**才走减料重试（2026-10-14 想清楚的一层）。
@@ -519,6 +535,17 @@ export async function selfTest() {
       /先把全部单元列出来/.test(sliceFor('insight', { now: NOW }).ask));
     chk('CKT-65', '★ 单元清单进了材料（模型看得到有哪些单元可选）',
       Array.isArray(sliceFor('insight', { now: NOW }).units?.list));
+    // ★★ 2026-10-14 加（**真机生成的结果逼出来的**）：
+    //   模型在「执行」那条里写「stats.todos.done=11 与 totals.todoDone=0 **冲突**」——
+    //   它没看错，是**我没说清**（stats 是全时、totals 是本区间）。不说清就会出现两种坏结果：
+    //   花篇幅"解释矛盾"，或者干脆怀疑整份数据不可信、后面几条都写"看不清"。
+    chk('CKT-66', '★★ 材料里写明了两套统计的**口径不同**（全时 vs 本区间），并说明不是矛盾', (() => {
+      const sl = sliceFor('analysis', { now: NOW });
+      // materialObj 是 narrative 内部拼的；这里用同样几段拼一遍，验证"口径说明"确实在
+      const note = 'stats 是**全时**';
+      const src = String(narrative.toString());
+      return src.includes('scopeNote') && src.includes('不是数据矛盾') && src.includes('全时');
+    })());
 
     // 模型三块：生成 / 幂等 / 拒绝
     const stubModel = async () => ({ ok: true, text: '判断：推进中\n理由：有真实事件\n下一步：继续' });
