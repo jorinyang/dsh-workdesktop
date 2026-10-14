@@ -2449,7 +2449,11 @@ function guideCoords(props) {
           kind: PANEL_ID,
           title: () => '坐标系',
           guide: [{
-            id: 'coords', order: 32,
+            // ★★ 2026-10-14 改 32 → 34（**并列会让顺序不可预期**）。
+            //   原来「弈枢」（`yishu`，工作台 1.0）与「坐标系」都是 `order: 32`；
+            //   官方右栏按 `order` 升序排，**并列时顺序取决于注册先后** ⇒ 每次可能不一样。
+            //   33 已被「工程图」占用、41 是「建模中心」，故取 34。
+            id: 'coords', order: 34,
             title: () => '坐标系',
             description: () => '2D 四象限散点 / 3D 坐标系（点云 · 一点多看）',
             // 指南页入口卡上的图标（官方 IconProps：{size, className}）——没给的话官方画方块占位符
