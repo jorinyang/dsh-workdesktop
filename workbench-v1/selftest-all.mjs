@@ -81,6 +81,10 @@ await run('P1p', 'P1 钉钉·跨组织白名单群（全量）', async () => (aw
 //   单开一组的原因：这道闸**挡掉的是绝大多数群消息**（实测 467 → 58），
 //   判错的方向是"该收的没收到"或"无关的污染进来"，两种都难在事后发现 ⇒ 值得各自钉住。
 await run('P1q', 'P1 钉钉·消息范围闸（白名单群全量 / 其余只收@我）', async () => (await import(base + 'collector/scope-gate.mjs')).selfTest());
+// ★ 2026-10-14 加：**提醒闸**（用户裁定：28 个白名单群的发言照旧收，但非 @我 的不提醒）。
+//   收与提醒分开各开一组 —— 两条规矩的产地不同（scope-gate / notice-gate），
+//   将来各自会改；合在一组里改一条会连带动到另一条。
+await run('P1r', 'P1 提醒闸（群里非@我 ⇒ 只收不提醒）', async () => (await import(base + 'processor/notice-gate.mjs')).selfTest());
 await run('P2', 'P2 意图判定', async () => (await import(base + 'processor/intent.mjs')).selfTest());
 // P2 消息判定与自动创建（用户 Q2：高置信自动建 / 低置信标待处置；幂等）
 await run('P2det', 'P2 消息判定与自动创建', async () => (await import(base + 'processor/detect.mjs')).selfTest());

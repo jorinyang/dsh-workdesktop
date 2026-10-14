@@ -48,6 +48,8 @@ export function stripImageMark(s) {
 // ★ 2026-10-13 加：**来源标注**的唯一产地（用户第 9/10/11 条都要"来源"字段）——
 //   待办/日程/笔记三页共用同一个 `sourceOf`，不各写一份判法。
 import { sourceOf } from './source.mjs';
+// ★ 2026-10-14 加：**提醒闸**（该不该提醒我，与"该不该收"是两件事 —— 见 notice-gate.mjs 顶部那段）
+import { noticeable } from '../processor/notice-gate.mjs';
 
 const DAY = 86400000;
 export const dayStart = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
@@ -296,7 +298,15 @@ export function overview({ now = Date.now(), staleReplyDays = 3 } = {}) {
     return daysFromToday(Date.parse(x.due), now) <= 1;
   }).map((x) => ({ kind: 'todo', id: x.id, title: x.topic, at: x.due, note: x.dueLabel }));
   // 提醒三：长期未回复的消息（待处理且超过 N 天）
-  const stale = rows.filter((e) => messageState(e) === 'pending' && now - e._at >= staleReplyDays * DAY)
+  // ★★ 2026-10-14 加提醒闸（用户裁定）：
+  //   「28 个白名单的群的其他人发言信息还是收集（方便我查询谁在什么时候讲了什么话），
+  //     但是**在非@我的信息则不用提醒**。」
+  //   ⇒ 收与提醒是两件事：那些消息**照旧进库、照旧能查**，只是**不占这条提醒**。
+  //     不过滤的话，几个热闹的群里几百条闲聊会把"谁在等我回"挤没 —— 那正是这条提醒存在的意义。
+  //   ⚠️ 过滤只作用在**提醒清单**上，不动事件本身（`noticeable()` 是就地过滤，见其自检 NG-9）。
+  const stale = noticeable(
+    rows.filter((e) => messageState(e) === 'pending' && now - e._at >= staleReplyDays * DAY),
+  )
     .sort((a, b) => a._at - b._at).slice(0, 10)
     .map((e) => ({ kind: 'message', id: e._id, title: e.payload.summary ?? String(e.payload.raw).slice(0, 40), at: e._at, note: `${senderLine(e)} · 已 ${Math.floor((now - e._at) / DAY)} 天未回复` }));
 
@@ -331,8 +341,14 @@ export async function selfTest() {
 
   try {
     // 消息：4 条，覆盖四种状态
+    // ★ 2026-10-14 改：这条夹具原来**没带 `conversationId`、也没标 `isDirect`**，
+    //   加了提醒闸之后被当成"群消息且没 @我"⇒ PG-12 变红。
+    //   查清后确认两件事都要做：
+    //     ① 夹具本来就**不够真实** —— 一条"长期未回复"的消息在真数据里是有会话信息的；
+    //        补上 `isDirect: true` 与一个会话 id，让它像真的单聊（这条提醒的用意就是"对方在等我回"）。
+    //     ② 但闸那边也确实有个真边界（判不出会话类型的消息不该被静默滤掉）—— 那边已单独修，见 `notice-gate.mjs`。
     const msg = (mid, raw, ops = []) => {
-      const e = makeEvent({ type: 'message', payload: { channel: 'dingtalk', sender: '张伟', raw, summary: raw.slice(0, 20), source: 'im', modality: 'text' }, origin: { channel: 'dingtalk', sender: '张伟', messageId: mid }, _at: D('2026-10-01') }).event;
+      const e = makeEvent({ type: 'message', payload: { channel: 'dingtalk', sender: '张伟', raw, summary: raw.slice(0, 20), source: 'im', modality: 'text', isDirect: true, conversationId: 'cidPGtestDirect' }, origin: { channel: 'dingtalk', sender: '张伟', messageId: mid }, _at: D('2026-10-01') }).event;
       e.ops = ops; return e;
     };
     store.upsert(msg('m1', '待处理的一条'));

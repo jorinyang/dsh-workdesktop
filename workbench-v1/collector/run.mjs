@@ -173,7 +173,7 @@ for (const r of implementedRoutes()) {
   //   这道闸挡掉的是绝大多数群消息（实测 9889 条里挡 7176 条）：不报出来，
   //   事后分不清"今天消息少了"是**闸生效了**还是**通路坏了**（两者表现一样）。
   const scopeNote = res.extra?.scopeTally
-    ? ` · 范围闸：单聊 ${res.extra.scopeTally.direct ?? 0} / 白名单群 ${res.extra.scopeTally['full-group'] ?? 0} / @我 ${res.extra.scopeTally['at-me'] ?? 0} / 挡掉 ${res.extra.scopeTally['other-group-not-at-me'] ?? 0}`
+    ? ` · 范围闸：单聊 ${res.extra.scopeTally.direct ?? 0} / 判不出会话 ${res.extra.scopeTally.unclassified ?? 0} / 白名单群 ${res.extra.scopeTally['full-group'] ?? 0} / @我 ${res.extra.scopeTally['at-me'] ?? 0} / 挡掉 ${res.extra.scopeTally['other-group-not-at-me'] ?? 0}`
     : '';
   chk(`RUN-${r.key}`, `${r.label}：进 ${res.inCount} / 出 ${res.outCount}${res.deferred ? ` / 排队 ${res.deferred}` : ''}${res.quarantined ? ` / 隔离 ${res.quarantined}` : ''}${scopeNote}`, true, res.why ?? '');
   if (res.errors?.length) chk(`RUN-${r.key}-errors`, `${r.label}：本轮有 I/O 错误（水位线未前进）`, false, res.errors.join('；'));

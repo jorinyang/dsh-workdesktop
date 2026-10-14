@@ -1,16 +1,26 @@
 /**
- * `v1/collector/scope-gate.mjs` —— **消息进来之前的范围判定**（用户 2026-10-13 裁定）。
+ * `v1/collector/scope-gate.mjs` —— **消息进来之前的范围判定**（用户 2026-10-13 首裁 · 2026-10-14 改判）。
  *
  * ══════════════════════════════════════════════════════════════════════════════
- * 用户原话（两轮，逐字）
- *   「钉钉群消息，白名单群（智询工作室 / AI Engineering Club）这两个群组的**全量信息**。
- *     其他群组的**非@我**的信息不进入消息。」
- *   第二轮选择：「只这两个群全量，**其余 26 个白名单群也按「只收@我」处理**」
+ * 用户原话（第二轮，**当前口径**）
+ *   「我想修改一下规则，之前我 **28 个白名单的群的其他人发言信息还是收集**
+ *     （方便我查询谁在什么时候讲了什么话），但是**在非@我的信息则不用提醒**。」
  *
- * ⇒ 三条规矩，顺序执行：
- *   一、**单聊**：照旧全收（本次只约束群消息）。
- *   二、**这两个群的群消息**：全量收。
- *   三、**其余任何群的群消息**：只有「@我」的才收。
+ * ⇒ 用户把**收**与**提醒**分成了两件事：
+ *   · **收**：那 28 个白名单群（`_meta/im-scope.yml#full_message_groups`）**全量收**，
+ *     目的是"能查谁在什么时候讲了什么" ⇒ 判"该不该收"时**不能只看 @我**。
+ *   · **提醒**：非 @我 的**不进提醒**（今日总览的"长期未回复"那一条）。
+ *     提醒的判定**不在本文件**，在 `processor/notice-gate.mjs`（那条规矩的产地）。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 收的三条规矩（按顺序）
+ *   一、**单聊**：全收。
+ *   二、**白名单群（28 个）**：全量收。
+ *   三、**其余任何群**：只有「@我」的才收。
+ *
+ * 白名单从 `_meta/im-scope.yml` 读（**不在这里再抄一份名单** —— 两份必然漂）。
+ *   读不到时退回**只认那两个跨组织群**（保守：宁可少收，不可把无关群灌进来），
+ *   并把原因放进 `whitelistStatus()`，由采集器如实报出来。
  *
  * ══════════════════════════════════════════════════════════════════════════════
  * 判"@我"**只看正文** —— 这是实测改出来的，不是一开始就这么写
@@ -24,19 +34,58 @@
  *   ⇒ 订阅级这个标记**既不多收、又漏收**，两道并起来只会更糟。
  *     **正文里 @ 的是谁，是这条消息自己的属性，比"它从哪条通道来"可靠。**
  *
- * 现在：非白名单群的消息，**正文里确实点了我的名字才收**。
- *   实测口径 = 留 2663 条（现判法 2637 + 被误挡的 26）· 挡掉 7226 条。
  * ⚠️ 仍然保留 `fromAtSubscription` 这个导出，只用于**观测**（对比两种口径差多少），不参与判定。
  */
 import fs from 'node:fs';
 import { kbPath } from '../paths.mjs';
 
-/** 全量收的两个群（与 `collector/dingtalk-cross-org.mjs` 的 `FULL_MESSAGE_GROUPS` 同源，不各写一份）。 */
+/** 跨组织那两个群：**白名单读不到时的保守兜底**（它们走 API 拉取，必须有确切 cid）。 */
 export const FULL_GROUPS = Object.freeze([
   { name: '智询工作室', cid: 'cidYfn8k+5mWU/YcUESFbS5hg==' },
   { name: 'AI Engineering Club', cid: 'cidVsqzvXfWKFV0GDaoDkUWVA==' },
 ]);
-const FULL_CIDS = new Set(FULL_GROUPS.map((g) => g.cid));
+
+/**
+ * 读 `_meta/im-scope.yml` 的白名单群（name + cid）。
+ * 每次调用都重读（文件很小）—— **改了名单不必等重启**。
+ */
+export function whitelistGroups({ file = null } = {}) {
+  const f = file ?? kbPath('_meta', 'im-scope.yml');
+  let t = '';
+  try { t = fs.readFileSync(f, 'utf8') } catch { return { ok: false, why: `读不到 ${f}`, groups: [] } }
+  const sec = t.split('full_message_groups:')[1] ?? '';
+  if (sec === '') return { ok: false, why: 'im-scope.yml 里没有 full_message_groups 段', groups: [] };
+  const groups = [];
+  let cur = null;
+  for (const line of sec.split('\n')) {
+    const mn = /^\s*-\s*name:\s*(.+?)\s*$/.exec(line);
+    if (mn) { if (cur && cur.cid) groups.push(cur); cur = { name: mn[1].replace(/^["']|["']$/g, ''), cid: null }; continue }
+    const mc = /^\s*cid:\s*"([^"]+)"/.exec(line);
+    if (mc && cur) cur.cid = mc[1];
+  }
+  if (cur && cur.cid) groups.push(cur);
+  return { ok: groups.length > 0, why: groups.length ? null : '名单里一条带 cid 的都没有', file: f, groups };
+}
+
+/** 白名单的 cid 集合（按"条数 + 文件路径 + 失败原因"做缓存键 —— 便宜且够用） */
+let _wlCache = { key: '__init__', set: null, groups: [], ok: false, why: null };
+function whitelistSet() {
+  const r = whitelistGroups();
+  const key = `${r.groups.length}:${r.file ?? ''}:${r.why ?? ''}`;
+  if (_wlCache.key !== key) {
+    // ★ 读不到 ⇒ 退回"只认那两个跨组织群"（保守：宁可少收，不可把无关群灌进来）
+    const use = r.ok ? r.groups : [...FULL_GROUPS];
+    _wlCache = { key, set: new Set(use.map((g) => g.cid)), groups: use, ok: r.ok, why: r.why };
+  }
+  return _wlCache;
+}
+/** 名单读得到吗、有几条（采集器把它如实报出来 —— 读不到等于退回保守口径，必须看得见） */
+export function whitelistStatus() { const w = whitelistSet(); return { ok: w.ok, why: w.why, count: w.groups.length, names: w.groups.map((g) => g.name) }; }
+/** 自检用：把白名单换成一份给定的集合 / 复位 */
+export function _setWhitelistForTest(groups) {
+  _wlCache = { key: `test:${groups.length}`, set: new Set(groups.map((g) => g.cid)), groups, ok: true, why: null };
+}
+export function _resetWhitelistCache() { _wlCache = { key: '__init__', set: null, groups: [], ok: false, why: null }; }
 
 /** 我自己的名字（钉钉里的显示名）。取不到就退回这份内置的 —— 判定不能因为取不到而全放行。 */
 export const SELF_MENTION_NAMES = Object.freeze(['杨瑒(月夜)', '杨瑒', '月夜']);
@@ -68,12 +117,28 @@ export function textMentionsMe(text, names = SELF_MENTION_NAMES) {
  * @returns {{keep:boolean, why:string, rule:'direct'|'full-group'|'at-me'|'other-group-not-at-me'}}
  */
 export function scopeDecision(m = {}) {
-  const cid = String(m.conversationId ?? '');
+  // （原来这里先取了 `const cid = …`；加了"判不出会话类型就放行"之后改成在需要处再取，
+  //   免得留下一个在早返回路径上用不到的变量。）
   // 一、单聊全收（本次只约束群消息）
   if (m.isDirect === true) return { keep: true, why: '单聊（本次只约束群消息）', rule: 'direct' };
-  // 二、两个白名单群全量
-  if (FULL_CIDS.has(cid)) {
-    const name = FULL_GROUPS.find((g) => g.cid === cid)?.name ?? cid;
+  // ★★ 一-b、**判不出会话类型的**（没有 conversationId、也没标 isDirect）：**收**。
+  //   来由（真机抓到的）：飞书单聊、短信/通知类消息**没有 conversationId**
+  //   ⇒ 第一版把它们当成"没 @我 的群消息"**丢掉了**。
+  //   实测那批里有：飞书单聊的"测试信息"、Trae 的推广短信、抖音钱包的通知、消费提醒……
+  //   **这些根本不是群消息**，只是"没有群会话 id"而已。
+  //   ⇒ 规矩：**一律先判它是不是单聊、是不是白名单群；判不出来就放行** ——
+  //     本闸的用途是"挡住无关**群**消息"，不是"挡住我认不出来的东西"。
+  //     这与 `processor/notice-gate.mjs` 对"判不出会话类型"的处理同源：**判不出来时不假装知道**。
+  const cidIn = String(m.conversationId ?? '');
+  if (cidIn === '') {
+    return { keep: true, why: '没有会话 id（判不出是不是群消息）—— 放行，本闸只管群', rule: 'unclassified' };
+  }
+  // 二、**白名单群（28 个）全量收** —— 用户 2026-10-14 改判：
+  //   「28 个白名单的群的其他人发言信息还是收集（方便我查询谁在什么时候讲了什么话）」
+  //   ⇒ 收的口径**不能只看 @我**；"非 @我 不提醒"是**另一件事**，在 `processor/notice-gate.mjs`。
+  const wl = whitelistSet();
+  if (wl.set && wl.set.has(cidIn)) {
+    const name = wl.groups.find((g) => g.cid === cidIn)?.name ?? cidIn;
     return { keep: true, why: `白名单群「${name}」全量收`, rule: 'full-group' };
   }
   // 三、其余群：**正文里确实点了我的名字**才收
@@ -84,7 +149,7 @@ export function scopeDecision(m = {}) {
 }
 
 /** 生成本轮回执的汇总（每一类各挡了多少、放了多少）—— 便于在采集日志里一眼看出这道闸的效果。 */
-export function emptyTally() { return { direct: 0, 'full-group': 0, 'at-me': 0, 'other-group-not-at-me': 0 }; }
+export function emptyTally() { return { direct: 0, unclassified: 0, 'full-group': 0, 'at-me': 0, 'other-group-not-at-me': 0 }; }
 export function tallyOf(t, rule) { t[rule] = (t[rule] ?? 0) + 1; return t; }
 
 /** 从事件里取"这条是不是从 @我 那条订阅来的"（与 dingtalk-im.mjs#scopeOf 同一口径：事件类型 `_at` 结尾）。 */
@@ -116,6 +181,16 @@ export async function selfTest() {
     '实测：`@杨瑒(月夜) …` 这样的消息有 26 条不在 `_at` 订阅里，第一版把它们全挡了');
   chk('SG-7', '非白名单群、正文里有 @ 但不是 @我 ⇒ 挡掉（不能只看"正文有没有 @"）',
     scopeDecision({ conversationId: 'cidOtherGroup', isDirect: false, text: '@周勇（三闻） 好的' }).keep === false);
+  // ★★ 2026-10-14 加：**判不出会话类型的必须放行**（真机抓到的缺陷）。
+  //   来由：飞书单聊、短信/通知类消息**没有 `conversationId`**，
+  //   第一版把它们当成"没 @我 的群消息"**丢掉了** —— 实测丢的有飞书单聊的"测试信息"、
+  //   Trae 的推广短信、抖音钱包的通知、消费提醒……**这些根本不是群消息**。
+  chk('SG-7b', '★★ 没有会话 id（判不出是不是群消息）⇒ **放行** —— 本闸只管群，不管"我认不出来的"',
+    scopeDecision({ text: '【抖音钱包放心借】通知：抖音里可以借钱了…拒收请回复R' }).keep === true,
+    JSON.stringify(scopeDecision({ text: '【抖音钱包放心借】通知…' })));
+  chk('SG-7c', '与"非白名单群且没 @我"区分开：那种**有** conversationId ⇒ 挡掉',
+    scopeDecision({ conversationId: 'cidOtherGroup', text: '大家早' }).keep === false
+    && scopeDecision({ text: '大家早' }).keep === true);
   // 正文匹配的边界
   chk('SG-8', '正文匹配不误判：`@杨瑒的助理` 不算 @我（名字后面要有分隔）',
     textMentionsMe('@杨瑒的助理 你好') === false && textMentionsMe('@杨瑒(月夜) 你好') === true);
