@@ -308,7 +308,10 @@ export async function ingestOnce({ hooks = {}, dryRun = false, maxBytes = MAX_RE
     const raw0 = String(ev.content ?? '');
     const at = atOf(ev);
     // 把 CLI 需要的三个 id 一起交给 hook：download-media 要 messageId + openConversationId（实测无需转换）
-    const conv = convert(raw0, hooks, { sender: ev.sender, at, messageId: ev.message_id, conversationId: ev.conversation_id });
+    // ⚠️ 2026-10-15：`download` hook **可以是异步的**（media.mjs 里"mediaId 是网址"那一支用
+    //   Node 内置 fetch，必然是异步）⇒ 这里必须 `await`。原来没 await，异步 hook 会返回
+    //   一个 Promise，`conv.ok` 恒为 undefined ⇒ **所有能下的都变成"转不动"**。
+    const conv = await convert(raw0, hooks, { sender: ev.sender, at, messageId: ev.message_id, conversationId: ev.conversation_id });
 
     if (!conv.ok) {
       // 转不动（语音没 ASR / 图片没下载）⇒ 进队列留证，等通道接线后重放；**不伪造内容**

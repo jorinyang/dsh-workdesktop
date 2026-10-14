@@ -60,7 +60,15 @@ export const NO_HOOK = {
 
 /**
  * 转换一条消息正文。
- * @returns {{ok:boolean, modality:string, text:string|null, fileRef:string|null, why:string|null, mediaId:string|null}}
+ *
+ * ★★ 2026-10-15：**可以是异步的**（返回 Promise）。
+ *   为什么变：`download` hook 现在有一条"mediaId 是网址 ⇒ 用 Node 内置 fetch 直接取"的分支，
+ *   而 fetch 是异步的（原来 shell 出去调 `curl`，那是同步的，但实测在本机不通 —— 见 media.mjs 里那段）。
+ *   ⇒ 文字/语音这两支**仍然是同步返回**（它们不碰网络），只有"网址下载"那一支返回 Promise。
+ *   ⇒ **调用方要用 `await`**：不 await 的话拿到的是 Promise，`conv.ok` 恒为 undefined，
+ *     结果是"所有能下的都变成转不动"（这个坑很安静，所以写在这里）。
+ *
+ * @returns {{ok:boolean, modality:string, text:string|null, fileRef:string|null, why:string|null, mediaId:string|null}|Promise<同左>}
  */
 export function convert(content, hooks = NO_HOOK, ctx = {}) {
   const modality = detectModality(content);
