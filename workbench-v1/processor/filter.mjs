@@ -139,21 +139,35 @@ export function runFilterOnce({ limit = 500, dryRun = false, analyzeFn = null } 
  *
  * ⚠️ 分析失败**不许拖垮筛选主链**（筛选是主职）：与 `detectOnce` 一样，错了只记声。
  */
-export async function runFilter() {
+export async function runFilter({ dryRun = false } = {}) {
   return runEngine('filter', async () => {
-    const r = runFilterOnce();
-    // ★ 筛选完就地触发分析（limit 给大一些：一轮把新筛出来的那批都过掉）
+    const r = runFilterOnce({ dryRun });
+    // ★★ 2026-10-14 修（**干跑必须是干跑**）：原来这里调 `runFilterOnce()` 一个参数都不传，
+    //   而调度入口 `processor/run.mjs` 又接受 `--dry-run`、表头还打印"（干跑）"——
+    //   ⇒ **为了安全预览而加 `--dry-run` 的人，拿到的是一次真写库**（打标 + 双写）。
+    //   方向是反的：那个参数的存在本身会让人以为安全。
+    //   ⇒ 现在 `dryRun` **一路传下去**，并且**干跑时不触发分析** ——
+    //     分析会写 `context.recalled` 与调用大模型（花钱），干跑里做这两件事就白干了。
     let analyze = null;
-    try {
-      const { analyzeOnce } = await import('./analyze.mjs');
-      analyze = await analyzeOnce({ limit: 400 });
-      if (analyze.inCount > 0) {
-        console.log(`[v1][filter] 触发分析 ${analyze.inCount} 条（取到上下文 ${analyze.withContext} · 调模型 ${analyze.modelCalls} · 复用已有 ${analyze.recallReused ?? 0}）`);
+    if (dryRun) {
+      console.log('[v1][filter] 干跑：只读统计，**不写库、不触发分析、不调模型**');
+    } else {
+      // ★ 筛选完就地触发分析（limit 给大一些：一轮把新筛出来的那批都过掉）
+      try {
+        const { analyzeOnce } = await import('./analyze.mjs');
+        analyze = await analyzeOnce({ limit: 400 });
+        if (analyze.inCount > 0) {
+          console.log(`[v1][filter] 触发分析 ${analyze.inCount} 条（取到上下文 ${analyze.withContext} · 调模型 ${analyze.modelCalls} · 复用已有 ${analyze.recallReused ?? 0}）`);
+        }
+      } catch (e) {
+        r.errors.push(`分析触发失败：${String(e && e.message).slice(0, 140)}`);
       }
-    } catch (e) {
-      r.errors.push(`分析触发失败：${String(e && e.message).slice(0, 140)}`);
     }
-    return { ...r, analyze };
+    // ★★ 2026-10-14 加：**台账里必须能看出这轮是干跑还是真跑**。
+    //   理由：干跑与真跑在台账上原来长得一模一样（都记 `engine:filter status:ok`），
+    //   于是事后回看台账**分不清"这轮写没写库"** —— 而"写没写"正是干跑唯一要回答的问题。
+    //   `runEngine` 会把 `extra` 原样记进台账（见 `ledger.mjs:100`）。
+    return { ...r, analyze, dryRun, extra: { ...(r.extra ?? {}), dryRun } };
   });
 }
 
@@ -246,6 +260,36 @@ export async function selfTest() {
     await runFilter();
     const runs = ledger.readRuns({ engine: 'filter' });
     chk('FLT-16', 'runFilter 记台账（inCount>0 且非可疑）', runs.length === 1 && runs[0].inCount === 1 && runs[0].suspicious === false, JSON.stringify(runs[0]));
+
+    // ⑦ ★★ 2026-10-14 加（**守"参数真的传下去了没有"**）：
+    //   起因：`processor/run.mjs` 接受 `--dry-run`、表头还打印"（干跑）"，
+    //   而 `runFilter()` 当时**一个参数都不收** ⇒ 为了安全预览的人拿到的是一次**真写库**。
+    //   为什么原来的 FLT-14/15 没照出来：那两条测的是 `runFilterOnce({dryRun:true})` ——
+    //   **直接调底层函数**，绕过了"调度入口有没有把参数传下来"这一段。
+    //   ⇒ 这条从 `runFilter({dryRun:true})` 这一层测，并**同时核台账标了 dryRun**（不然事后分不清）。
+    {
+      process.env.WB_V1_OUT = path.join(tmp, 'out4');
+      process.env.WB_V1_KB_ROOT = path.join(tmp, 'kb4');
+      const ev = mk({ mid: 'm-dry' });
+      store.upsert(ev);
+      const before = store.getById('message', ev._id)?.ops?.length ?? 0;
+      const rd = await runFilter({ dryRun: true });
+      const after = store.getById('message', ev._id)?.ops?.length ?? 0;
+      const dryRuns = ledger.readRuns({ engine: 'filter' });
+      const last = dryRuns[dryRuns.length - 1];
+      chk('FLT-20', '★★ runFilter({dryRun:true}) ⇒ **不打标**（参数真的传下去了，不是假开关）',
+        rd.dryRun === true && after === before, `ops ${before} → ${after} · 回执 dryRun=${rd.dryRun}`);
+      chk('FLT-21', '★ 干跑也在台账里标出来（否则事后分不清这轮写没写库）',
+        last?.extra?.dryRun === true, JSON.stringify(last?.extra));
+      // 负向对照：**真跑必须打标**（否则"不打标"可能只是因为压根没处理）
+      const ev2 = mk({ mid: 'm-real' });
+      store.upsert(ev2);
+      const b2 = store.getById('message', ev2._id)?.ops?.length ?? 0;
+      await runFilter();
+      const a2 = store.getById('message', ev2._id)?.ops?.length ?? 0;
+      chk('FLT-22', '★ 负向对照：真跑**会**打标（证明上一条的"不打标"不是因为没处理）',
+        a2 > b2, `ops ${b2} → ${a2}`);
+    }
   } finally {
     if (prevOut === undefined) delete process.env.WB_V1_OUT; else process.env.WB_V1_OUT = prevOut;
     if (prevKb === undefined) delete process.env.WB_V1_KB_ROOT; else process.env.WB_V1_KB_ROOT = prevKb;

@@ -62,16 +62,16 @@ if (HEALTH_ONLY) {
   const sh = stateHealth();
   console.log('\n  水位线（有读数的通路）：');
   for (const s of sh) console.log(`    ${s.key.padEnd(16)} runs=${s.runs} 进=${s.lastIn} 出=${s.lastOut} 错=${s.lastErrors}${s.suspicious ? ' ⚠️' : ''}`);
+  // ⚠️ 2026-10-14 修：这里原来有一段读 `scopeRun` 的代码，**已删**（不是搬走）。
+  //   为什么删而不是挪：**那段读数的正确落点早就在真跑那条路上了** ——
+  //   见下面 `RUN-${r.key}` 那一行的 `scopeNote`（第 177-180 行），
+  //   而且那里的注释写明"第一版放到收尾处没打出来（extra 的传递链上有一处没接上），
+  //   所以改挂在它自己那一行"。
+  //   ⇒ 健康检查里这段是**真跑路径的残留复制**，它引用了只有真跑才赋值的 `scopeRun`：
+  //     `--health` 必然崩（`ReferenceError: Cannot access 'scopeRun' before initialization`，exit 1），
+  //     而且**先打完健康报告和 `PASS = 0 FAIL = 0` 才崩** ⇒ 只看日志尾巴的人会以为通路健康。
+  //   搬它会变成重复输出，提前声明它会变成恒假的死分支 —— 两种都不对。**删掉才对。**
   console.log(`\nPASS = ${pass}   FAIL = ${fail}`);
-  // ★ 2026-10-13 加：**把消息范围闸的读数打在收尾处**。
-  //   这道闸挡掉的是绝大多数群消息（实测 9889 条里挡 7176 条）。不报出来，
-  //   事后分不清"今天消息少了"是**闸生效了**还是**通路坏了** —— 两者表现一样。
-  if (scopeRun?.extra?.scopeTally) {
-    const t = scopeRun.extra.scopeTally;
-    console.log(`\n  消息范围闸（白名单群全量 · 其余群只收 @我）：`);
-    console.log(`    单聊 ${t.direct ?? 0} · 白名单群 ${t['full-group'] ?? 0} · 非白名单群但 @我 ${t['at-me'] ?? 0} · 挡掉 ${t['other-group-not-at-me'] ?? 0}`);
-    console.log(`    （用户裁定：只有智询工作室 / AI Engineering Club 收全量，其余群只收 @我）`);
-  }
   process.exit(fail === 0 ? 0 : 1);
 }
 
