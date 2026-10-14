@@ -1,4 +1,4 @@
-﻿# dsh-mi-remote · 遥控器
+# dsh-mi-remote · 遥控器
 
 把小米蓝牙遥控器（RC003）变成 DSH 的输入设备：**按键映射到 DSH 动作**、**语音出字**、**链路体检**。
 
@@ -64,8 +64,10 @@ dsh-mi-remote/
 │   ├── verify-live.mjs     实机：启动图 / bundle 字节 / 宿主路由
 │   └── fix-bom.mjs         把两个 .ps1 修成 UTF-8 带 BOM（PS 5.1 硬要求）
 ├── docs/
-│   ├── REVIEW_遥控器按键链路_20261011.md    按键链路全面 review
 │   └── ARCHITECTURE.md                       机制说明与排障手册
+│       （原先这里还有一份 `REVIEW_遥控器按键链路_20261011.md`，
+│        2026-10-15 移出代码仓 → 知识库 `Research/Output/个人工作台/04-审查与复盘/`。
+│        理由：它是审查记录（交付物），不是插件代码。）
 ├── audio/                  两个 .ps1 执行器（链路探针 / 录音设备切换）
 ├── locale/                 zh.json / en.json
 ├── assets/vendor/          第三方安装包（VB-CABLE / SayAll / 无线麦）+ SHA256SUMS
