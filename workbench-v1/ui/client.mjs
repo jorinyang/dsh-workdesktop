@@ -129,8 +129,17 @@ export function clientScript(apiBase) {
   L.push('  };');
   L.push('');
   L.push('  function doOp(type, id, name) {');
-  // 找不到这个动作 ⇒ **如实说"界面上有、但没接上"**，不要拼一个路径去撞 404 再拿"未登记"当解释
-  L.push('    var spec = (OP_ROUTE[type] || {})[name];');
+  // ★★ 2026-10-14 修（**真机点击抓到的**）：`OP_ROUTE` 的键是**单数**
+  //   （`message` / `todo` / `schedule` / `note`），而调用方传进来的 `type` 是**复数**
+ //   （`messages` / `todos` / `schedules` / `notes` —— 详情接口只认复数，见 `openDetail`）。
+  //   ⇒ `OP_ROUTE[type]` 查不到 ⇒ `spec` 为空 ⇒ **四个页面的每个动作都弹"还没有接线"**。
+  //
+  //   ⚠️ 为什么上一轮没抓到：那次我验的是**映射表本身**（"表里有这几条、路径对不对"），
+  //     而错在**查表用的键**——表是对的，查错了。⇒ 这类错只有"真点一下"才看得见。
+  //   ⇒ 查表前先归一：与 `CANON` 反向的那一步（复数 → 单数），查不到再原样试一次。
+  L.push('    var SING = { messages: "message", todos: "todo", schedules: "schedule", notes: "note" };');
+  L.push('    var bucket = OP_ROUTE[type] || OP_ROUTE[SING[type]] || null;');
+  L.push('    var spec = bucket ? bucket[name] : null;');
   L.push('    if (!spec) { alert("这个动作还没有接线：" + type + " / " + name + "（界面给了按钮，但没对应的已登记写路径）"); return; }');
   L.push('    var path = spec.path.replace("{id}", id);');
   L.push('    var payload = { op: name };');
@@ -1046,6 +1055,31 @@ export function selfTest() {
   chk('CLI-13', '★ 概括还没算完 / 算不出来时**如实说**（不退回去列路径、也不假装有内容）',
     js.includes('正在概括') && js.includes('contextSummaryError'));
   chk('CLI-14', '笔记的分析与建议 / 可视化（建议态与已建态）/ 分析未完成 都渲染', js.includes('分析与建议') && js.includes('可视化') && js.includes('v.built === true') && js.includes('分析未完成'));
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ★★ 2026-10-14 加：**动作按钮真的接上了没有**（用户第 4~7 条都点名这件事："需适配对应模块
+  //   已登记的写路径，点击后执行实际功能，而非仅提示未接线"）。
+  //
+  //   真机抓到的缺陷：`OP_ROUTE` 的键是**单数**（message/todo/schedule/note），
+  //   而 `doOp` 拿到的 `type` 是**复数**（详情接口只认复数）⇒ 查表查不到
+  //   ⇒ **四个页面的每一个动作都弹"这个动作还没有接线"** —— 正是用户抱怨的那句话。
+  //
+  //   ⚠️ 为什么之前的检查没抓到：它们验的是**映射表本身**（"表里有这几条、路径写没写对"），
+  //     而错在**查表用的键** —— 表是对的，查错了。⇒ 检查必须落在**"键能不能对上"**上。
+  // ══════════════════════════════════════════════════════════════════════════
+  chk('CLI-15', '★★ 动作查表**做了单复数归一**（表用单数键、详情接口给的是复数 —— 不归一就每个动作都弹"还没有接线"）',
+    /var SING = \{ messages: "message"/.test(js) && /OP_ROUTE\[type\] \|\| OP_ROUTE\[SING\[type\]\]/.test(js));
+  chk('CLI-16', '★ 四类动作的映射都在（消息 4 个 / 待办 3 个 / 日程 2 个 / 笔记 2 个）', (() => {
+    const need = [
+      ['message', ['已回复', '转待办', '转日程', '转笔记']],
+      ['todo', ['已完成', '已搁置', '转日程']],
+      ['schedule', ['已完成', '转待办']],
+      ['note', ['分析笔记', '可视化构建']],
+    ];
+    return need.every(([bucket, names]) => names.every((n) => js.includes(`"${n}"`)));
+  })());
+  chk('CLI-17', '★ 负向对照：**不许**留一条"随手拼路径"的兜底（拼出来的路径多半没登记，撞 404 再拿"未登记"当解释）',
+    !/API \+ "\/" \+ type \+ "\/" \+ id \+ "\/act"/.test(js));
 
   const pass = out.filter((x) => x.ok).length;
   return { pass, fail: out.length - pass, details: out };
