@@ -283,7 +283,7 @@ export async function selfTest() {
   const DUE_BEFORE = Date.parse('2026-09-02T08:00:00+08:00');   // 起点之前
   const detailOf = (id) => ({
     taskId: id,
-    subject: id === 'A' ? '把验收单发给张伟' : (id === 'B' ? '千问办公的配置变更审批' : '一条九月的老待办'),
+    subject: id === 'A' ? '把验收单发给张伟' : (id === 'B' ? '示例项目甲的配置变更审批' : '一条九月的老待办'),
     dueTime: id === 'A' ? 0 : (id === 'B' ? DUE_AFTER : DUE_BEFORE),
     isDone: id === 'B',
     creatorInfo: { name: id === 'A' ? '张伟' : '李强', userId: '1' },
@@ -294,7 +294,7 @@ export async function selfTest() {
     if (args[1] === '+get-my-tasks') {
       return { ok: true, json: { count: 3, todos: [
         { taskId: 'A', subject: '把验收单发给张伟', dueTime: 0, finalStatusStage: 0 },
-        { taskId: 'B', subject: '千问办公的配置变更审批', dueTime: DUE_AFTER, finalStatusStage: 2 },
+        { taskId: 'B', subject: '示例项目甲的配置变更审批', dueTime: DUE_AFTER, finalStatusStage: 2 },
         { taskId: 'C', subject: '一条九月的老待办', dueTime: DUE_BEFORE, finalStatusStage: 0 },
       ] } };
     }
@@ -306,7 +306,7 @@ export async function selfTest() {
     // ① 映射：五项齐全 + 日期口径
     const m = mapTodo(detailOf('B'));
     chk('DTD-1', '★ 映射出需求 3.1.6 的五项（主题/详情/截止/发布人/执行人）',
-      m.ok === true && m.payload.topic === '千问办公的配置变更审批' && m.payload.detail === 'OA审批'
+      m.ok === true && m.payload.topic === '示例项目甲的配置变更审批' && m.payload.detail === 'OA审批'
       && m.payload.publisher === '李强' && m.payload.due === localDate(DUE_AFTER) && 'executor' in m.payload,
       JSON.stringify(m.payload));
     chk('DTD-2', '★ 无期限 ⇒ due 为 null（不编日期）', mapTodo(detailOf('A')).payload.due === null, JSON.stringify(mapTodo(detailOf('A')).payload.due));
@@ -333,7 +333,7 @@ export async function selfTest() {
 
     // ④ 状态翻转：A 在钉钉那边完成了 ⇒ 下一轮补 done，且**不新建事件**
     const fakeRun2 = (args) => {
-      if (args[1] === '+get-my-tasks') return { ok: true, json: { count: 2, todos: [{ taskId: 'A', subject: '把验收单发给张伟', dueTime: 0, finalStatusStage: 2 }, { taskId: 'B', subject: '千问办公的配置变更审批', dueTime: DUE_AFTER, finalStatusStage: 2 }] } };
+      if (args[1] === '+get-my-tasks') return { ok: true, json: { count: 2, todos: [{ taskId: 'A', subject: '把验收单发给张伟', dueTime: 0, finalStatusStage: 2 }, { taskId: 'B', subject: '示例项目甲的配置变更审批', dueTime: DUE_AFTER, finalStatusStage: 2 }] } };
       if (args[1] === '+get') { const id = args[3]; const d = detailOf(id); if (id === 'A') d.isDone = true; return { ok: true, json: { result: { todoDetailModel: d } } }; }
       return { ok: false, why: 'unexpected' };
     };

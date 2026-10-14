@@ -7,7 +7,7 @@
  *
  * 实测依据（2026-10-12，全部是量出来的，不是猜的）：
  *   · `dws wiki space list` ⇒ `{success, hasMore, wikiSpaces:[{name, workspaceId, rootNodeId}]}`
- *     —— 本机实测 **5 个知识库**（育钉-千问办公大客户 / 课件素材 / 悟空商业化课程 / 诊断自咨询工具 / 电商专班课程）。
+ *     —— 本机实测 **5 个知识库**（示例组织甲-示例项目甲大客户 / 课件素材 / 悟空商业化课程 / 诊断自咨询工具 / 电商专班课程）。
  *   · `dws wiki feed list --workspace <id> [--limit n] [--cursor t]`
  *     ⇒ `{success, hasMore, nextToken, feeds:[{content, time, type}]}`；**`content` 是内嵌 JSON 字符串**。
  *   · **`--limit` 有上限**：实测 20 可用、**25 就被 API 拒**（"参数 pageSize 超过最大允许值"）
