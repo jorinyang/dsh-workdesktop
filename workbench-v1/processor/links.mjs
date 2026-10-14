@@ -308,6 +308,24 @@ export async function selfTest() {
     const e0 = await fetchOnce({ fetchFn: fakeFetch, kbRoot: tmp });
     chk('LF-3', '★ 空队列 ⇒ 跳过且**不发任何请求**（Q10）', e0.picked === 0 && calls === 0, JSON.stringify({ picked: e0.picked, calls }));
 
+    // ★ 2026-10-14 加：**跨文件契约** —— 空跑要打那条 ASCII 标记，包装脚本按它决定"要不要写日志"。
+    //   为什么要一条检查：这是**两个文件之间的约定**（本文件打标记、`_meta/tools/v1-links.cmd` 认它），
+    //   改一边不改另一边**不会有任何报错** —— 表现只是"日志又开始白涨"（原来就是这样涨到 694 段的）。
+    //   所以这里**同时核两边**：本文件里要有这条 console.log，包装脚本里要有对应的 findstr。
+    {
+      const selfSrc = fs.readFileSync(new URL(import.meta.url), 'utf8');
+      // ⚠️ 包装脚本在**知识库侧**（不是包内）—— 用 `KB_ROOT` 取（`paths.mjs` 的收口）。
+      //   套件给每组换临时库根 ⇒ 这里会取不到；**取不到就只核本文件那一半**，不判失败
+      //   （判失败会把"裸 clone 里没有那个脚本"说成包坏了 —— 那是把环境问题当代码问题）。
+      let cmdSrc = '';
+      try { cmdSrc = fs.readFileSync(path.join(KB_ROOT, '_meta', 'tools', 'v1-links.cmd'), 'utf8') } catch { /* 脚本不在 ⇒ 只核本文件 */ }
+      const hasMarker = /console\.log\('LINK_QUEUE_EMPTY'\)/.test(selfSrc);
+      const cmdMatches = cmdSrc === '' ? true : /findstr[^\n]*LINK_QUEUE_EMPTY/.test(cmdSrc);
+      chk('LF-11', '★★ 空跑标记两边对得上（本文件打 LINK_QUEUE_EMPTY · 包装脚本 findstr 认它）—— 防改一边不改另一边',
+        hasMarker && cmdMatches,
+        `本文件打了=${hasMarker} · 包装脚本认了=${cmdSrc === '' ? '(脚本不在，跳过这一半)' : cmdMatches}`);
+    }
+
     // 一轮真抓：一条 HTML、一条 PDF、一条失败、一条超大
     saveQueue([]);
     enqueue(['https://example.com/doc/plan'], { fromId: 'm1', from: '钉钉·张伟' });
@@ -412,6 +430,15 @@ if (__isMain && process.argv.includes('--drain')) {
     const before = pendingCount();
     if (before === 0) {
       // Q10 的"空队列近乎零成本"：一条都不抓、不发任何请求，且**如实说明是空**（不是"跑过了"）
+      // ★ 2026-10-14 加：**再打一条纯 ASCII 的机器标记**。
+      //   为什么：包装脚本 `_meta/tools/v1-links.cmd` 要判"这轮是不是空跑"，好决定**要不要写日志**
+      //   （空队列每 5 分钟写一段，日志会白涨 —— 实测已经攒了 694 段）。
+      //   它原来 `findstr /C:"queue is empty"` 找的是**英文**，而这里打的是**中文** ⇒ **永远匹配不上**，
+      //   于是空跑也照写。而 `.cmd` 那边有"**ASCII ONLY**"的硬约束（它第 2 行注释就写着），
+      //   不能把中文塞进去比 —— 汉字在 cmd 里要看代码页，比不了。
+      //   ⇒ 由**本文件**多打一条 ASCII 标记，两边都不用碰编码。
+      //   ⚠️ 这条标记是**契约**：包装脚本按它判空跑。改名要同时改 `v1-links.cmd`。
+      console.log('LINK_QUEUE_EMPTY');
       console.log('[links] 队列为空 ⇒ 跳过（第 10 条裁定：空转近零成本）');
       console.log('PASS');
       process.exit(0);

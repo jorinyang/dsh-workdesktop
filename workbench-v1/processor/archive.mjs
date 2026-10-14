@@ -58,12 +58,28 @@ export function saveArchiveIndex(doc) {
   fs.renameSync(tmp, f);
 }
 
-/** 这条事件被处置过吗（需求口径：转待办 / 转日程 / 已回复 / 已完成 / 自动关闭） */
+/**
+ * 这条事件被处置过吗（需求口径：转待办 / 转日程 / 已回复 / 已完成 / 自动关闭）
+ *
+ * ★★ 2026-10-14 修（**原来找的 op 名全库没人写，这个处置项永远判不出来**）：
+ *   原来写的是 `if (ops.includes('converted')) found.push('已转出')`，
+ *   而**全库没有任何地方写 `op:'converted'`** —— 实际转出写的是
+ *   `to-todo` / `to-schedule` / `to-note`（写在 `api/server.mjs` 的转换与会话动作里）。
+ *   ⇒ 后果：**"已转出"这一项恒假**。而 `auditEvent` 是靠这几个处置项判"处置完没"的，
+ *     所以**转过待办/日程/笔记的事件，在审计眼里跟没处置过一样**。
+ *     这不是"少显示一个标签"，是**归档门的判断建立在一个恒假的条件上**。
+ *   ⇒ 判据改成**认实际写的三个 op 名**，并**保留 `converted`** 作兼容
+ *     （库里若有历史数据带这个 op，不能因为改了判据就把它当没处置）。
+ *
+ * ⚠️ 教训（与 2026-10-14 修的另外几条是同一个形态）：**判据里的字符串常量必须能追到产地**。
+ *   找一个没有任何写入方的 op 名，等于写了一条恒假的检查 —— 而它**看起来在正常工作**。
+ */
 export function dispositionsOf(e) {
   const ops = (e.ops ?? []).map((o) => String(o?.op ?? ''));
   const found = [];
   if (ops.includes('replied')) found.push('已回复');
-  if (ops.includes('converted')) found.push('已转出');
+  // 转出：认**实际写的三个 op 名**，兼容历史 `converted`
+  if (ops.some((o) => o === 'to-todo' || o === 'to-schedule' || o === 'to-note' || o === 'converted')) found.push('已转出');
   if (ops.includes('done')) found.push('已完成');
   if (ops.includes('closed')) found.push('自动关闭');
   if (ops.includes('analyzed')) found.push('已分析');
@@ -324,6 +340,24 @@ export async function selfTest() {
     archiveOnce({ dryRun: true, now: NOW });
     const after = fs.readdirSync(path.join(process.env.WB_V1_KB_ROOT, ARCHIVE_DIR, '2026-10')).length;
     chk('ARC-18', '干跑不写盘', before === after, `${before} → ${after}`);
+
+  // ⑪ ★★ 处置项认得对不对 —— **这一条是 2026-10-14 补的，为的是一个恒假条件**。
+  //   背景：`dispositionsOf` 原来找 `op:'converted'`，而**全库没有任何地方写这个 op**
+  //   （实际写的是 `to-todo` / `to-schedule` / `to-note`）⇒ "已转出"永远判不出来，
+  //   于是**转过待办的事件在审计眼里跟没处置过一样**，而 ARC-1..18 全都通过、没人发现。
+  //   为什么原来那 18 条没照出来：它们都拿**自己造的夹具**测，而夹具里写的也是 `converted`
+  //   —— **夹具与实现抄了同一个错**，于是互相印证成"对的"。
+  //   ⇒ 这条检查**不拿字符串比字符串**，而是把"实际产地写的 op 名"逐个喂进去，
+  //     要求每一个都被认成"已转出"。以后谁改了转出的 op 名，这里会立刻红。
+  {
+    const realOps = ['to-todo', 'to-schedule', 'to-note'];   // ← 实际产地：api/server.mjs 的转换与会话动作
+    const miss = realOps.filter((o) => !dispositionsOf({ ops: [{ op: o }] }).includes('已转出'));
+    chk('ARC-19', '★★ 处置项认得出**实际写的**转出 op 名（to-todo / to-schedule / to-note）—— 防"判据里的常量没人写"',
+      miss.length === 0, miss.length ? `认不出的：${miss.join(' , ')}` : `三个都认得出`);
+    // 负向对照：**没转出过的不许判成"已转出"**（否则这一项就变成恒真，另一种坏法）
+    const none = ['replied', 'analyzed'].every((o) => !dispositionsOf({ ops: [{ op: o }] }).includes('已转出'));
+    chk('ARC-20', '★ 负向对照：没转过的不判"已转出"（防这一项变成恒真）', none, '');
+  }
   } finally {
     if (prevOut === undefined) delete process.env.WB_V1_OUT; else process.env.WB_V1_OUT = prevOut;
     if (prevKb === undefined) delete process.env.WB_V1_KB_ROOT; else process.env.WB_V1_KB_ROOT = prevKb;
