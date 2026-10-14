@@ -213,7 +213,7 @@ export const REQUIRED_COVERAGE = Object.freeze({
 export const INTERVAL_EXCEPTIONS = Object.freeze({ 'fs-im-p2p': FEISHU_P2P_INTERVAL_SEC });
 
 /**
- * **采集范围排除项**（用户 2026-10-12 裁定：飞书「Xiaomi MiMo Desktop 交流1群」的信息不获取）。
+ * **采集范围排除项**（用户 2026-10-12 裁定：飞书「示例群（发布脱敏）」的信息不获取）。
  *   为什么放在这里而不是写在各采集器里：范围是一条**裁定**，改了要能一眼看见、要能被断言；
  *   写进注册表 ⇒ 采集器从它读、自检能判否，不会"某个通道忘了排除"。
  *   匹配口径：**群名精确匹配**（飞书事件带 chat_id 与群名索引；钉钉群名在事件里没有，
@@ -221,7 +221,7 @@ export const INTERVAL_EXCEPTIONS = Object.freeze({ 'fs-im-p2p': FEISHU_P2P_INTER
  */
 export const SCOPE_DENY = Object.freeze({
   feishu: Object.freeze([
-    { name: 'Xiaomi MiMo Desktop 交流1群', reason: '用户 2026-10-12 明确：这个群的信息不获取' },
+    { name: '示例群（发布脱敏）', reason: '用户 2026-10-12 明确：这个群的信息不获取' },
   ]),
   dingtalk: Object.freeze([]),
 });
@@ -346,7 +346,7 @@ export function selfTest() {
   // ★ 采集范围排除项（用户裁定要能被断言，不能只写在注释里）
   const denied = SCOPE_DENY.feishu ?? [];
   chk('REG-9', '排除项已登记且写明理由（用户裁定的群不采集）', denied.length >= 1 && denied.every((d) => d.name && typeof d.reason === 'string' && d.reason.length >= 8), JSON.stringify(denied));
-  chk('REG-10', '★ isDenied 判得准：已裁定的群为真、其它群为假、空名不误伤', isDenied('feishu', 'Xiaomi MiMo Desktop 交流1群') === true && isDenied('feishu', 'AI+研究院') === false && isDenied('feishu', '') === false && isDenied('dingtalk', 'Xiaomi MiMo Desktop 交流1群') === false, `feishu/交流1群=${isDenied('feishu', 'Xiaomi MiMo Desktop 交流1群')} feishu/AI+研究院=${isDenied('feishu', 'AI+研究院')}`);
+  chk('REG-10', '★ isDenied 判得准：已裁定的群为真、其它群为假、空名不误伤', isDenied('feishu', '示例群（发布脱敏）') === true && isDenied('feishu', 'AI+研究院') === false && isDenied('feishu', '') === false && isDenied('dingtalk', '示例群（发布脱敏）') === false, `feishu/交流1群=${isDenied('feishu', '示例群（发布脱敏）')} feishu/AI+研究院=${isDenied('feishu', 'AI+研究院')}`);
 
   // ★★ 2026-10-14 加（producerHealth）：**"代码写了"与"有人在喂"必须两个读数都有**。
   //   为什么单独立一条检查：`health()` 报 19/19 全接好，而飞书那条**两天没在喂** ——

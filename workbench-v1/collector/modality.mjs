@@ -88,7 +88,7 @@ export const NO_HOOK = {
  *
  * @returns {{ok:boolean, modality:string, text:string|null, fileRef:string|null, why:string|null, mediaId:string|null}|Promise<同左>}
  */
-export function convert(content, hooks = NO_HOOK, ctx = {}) {
+export async function convert(content, hooks = NO_HOOK, ctx = {}) {
   const modality = detectModality(content);
   const mediaId = extractMediaId(content);
   const h = { ...NO_HOOK, ...hooks };
@@ -132,7 +132,14 @@ export function convert(content, hooks = NO_HOOK, ctx = {}) {
   if (modality === 'image' || modality === 'video') {
     if (!mediaId) return { ok: false, modality, text: null, fileRef: null, why: `${modality} 没有 mediaId ⇒ 无法落盘`, mediaId: null };
     if (typeof h.download !== 'function') return { ok: false, modality, text: null, fileRef: null, why: `${modality} 下载通道未接线（download hook 为空）⇒ 本条留在队列`, mediaId };
-    const r = h.download(mediaId, ctx);
+    // ★★ 2026-10-15 修：**这里漏了 `await`** —— 而它正是"4 张图永远下不来"的那一支。
+    //   来由：给下载加了"mediaId 是网址 ⇒ 用 fetch 直取"之后，hook **变成异步**的；
+    //   我给"文件"那一支加了 `await`，**漏了图片/视频这一支** ⇒ 这里拿到的是 Promise，
+    //   `r.ok` 是 `undefined` ⇒ 一律判"下载失败：未返回路径"。
+    //   ⇒ 后果最讽刺：**图片正是那批要修的**（4 条网址 mediaId 的 deferred），
+    //     修完仍然下不来 —— 而且表现和修之前几乎一样，不留心就以为"网址那条没生效"。
+    //   ⚠️ 记这一笔是因为它安静：Promise 不为 null、`r.ok` 也不抛错，只是恒 `undefined`。
+    const r = await h.download(mediaId, ctx);
     if (!r || r.ok !== true || !r.path) return { ok: false, modality, text: null, fileRef: null, why: `下载失败：${r?.why ?? '未返回路径'}`, mediaId };
     return { ok: true, modality: 'file', text: stripDownloadHint(content), fileRef: r.path, why: null, mediaId };
   }
@@ -168,7 +175,7 @@ export function convert(content, hooks = NO_HOOK, ctx = {}) {
 // ══════════════════════════════════════════════════════════════════════════════
 const REAL_IMAGE = '[图片消息](mediaId=$iwEcAqNwbmcDAQTRBwgF0QKuBrCOZ73_lzfmpgqclOO1xJ0AB9IZMABvCAAJomltCgAL0gABKNQ) 注意：如需下载使用dws chat message download-media命令下载';
 
-export function selfTest() {
+export async function selfTest() {
   const out = [];
   const chk = (id, desc, ok, detail = '') => out.push({ id, desc, ok: !!ok, detail });
 
@@ -181,28 +188,28 @@ export function selfTest() {
   chk('MOD-7', '下载提示被剥离（不污染信息原文）', stripDownloadHint(REAL_IMAGE).startsWith('[图片消息]') && !stripDownloadHint(REAL_IMAGE).includes('注意：如需下载'));
 
   // 文字：未接线也能成功（不需要 hook）
-  const t = convert('你好');
+  const t = await convert('你好');
   chk('MOD-8', '文字转换不依赖 hook ⇒ ok', t.ok === true && t.modality === 'text' && t.text === '你好');
 
   // ★ 语音未接线 ⇒ 必须**如实失败**，不许伪造空文本
-  const v = convert('[语音消息](mediaId=abc==)');
+  const v = await convert('[语音消息](mediaId=abc==)');
   chk('MOD-9', '★ 语音未接线 ⇒ ok:false 且给出 why（不伪造空文本）', v.ok === false && typeof v.why === 'string' && v.text === null, JSON.stringify(v));
 
   // ★ 图片未接线 ⇒ 同样如实失败
-  const i = convert(REAL_IMAGE);
+  const i = await convert(REAL_IMAGE);
   chk('MOD-10', '★ 图片未接线 ⇒ ok:false（不假装已落盘）', i.ok === false && i.fileRef === null, JSON.stringify(i));
 
   // 接线后行为：ASR 成功 ⇒ text；ASR 返回空 ⇒ 仍失败
-  const okAsr = convert('[语音消息](mediaId=abc==)', { asr: () => ({ ok: true, text: '帮我看一下这个合同' }) });
+  const okAsr = await convert('[语音消息](mediaId=abc==)', { asr: () => ({ ok: true, text: '帮我看一下这个合同' }) });
   chk('MOD-11', 'ASR 接线且返回文本 ⇒ ok + text', okAsr.ok === true && okAsr.text === '帮我看一下这个合同' && okAsr.modality === 'voice');
-  const emptyAsr = convert('[语音消息](mediaId=abc==)', { asr: () => ({ ok: true, text: '   ' }) });
+  const emptyAsr = await convert('[语音消息](mediaId=abc==)', { asr: () => ({ ok: true, text: '   ' }) });
   chk('MOD-12', '★ ASR 返回空文本 ⇒ 仍判失败（防空数据冒充成功）', emptyAsr.ok === false, JSON.stringify(emptyAsr));
 
   // ★★ 2026-10-14 加：**平台自带转写优先，不调 ASR**。
   //   实测依据：钉钉 198 条语音里 149 条的 content 是「转写正文 + 标记 + 下载提示」。
   //   加这一条之前，它们全被判 voice、去调未接线的 ASR、然后**连正文一起丢进 deferred**。
   const REAL_VOICE_WITH_TEXT = '我想试试能不能直接发给自己[语音消息](mediaId=@lR_PJxEH90bnNu0AALAHp2goIbVm3AqZqUDJX1AA) 注意：如需下载使用dws chat message download-media命令下载';
-  const pv = convert(REAL_VOICE_WITH_TEXT);   // ⚠️ **不注入 ASR**：就是要证明"不需要 ASR"
+  const pv = await convert(REAL_VOICE_WITH_TEXT);   // ⚠️ **不注入 ASR**：就是要证明"不需要 ASR"
   chk('MOD-14', '★★ 平台自带转写 ⇒ 直接用它，**不调 ASR**（未接线也能成功）',
     pv.ok === true && pv.modality === 'voice' && pv.text === '我想试试能不能直接发给自己' && pv.by === 'platform',
     JSON.stringify(pv));
@@ -210,20 +217,20 @@ export function selfTest() {
     !String(pv.text ?? '').includes('注意：如需下载') && !String(pv.text ?? '').includes('mediaId'),
     String(pv.text));
   // 负向对照：标记在**开头**（真没有转写）⇒ 仍必须去调 ASR / 如实失败，不许把空串当转写
-  const pvNone = convert('[语音消息](mediaId=abc==)');
+  const pvNone = await convert('[语音消息](mediaId=abc==)');
   chk('MOD-16', '★ 负向对照：标记在开头（确实没转写）⇒ 仍然 ok:false（不许蒙一个文本出来）',
     pvNone.ok === false && pvNone.by === 'none', JSON.stringify(pvNone));
   // 负向对照：标记之后有中文**不算**转写（防空串/提示被当成正文）
-  const pvAfter = convert('[语音消息](mediaId=abc==) 这是标记之后的说明文字');
+  const pvAfter = await convert('[语音消息](mediaId=abc==) 这是标记之后的说明文字');
   chk('MOD-17', '★ 负向对照：标记**之后**的文字不算转写（防把说明当成正文）',
     pvAfter.ok === false, JSON.stringify(pvAfter));
 
   // 图片下载成功 ⇒ 模态变 file 且有 fileRef
-  const okDl = convert(REAL_IMAGE, { download: () => ({ ok: true, path: 'Other/Inflow/文件/2026-10/x.png' }) });
+  const okDl = await convert(REAL_IMAGE, { download: () => ({ ok: true, path: 'Other/Inflow/文件/2026-10/x.png' }) });
   chk('MOD-13', '图片下载成功 ⇒ 模态转 file + fileRef 就位（需求 2.2）', okDl.ok === true && okDl.modality === 'file' && !!okDl.fileRef);
 
   // 无 mediaId 的多媒体 ⇒ 失败（不能瞎猜）
-  const noId = convert('[图片消息] 没有 id');
+  const noId = await convert('[图片消息] 没有 id');
   chk('MOD-14', '★ 多媒体缺 mediaId ⇒ 失败（不瞎猜）', noId.ok === false && /mediaId/.test(noId.why), noId.why);
 
   // ★ 两种前缀都要认（实测：@ 开头的那批曾被白名单字符集挡掉 ⇒ 6 条假缺口）
