@@ -792,6 +792,26 @@ export async function selfTest() {
         (store.getById('todo', t2.body.id)?.ops ?? []).some((o) => o.op === 'to-schedule' && o.targetId === conv3.body?.to));
     }
 
+    // ★★ 2026-10-14 加（用户第 7.1 条：「消息转笔记：将消息**完整**记录下来」，
+    //   而列表那一列叫「**笔记概括**」）：
+    //   原来主题取"首行前 30 字" —— 消息常常一整段没换行 ⇒ **主题就是整段原文**，
+    //   列表里"笔记概括"那一格被撑满，那个字段名等于没落到实处。
+    //   ⇒ 现在主题走 `briefTitle`（一句话），**内容仍是完整原文**（一个字不丢）。
+    {
+      const longMsg = '联调·这条消息很长没有任何换行所以旧写法会把整段当成主题用来验证笔记标题是不是一句话。'
+        + '后面还接着很多内容，包括报价单、接口、权限这些词，都应该留在内容里而不是标题里。';
+      const m2 = await post('/messages', { channel: 'dingtalk', sender: '审计', raw: longMsg, summary: longMsg.slice(0, 60), source: 'im', modality: 'text', isDirect: true, conversationId: 'cidNoteTitleChk' });
+      const conv4 = await post('/messages/' + m2.body.id + '/convert', { to: 'note' });
+      const madeNote = conv4.body?.to ? store.getById('note', conv4.body.to) : null;
+      chk('API-46', '★★ 消息转笔记：**主题是一句话**（不再是整段原文）',
+        madeNote !== null && madeNote.payload.topic.length < longMsg.length / 2 && madeNote.payload.topic.length <= 40,
+        `${madeNote?.payload?.topic?.length} 字 · ${madeNote?.payload?.topic}`);
+      chk('API-47', '★★ 消息转笔记：**内容仍是完整原文**（用户原话"将消息完整记录下来"）',
+        madeNote !== null && madeNote.payload.content_md === longMsg,
+        `${madeNote?.payload?.content_md?.length} 字（原文 ${longMsg.length} 字）`);
+      chk('API-48', '★ 主题不该带 @（概括会剥掉）', !String(madeNote?.payload?.topic ?? '').includes('@'));
+    }
+
     // ★ API-29 由「断言 501（未接线）」改成「断言真接线」——**这是本轮唯一一处改动既有断言**。
     //   理由：那条守的是"别假装成功"，当时确实没接线所以回 501；现在真接上了，200 才是如实。
     //   （不是为了让检查变绿而放宽：成功路径、失败路径、没建议三种都另有断言守着。）

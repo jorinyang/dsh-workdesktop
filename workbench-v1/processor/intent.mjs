@@ -18,6 +18,9 @@
  * ═══════════════════════════════════════════════════════════════════════════════
  */
 
+// ★ 2026-10-14 加：笔记的**主题**用与待办/日程同一套"一句话"产地（见 `toNotePayload` 的说明）
+import { briefTitle } from './brief.mjs';
+
 /** "记录"话术（只要命中其一即视为"我要的是一条笔记"） */
 export const NOTE_HINTS = Object.freeze([
   '帮我记录一下', '帮我记一下', '记录一下', '记一下', '记录为笔记', '存成笔记',
@@ -47,7 +50,18 @@ export function classifyIntent(evt) {
   return { intent: 'voice-command', why: '自我窗口且非记录话术 ⇒ 走语音命令通道（命令优先执行，Q6）' };
 }
 
-/** 把一条自我语音消息转成笔记载荷（需求 3.1.4：主题 / 时间 YYYY-MM-DD / 内容 md） */
+/**
+ * 把一条消息转成笔记载荷（需求 3.1.4：主题 / 时间 YYYY-MM-DD / 内容 md）。
+ *
+ * ★★ 2026-10-14 改（**与待办/日程对齐**）：
+ *   原来主题是"首行前 30 字"—— 而消息常常一整段没有换行 ⇒ 主题就是**整段原文**。
+ *   后果不只是标题难看：用户第 7.1 条点名要「**笔记概括**」这一列，
+ *   而列表里那一格被整段原文撑满 —— 那个字段名等于没落到实处。
+ *   ⇒ 走 `briefTitle()`（与"消息转待办/转日程"同一个产地：剥 @/表情/链接、取第一句、
+ *     去开头客套、太长在标点处收）。**内容一个字不动**（`content_md` 仍是完整原文），
+ *     只是主题从"整段"变成"一句话" —— 用户要的是"消息转笔记把消息完整记录下来"，
+ *     记的是内容，不是让标题去承载全文。
+ */
 export function toNotePayload(evt) {
   const raw = String(evt.payload?.raw ?? '').trim();
   // 去掉"帮我记录一下"这类话术前缀，留下真正要记的内容
@@ -55,8 +69,10 @@ export function toNotePayload(evt) {
   for (const h of NOTE_HINTS) body = body.replace(h, '');
   body = body.replace(/^[，,。:：\s]+/, '').trim();
   if (body === '') body = raw;                       // 全是话术 ⇒ 保留原文（不产出空笔记）
+  // 主题：先试"一句话概括"；概括不出东西（纯噪声）才退回首行截断；再不行给个中性标题。
+  const brief = briefTitle(body, { max: 34 });
   const firstLine = body.split(/\r?\n/)[0].trim();
-  const topic = firstLine.length > 30 ? `${firstLine.slice(0, 30)}…` : (firstLine || '自我语音记录');
+  const topic = brief || (firstLine.length > 30 ? `${firstLine.slice(0, 30)}…` : firstLine) || '自我语音记录';
   return { topic, date: fmtDate(evt._at), content_md: body, tags: [], source: 'self-voice' };
 }
 
@@ -84,7 +100,14 @@ export function selfTest() {
   chk('INT-8', '笔记时间 = YYYY-MM-DD', /^\d{4}-\d{2}-\d{2}$/.test(np.date), np.date);
   chk('INT-9', '★ 全是话术 ⇒ 保留原文（不产出空笔记）', toNotePayload(msg({ payload: { source: 'self-voice', raw: '帮我记录一下' } })).content_md === '帮我记录一下');
   const npLong = toNotePayload(msg({ payload: { source: 'self-voice', raw: `记录一下：${'很长的一句话'.repeat(10)}` } }));
-  chk('INT-10', '超长主题被截断（列表页不撑破）', npLong.topic.length <= 31, `${npLong.topic.length}`);
+  // ★★ 2026-10-14 改：原来这条写死 `topic.length <= 31`（旧的"首行截 30 字"口径）。
+  //   主题改走 `briefTitle({max:34})` 之后长度是 35（34 字 + 省略号）⇒ 当场红。
+  //   **红得对**，但它守的是"**列表页不撑破**"这件事，而不是某一个具体字数：
+  //   列表那一格现在有 CSS 截断（`text-overflow: ellipsis`），所以真正的约束是
+  //   "**主题要短到能一眼看完，且被截过要说出来**"。
+  //   ⇒ 改成守这个：长度在合理上限内（≤36），且**截过就有省略号**（不假装完整）。
+  chk('INT-10', '★ 超长主题收短（列表页不撑破），且**截过就有省略号**',
+    npLong.topic.length <= 36 && npLong.topic.endsWith('…'), `${npLong.topic.length} 字 · ${npLong.topic.slice(-8)}`);
 
   const pass = out.filter((x) => x.ok).length;
   return { pass, fail: out.length - pass, details: out };
