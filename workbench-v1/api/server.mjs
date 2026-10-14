@@ -28,6 +28,10 @@ import { NARRATIVE_SPECS } from './cockpit.mjs';   // 驾驶舱四块的落点�
 //   "检索 RAG 与本身知识库 → 经 LLM 概括后展示 → 不得显示文件路径"）。
 //   放在 api 层是因为它只服务详情接口，不参与采集/分析那两条流水。
 import { summarizeContext, ctxSummaryCached } from './context-summary.mjs';
+// ★ 2026-10-14 加（用户第 5.1 / 6.1 条）：**把一段话收成"一句话"** —— 消息转待办/转日程的标题用它。
+//   原来那两处的标题是 `summary ?? raw` 再截 80 字，而 `summary` 本身就是原文截断
+//   ⇒ 结果是**被切一半的话**，不是"概括为一句话"。纯规则，不调模型（见 brief.mjs 的说明）。
+import { briefTitle, pickParticipants, pickPlace } from '../processor/brief.mjs';
 import { KB_ROOT as ROOT, PKG_ROOT } from '../paths.mjs';   // 路径收口（见 paths.mjs 顶部说明：原先按本文件深度往上数，包一挪就错）
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -410,7 +414,19 @@ export function handler(req, res) {
             mk = { ...np, topic: String(body.payload?.topic ?? np.topic).slice(0, 80), content_md: String(body.payload?.content_md ?? np.content_md) };
             if (Array.isArray(body.payload?.tags) && body.payload.tags.length) mk.tags = body.payload.tags;
           } else if (to === 'todo') {
-            mk = { topic: String(body.payload?.topic ?? src.summary ?? src.raw ?? '').slice(0, 80) || '（未命名待办）', detail: String(body.payload?.detail ?? src.raw ?? ''), due: body.payload?.due ?? null, publisher: src.sender ?? null, executor: body.payload?.executor ?? '我' };
+            // ★★ 2026-10-14 改（用户第 5.1 条原话）：「**消息转待办：概括消息内容为一句话**，作为待办标题」。
+            //   原来写的是 `src.summary ?? src.raw` 再 `.slice(0, 80)` —— 而 `summary` 本身就是
+            //   原文的截断（`raw.slice(0, 60)`）⇒ 结果是一段**被切一半的话**，不是一句话。
+            //   ⇒ 走 `briefTitle()`（纯规则：剥 @/表情/URL、取第一句、去开头客套、在标点处收）。
+            //   ⚠️ 人给了标题就**用人给的**（界面上你填了就是你的意思，不该被系统改写）。
+            const title = String(body.payload?.topic ?? '').trim() || briefTitle(src.raw ?? src.summary ?? '');
+            mk = {
+              topic: (title || briefTitle(src.raw ?? '') || '（未命名待办）').slice(0, 80),
+              detail: String(body.payload?.detail ?? src.raw ?? ''),
+              due: body.payload?.due ?? null,
+              publisher: src.sender ?? null,
+              executor: body.payload?.executor ?? '我',
+            };
           } else {
             // 转日程：契约要求 start/end **必须有具体值**（实测：给 null 会被判非法、建了个空）
             const { deriveScheduleWindow } = await import('../processor/detect.mjs');
@@ -424,7 +440,25 @@ export function handler(req, res) {
                 parsed: w.ok ? { start: w.start, end: w.end } : null, why: w.ok ? null : w.why,
               });
             }
-            mk = { topic: String(body.payload?.topic ?? src.summary ?? src.raw ?? '').slice(0, 80) || '（未命名日程）', detail: String(body.payload?.detail ?? src.raw ?? ''), start, end, place: body.payload?.place ?? null, participants: body.payload?.participants ?? [] };
+            // ★★ 2026-10-14 改（用户第 6.1 条原话）：
+            //   「消息转日程：**概括消息内容为一句话，作为日程主题**，
+            //     并将**消息中其他与日程相关的内容分别填写到日程结构化字段中**」。
+            //   原来只填了主题 + 详情，`place` 恒为 null、`participants` 恒为空数组 ——
+            //   后半个要求（"分别填写到结构化字段"）等于没做。
+            //   ⇒ 现在：主题走 `briefTitle`；地点与参与人**从原话里挑**（挑不出就留空，不硬编）。
+            //   ⚠️ 人给了就用人的（同上）。
+            const rawText = String(src.raw ?? '');
+            const title = String(body.payload?.topic ?? '').trim() || briefTitle(rawText);
+            mk = {
+              topic: (title || briefTitle(rawText) || '（未命名日程）').slice(0, 80),
+              detail: String(body.payload?.detail ?? rawText ?? ''),
+              start,
+              end,
+              place: body.payload?.place ?? pickPlace(rawText),
+              participants: Array.isArray(body.payload?.participants) && body.payload.participants.length
+                ? body.payload.participants
+                : pickParticipants(rawText),
+            };
           }
           made = createEvent(to, mk, { origin: { channel: evt.origin.channel, sender: evt.payload.sender, messageId: `from-${evt.origin.messageId ?? evt._id}`, raw: evt.payload.raw ?? null }, at: evt._at });
           if (made.ok === false) return json(res, 400, { error: '生成目标事件失败', errors: made.errors });
@@ -434,21 +468,84 @@ export function handler(req, res) {
         }
 
         // ② 待办动作（需求 3.3.4：已搁置 / 转日程 / 已完成）
+        // ★★ 2026-10-14 改：`转日程` 原来也只是盖个记号（**没建日程**）——
+        //   而用户第 6.1 条点名「**待办转日程应当将待办的标题作为日程标题**」，
+        //   没有下游日程，这条规则就无从落实。现在真的建，主题取待办标题。
         if (t === 'todo' && action === 'act') {
-          const map = { '已完成': 'done', '完成': 'done', 'done': 'done', '已搁置': 'hold', '搁置': 'hold', 'hold': 'hold', '转日程': 'to-schedule', 'to-schedule': 'to-schedule' };
-          const k = map[op];
-          if (!k) return json(res, 400, { error: '不认识的动作', op, allowed: ['已完成', '已搁置', '转日程'] });
-          store.patch('todo', id, {}, { op: k, by: 'manual' });
-          return json(res, 200, { ok: true, id, op: k });
+          return (async () => {
+            const map = { '已完成': 'done', '完成': 'done', 'done': 'done', '已搁置': 'hold', '搁置': 'hold', 'hold': 'hold', '转日程': 'to-schedule', 'to-schedule': 'to-schedule' };
+            const k = map[op];
+            if (!k) return json(res, 400, { error: '不认识的动作', op, allowed: ['已完成', '已搁置', '转日程'] });
+            if (k !== 'to-schedule') {
+              store.patch('todo', id, {}, { op: k, by: 'manual' });
+              return json(res, 200, { ok: true, id, op: k });
+            }
+            const tp = evt.payload ?? {};
+            // 时刻：人给了就用人的；没给就按"截止那天 09:00~10:00"，连截止都没有就用明天同一时段。
+            //   ⚠️ 明说是**默认**，让人知道这是系统替他选的、可以改 —— 不假装是从话里解析出来的。
+            const day = String(body.payload?.start ?? '').trim()
+              || (tp.due ? String(tp.due).slice(0, 10) : '')
+              || new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+            const start = String(body.payload?.start ?? `${day}T09:00`);
+            const end = String(body.payload?.end ?? `${day}T10:00`);
+            const topic = String(body.payload?.topic ?? tp.topic ?? '').trim() || '（未命名日程）';
+            const made = createEvent('schedule', {
+              topic,
+              detail: String(body.payload?.detail ?? tp.detail ?? tp.topic ?? ''),
+              start,
+              end,
+              place: body.payload?.place ?? null,
+              participants: Array.isArray(body.payload?.participants) ? body.payload.participants : [],
+            }, {
+              origin: { channel: evt.origin?.channel ?? 'manual', sender: evt.origin?.sender ?? '我', messageId: `from-${evt.origin?.messageId ?? evt._id}`, raw: tp.detail ?? tp.topic ?? null },
+              at: evt._at,
+            });
+            if (made.ok === false) return json(res, 400, { error: '生成日程失败', errors: made.errors });
+            store.patch('todo', id, {}, { op: 'to-schedule', targetId: made.id, by: 'manual' });
+            return json(res, 200, {
+              ok: true, from: id, to: made.id, kind: 'schedule', topic, start, end,
+              note: `已建日程（主题取待办标题）并在待办上留痕${body.payload?.start ? '' : '；起止时间用的是默认值（截止那天 09:00~10:00，或明天同时段），可在日程里改'}`,
+            });
+          })();
         }
 
         // ③ 日程动作（需求 3.3.5：转待办 / 已完成）
+        // ★★ 2026-10-14 改（**用户第 6.1 条逼出来的**）：
+        //   「**待办转日程应当将待办的标题作为日程标题**」「**日程转待办应当将日程的标题作为待办标题**」
+        //   —— 而这两条原来**都无从谈起**：`转待办` / `转日程` 只是在来源事件上盖了一个 op 记号，
+        //   **根本没有建下游事件**（`store.patch('schedule', id, {}, { op: 'to-todo' })` 就完了）。
+        //   用户点"转待办"，日程上多了个记号，待办列表里什么都没多 —— 这就是"点了没反应"的一种。
+        //   ⇒ 现在两条都**真的建下游事件**，并在来源上留痕（带 targetId，便于回查）。
+        //
+        //   ⚠️ 日程契约要求 `start/end` 必须有具体值。待办**没有具体时刻**，所以：
+        //     · 待办有截止时间 ⇒ 用那天的 09:00~10:00；
+        //     · 没有 ⇒ 用**明天** 09:00~10:00（一个明确、可改的默认，不是 null、也不假装知道）。
+        //     为什么敢给默认：这是**创建动作**，用户看得见也能改；给 null 会被契约拒、等于"点了失败"。
         if (t === 'schedule' && action === 'act') {
-          const map = { '已完成': 'done', '完成': 'done', 'done': 'done', '转待办': 'to-todo', 'to-todo': 'to-todo' };
-          const k = map[op];
-          if (!k) return json(res, 400, { error: '不认识的动作', op, allowed: ['已完成', '转待办'] });
-          store.patch('schedule', id, {}, { op: k, by: 'manual' });
-          return json(res, 200, { ok: true, id, op: k });
+          return (async () => {
+            const map = { '已完成': 'done', '完成': 'done', 'done': 'done', '转待办': 'to-todo', 'to-todo': 'to-todo' };
+            const k = map[op];
+            if (!k) return json(res, 400, { error: '不认识的动作', op, allowed: ['已完成', '转待办'] });
+            if (k !== 'to-todo') {
+              store.patch('schedule', id, {}, { op: k, by: 'manual' });
+              return json(res, 200, { ok: true, id, op: k });
+            }
+            const sp = evt.payload ?? {};
+            const topic = String(body.payload?.topic ?? sp.topic ?? '').trim() || '（未命名待办）';
+            const made = createEvent('todo', {
+              topic,
+              detail: String(body.payload?.detail ?? sp.detail ?? sp.topic ?? ''),
+              due: body.payload?.due ?? (sp.start ? String(sp.start).slice(0, 10) : null),
+              publisher: String(sp.publisher ?? evt.origin?.sender ?? '').trim() || null,
+              executor: String(body.payload?.executor ?? '我'),
+            }, {
+              origin: { channel: evt.origin?.channel ?? 'manual', sender: evt.origin?.sender ?? '我', messageId: `from-${evt.origin?.messageId ?? evt._id}`, raw: sp.detail ?? sp.topic ?? null },
+              at: evt._at,
+            });
+            if (made.ok === false) return json(res, 400, { error: '生成待办失败', errors: made.errors });
+            store.patch('schedule', id, {}, { op: 'to-todo', targetId: made.id, by: 'manual' });
+            return json(res, 200, { ok: true, from: id, to: made.id, kind: 'todo', topic, note: '已建待办（主题取日程标题）并在日程上留痕' });
+          })();
         }
 
         // ⑤ 待办：结果与交付物（需求 3.3.4：详情里要有"待办的结果 / 交付物（文字说明、附件上传）"）
@@ -661,6 +758,40 @@ export async function selfTest() {
     chk('API-27', '★ 不认识的动作 ⇒ 400 且列出允许值', tdBad.code === 400 && Array.isArray(tdBad.body.allowed), JSON.stringify(tdBad.body));
     const sc = await post('/schedules/' + s.body.id + '/act', { op: '已完成' });
     chk('API-28', '日程动作：已完成', sc.code === 200, JSON.stringify(sc.body));
+
+    // ★★ 2026-10-14 加（**用户第 5.1 / 6.1 条逼出来的**）：
+    //   「待办转日程应当将**待办的标题**作为日程标题」「日程转待办应当将**日程的标题**作为待办标题」
+    //   这两条原来**都无从谈起** —— 两个"转"只是在来源事件上盖了个 op 记号，
+    //   **根本没有建下游事件**（点了"转待办"，待办列表里什么都没多）。
+    //   ⇒ 检查必须落在"**下游事件真的建出来了、标题就是来源的标题**"上，
+    //     而不是"接口回了 200"（盖记号也回 200 —— 那正是它一直没被发现的原因）。
+    {
+      const sTopic = '联调·评审会（标题规则检查）';
+      const s2 = await post('/schedules', { topic: sTopic, start: '2026-10-20T14:00', end: '2026-10-20T15:00', detail: '过一遍改动点' });
+      const conv2 = await post('/schedules/' + s2.body.id + '/act', { op: '转待办' });
+      const madeTodo = conv2.body?.to ? store.getById('todo', conv2.body.to) : null;
+      chk('API-40', '★★ 日程「转待办」**真的建了下游待办**，主题 = 日程标题',
+        conv2.code === 200 && madeTodo !== null && madeTodo.payload.topic === sTopic,
+        JSON.stringify({ code: conv2.code, to: conv2.body?.to, topic: madeTodo?.payload?.topic }));
+      chk('API-41', '★ 来源日程上留痕（带 targetId，可回查）',
+        (store.getById('schedule', s2.body.id)?.ops ?? []).some((o) => o.op === 'to-todo' && o.targetId === conv2.body?.to));
+
+      const tTopic = '联调·把报价单发给客户（标题规则检查）';
+      const t2 = await post('/todos', { topic: tTopic, detail: '报价单在共享盘', due: '2026-10-22', executor: '我' });
+      const conv3 = await post('/todos/' + t2.body.id + '/act', { op: '转日程' });
+      const madeSch = conv3.body?.to ? store.getById('schedule', conv3.body.to) : null;
+      chk('API-42', '★★ 待办「转日程」**真的建了下游日程**，主题 = 待办标题',
+        conv3.code === 200 && madeSch !== null && madeSch.payload.topic === tTopic,
+        JSON.stringify({ code: conv3.code, to: conv3.body?.to, topic: madeSch?.payload?.topic }));
+      chk('API-43', '★ 生成的日程**起止时间有具体值**（契约不接受空），且落在截止那天',
+        !!madeSch?.payload?.start && !!madeSch?.payload?.end && String(madeSch.payload.start).startsWith('2026-10-22'),
+        `${madeSch?.payload?.start} ~ ${madeSch?.payload?.end}`);
+      chk('API-44', '★ 回执**说清时刻是默认值**（不假装是从话里解析出来的）',
+        /默认值/.test(String(conv3.body?.note ?? '')), String(conv3.body?.note ?? '').slice(0, 60));
+      chk('API-45', '★ 来源待办上留痕（带 targetId）',
+        (store.getById('todo', t2.body.id)?.ops ?? []).some((o) => o.op === 'to-schedule' && o.targetId === conv3.body?.to));
+    }
+
     // ★ API-29 由「断言 501（未接线）」改成「断言真接线」——**这是本轮唯一一处改动既有断言**。
     //   理由：那条守的是"别假装成功"，当时确实没接线所以回 501；现在真接上了，200 才是如实。
     //   （不是为了让检查变绿而放宽：成功路径、失败路径、没建议三种都另有断言守着。）
