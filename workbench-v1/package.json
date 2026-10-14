@@ -11,7 +11,7 @@
     "selftest": "node selftest-all.mjs",
     "collect": "node collector/run.mjs",
     "serve": "node api/server.mjs 8791",
-    "render": "node ui/preview.mjs && node ui/cockpit-page.mjs && node ui/status-page.mjs"
+    "render": "node ui/preview.mjs && node ui/cockpit-page.mjs"
   },
   "keywords": [
     "dsh",

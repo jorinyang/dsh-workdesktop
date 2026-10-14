@@ -217,8 +217,20 @@ export function modelBlock(kind, now, sec = null) {
 
 export function renderCockpit({ now = Date.now(), from = null, to = null } = {}) {
   const s = stats({ now }); const g = graph({ now }); const t = trend({ from, to, now, days: 14 });
-  const nav = PAGE_DEFS.map((p) => '<a href="./' + p.key + '.html">' + esc(p.label) + '</a>').join('') + '<a href="./status.html">现状一览</a><a href="./cockpit.html" aria-current="page">驾驶舱</a>';
-  let body = '<h1 style="font-size:22px">' + APP_NAME + ' · 驾驶舱</h1>';
+  // ★★ 2026-10-15 两条裁定一起落在这里，所以这页**不再有顶上那条导航**：
+  //
+  //   ① 摘掉「现状一览」那一项 —— 用户原话：「现状一览**没有任何意义，请移除掉**」。
+  //      它的渲染器 `ui/status-page.mjs` 与产物 `status.html` 已一并移除。
+  //   ② **整条导航都摘掉** —— 用户裁定：「驾驶舱**只看它自己的六块，不跳工作台**」。
+  //      理由（用户原话）：「**驾驶舱是驾驶舱，工作台是工作台**」——
+  //      两者是官方侧栏里**并列的两个入口**，点进驾驶舱却看到工作台的导航条，
+  //      等于从一个入口进去又回到另一个入口。
+  //
+  //   ⇒ 原先这里有一行 `const nav = PAGE_DEFS.map(…)`，**已删**（不是留着不用）。
+  //     留着没人用的常量，下一个人会以为"导航还在、只是没渲染"。
+  //   ⚠️ `PAGE_DEFS` 的 import 仍然保留 —— `stylesheet()`/`APP_NAME` 同一个来源，
+  //     而且导航没了不等于那五个页不存在（它们在侧栏「工作台」那个入口里）。
+  let body = '<h1 style="font-size:22px">驾驶舱</h1>';
   body += '<div class="cap" style="margin:6px 0 18px;color:var(--c-mute);font-size:13px">自上而下六块（需求 4.3.6）· 前三块为真实数据，后三块需要模型且须先有真实切片</div>';
   // ★ 时间区间选择器（需求 4.3.2 原话："可以周期性（时间维度，**自定义筛选时间周期**）"）。
   //   起止日期在这里选一次，下面四块的「生成」都带着它去调 ——
@@ -243,8 +255,21 @@ export function renderCockpit({ now = Date.now(), from = null, to = null } = {})
       + '</div>';
   }
   return '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
-    + '<title>' + APP_NAME + ' · 驾驶舱</title><style>' + stylesheet() + '</style></head><body>'
-    + '<header class="topbar"><div class="brand">' + APP_NAME + '</div><nav class="nav">' + nav + '</nav></header>'
+    // ⚠️ 浏览器标签页的标题也要改：原来写 `工作台 · 驾驶舱` ——
+    //   那等于说"这是工作台里的驾驶舱"，与"两个并列入口"的事实相反（用户 2026-10-15 裁定）。
+    + '<title>驾驶舱</title><style>' + stylesheet() + '</style></head><body>'
+    // ★★ 2026-10-15 摘掉顶上那条导航（用户裁定：驾驶舱**只看它自己的六块，不跳工作台**）。
+    //
+    // 摘之前：`<header class="topbar"><div class="brand">工作台</div><nav class="nav">今日总览 · 消息 ·
+    //   待办 · 日程 · 笔记 · 驾驶舱</nav></header>`。
+    // 为什么摘：驾驶舱与工作台是**官方侧栏里两个并列的入口**，而点进驾驶舱却看到工作台的导航条 ——
+    //   等于从一个入口进去又回到另一个入口。用户原话：「**驾驶舱是驾驶舱，工作台是工作台**」。
+    //
+    // ⚠️ 摘的是**整条 header（含品牌字「工作台」）**，不是只摘 `<nav>`：
+    //   留着 `<div class="brand">工作台</div>` 的话，页面顶上仍然写着"工作台"，
+    //   那还是在说"你在工作台里"。用户要的是"这是驾驶舱"。
+    // ⚠️ `nav` 那个变量**一并删掉**（在 renderCockpit 顶部），别留一个没人用的常量 ——
+    //   留着它下次有人会以为导航还在、只是没渲染。
     + '<main data-page="cockpit">' + body + '</main><footer class="spacer"></footer>'
     + '<div class="statusbar"><span>驾驶舱 · 数据统计 / 知识图谱 / 发展趋势 / 业务洞察 / 状态分析 / 发展建议</span><span class="grow"></span><span>' + esc(new Date(now).toLocaleString('zh-CN')) + '</span></div>'
     + cockpitClientScript()
@@ -391,7 +416,38 @@ export function selfTest() {
   chk('CKP-4', '★ 笔记写明"可视化模型"这一档（需求点名）', html.includes('可视化模型'));
   chk('CKP-5', '知识图谱有节点/边计数与边来源口径', html.includes('节点') && html.includes('边') && html.includes('真实依据'));
   chk('CKP-6', '趋势块有区间与合计', html.includes('合计') && /\d{4}-\d{2}-\d{2} ~ \d{4}-\d{2}-\d{2}/.test(html));
-  chk('CKP-7', '★ 后三块如实写"尚未生成"，不假装已分析', (html.match(/尚未生成/g) ?? []).length === 3 || (html.match(/尚未生成/g) ?? []).length >= 1, String((html.match(/尚未生成/g) ?? []).length));
+  // ★★ 2026-10-14 改（**原来这条是"写死未生成"的**，后三块真的生成之后它当场变红）。
+  //   原判据：页面上出现「尚未生成」≥1 次 ⇒ 过。
+  //   它想守的规矩是**「后三块不许假装已分析」** —— 但用"必须出现某句话"来表达这条规矩是错的：
+  //     · 后三块还没生成时：那句话出现 3 次 ⇒ 过（当时是对的）；
+  //     · 后三块**已经生成**时：那句话出现 0 次 ⇒ **红**，而这时页面恰恰是**对的**
+  //       （它给的是真实内容，不是"尚未生成"）。
+  //   ⇒ 一条把"正确状态"判成错的检查，早晚会被人当成噪声关掉。
+  //   ⇒ 改成**逐块对着真实数据判**：每一块 **要么渲染出模型给的正文，要么如实写「尚未生成」**。
+  //     · `readNarrative(kind)` 有内容 ⇒ 页面里必须出现那段正文的头一段（证明确实渲染了）；
+  //     · `readNarrative(kind)` 为 null ⇒ 页面里必须出现「尚未生成」（证明没假装）。
+  //   这样"未生成"与"已生成"两种状态都判得对，而且**都不许出现第三种状态**（既没内容也没那句话）。
+  {
+    const MODEL_KINDS = ['insight', 'state', 'advice']
+    const bad = []
+    for (const k of MODEL_KINDS) {
+      const n = readNarrative(k)
+      const has = n && typeof n.text === 'string' && n.text.trim() !== ''
+      if (!has) {
+        // ⚠️ 判"这一块在不在页面上"要按它的标题找，不能只看整页有没有那句话 ——
+        //    三块里只有一块没生成时，"≥1 次"会被另外两块满足，等于漏判。
+        const title = SECTIONS.find((s) => s.key === k)?.title ?? ''
+        const seg = title ? html.slice(html.indexOf(title), html.indexOf(title) + 3000) : ''
+        if (!seg.includes('尚未生成')) bad.push(`${k}:没有数据却没写"尚未生成"`)
+        continue
+      }
+      const head = n.text.trim().slice(0, 24)
+      if (!html.includes(head)) bad.push(`${k}:有生成内容（${head}…）却没渲染出来`)
+    }
+    chk('CKP-7', '★★ 后三块**逐块**对着真实数据判：有内容就渲染、没内容就如实写"尚未生成"（不许假装已分析）',
+      bad.length === 0,
+      bad.length ? bad.join(' | ') : MODEL_KINDS.map((k) => `${k}=${readNarrative(k)?.text ? '已渲染' : '未生成'}`).join(' · '))
+  }
   chk('CKP-8', '★ 后三块写明"没数据不调模型"的规矩', html.includes('不调用模型') || html.includes('没有事件'));
   // ★★ 2026-10-14 改：原来写死 `keys.length === 4`。加了「全盘业务分析」之后变五块 ⇒ 当场红。
   //   **红得对**，但它顺手把**块数**也写进去了 —— 而块数会随需求拆法漂移
@@ -403,7 +459,20 @@ export function selfTest() {
     const asks = keys.map((k) => sliceFor(k).ask);
     return keys.length >= 4 && new Set(asks).size === keys.length && asks.every((a) => a && a.length > 10);
   })(), JSON.stringify(SECTIONS.filter((s) => s.kind === 'model').map((s) => s.key)));
-  chk('CKP-10', '顶导航横排且当前页高亮', html.includes('aria-current="page"') && html.includes('class="nav"'));
+  // ★★ 2026-10-15 改（**这条判据守的东西已经不在了**）。
+  //   原文：`chk('CKP-10', '顶导航横排且当前页高亮', html.includes('aria-current="page"') && html.includes('class="nav"'))`
+  //   —— 它守的是"页面顶部那条工作台导航"。用户裁定「驾驶舱**只看它自己的六块，不跳工作台**」
+  //   ⇒ 那条导航**已整条摘掉**（连 `<header>` 与品牌字一起）⇒ 原判据必然判否。
+  //   ⇒ 反过来守**摘干净了**。删掉这条检查是最省事的做法，**但那等于以后没人拦着它被加回来**。
+  //
+  //   ⚠️ 判据**不能**用 `aria-current`：那个词在 `<style>` 里有 3 处（`.nav a[aria-current="page"]` 之类
+  //     的样式选择器），与"页面上有没有导航"无关 —— 我第一版就是这么写的，于是摘干净了它照样判否。
+  //   ⇒ 按**页面结构**判：不许有 `<header>` / `<nav>` / `class="nav"` / 指向工作台各页的链接。
+  const noHeader = !html.includes('<header') && !html.includes('<nav') && !html.includes('class="nav"');
+  const noWorkbenchLinks = (html.match(/href="\.\/(overview|messages|todos|schedules|notes)\.html"/g) ?? []).length === 0;
+  chk('CKP-10', '★★ 页面里**没有**工作台那条导航（驾驶舱是驾驶舱，不跳工作台 —— 用户 2026-10-15 裁定）',
+    noHeader && noWorkbenchLinks,
+    `<header>/<nav>/class="nav" 有没有=${!noHeader} · 指向工作台各页的链接=${(html.match(/href="\.\/(overview|messages|todos|schedules|notes)\.html"/g) ?? []).length}`);
 
   // ★ CKP-20…23（P4 收尾）：时间区间选择器（需求 4.3.2「可自定义筛选时间周期」）
   chk('CKP-20', '★ 有分析区间选择器（起止日期 + 三档快捷 + 清空）', html.includes('id="range-from"') && html.includes('id="range-to"') && (html.match(/data-range-quick=/g) ?? []).length === 3 && html.includes('data-range-clear'));
