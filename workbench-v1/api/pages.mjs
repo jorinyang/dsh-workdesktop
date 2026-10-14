@@ -28,7 +28,7 @@ import * as store from '../store.mjs';
  *   · 后面那句才是人真正要看的内容。
  *   原来整串直接当概括显示 ⇒ 列表里全是 mediaId，把内容挤没了。
  *
- * ⇒ 剥掉标记里的 `(mediaId=…)` 部分，保留"图片"这个词（**让人知道这条是图**），其余文字照旧。
+ * ⇒ 剥掉标记里的 `(mediaId=…)` 部分，保留「图片消息」这几个字（**让人知道这条是图**），其余文字照旧。
  *   ⚠️ 只处理**呈现**：`payload.raw` 一个字都不改 —— 原始记录必须完整可回查。
  *   同理 `mediaId` / `fileRef` 两个字段都留着（详情页要靠它们取图）。
  */
@@ -38,10 +38,14 @@ export function stripImageMark(s) {
     //   另外被截断的概括里还会以 `…` 收尾。第一版只列了 `[A-Za-z0-9@_\-+/=]`，
     //   结果**13 条 mediaId 没剥掉**（真机读数抓出来的）。
     //   ⇒ 改成"到 `)` 或空白为止"，不枚举字符。
-    .replace(/\[(图片|视频|语音|文件)消息\]\(mediaId=[^)\s]*\)?/g, '［$1］')
+    // ★★ 2026-10-14 改：剥完之后留下的**是「图片消息」四个字**，不是「图片」两个字。
+    //   用户第 4.1 条的原话是「消息列表中仅显示**图片消息**及文字内容」
+    //   —— 真机抓到的列表行显示的是「［图片］」，与他要的措辞差一个字。
+    //   两字与四字的差别不大，但**用户点名的字面就是这四个字**，照他说的来。
+    .replace(/\[(图片|视频|语音|文件)消息\]\(mediaId=[^)\s]*\)?/g, '［$1消息］')
     .replace(/\((?:mediaId=[^)\s]*)\)/g, '')          // 括号还在、里面只剩 mediaId 的残壳
     .replace(/mediaId=[^)\s]*/g, '')                  // 兜底：任何还露着的 mediaId
-    .replace(/［图片］(?=［)/g, '')                    // 连着两个标记时去掉重复的
+    .replace(/［图片消息］(?=［)/g, '')                // 连着两个标记时去掉重复的
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
@@ -368,6 +372,16 @@ export async function selfTest() {
     chk('PG-1', '消息页四个数字对得上（待处理1/转待办1/转日程1/已回复1）', M.counts.pending === 1 && M.counts.toTodo === 1 && M.counts.toSchedule === 1 && M.counts.replied === 1, JSON.stringify(M.counts));
     chk('PG-2', '★ Tab 过滤（需求 3.3.3 的五个 Tab）', messages({ tab: 'to-todo', now: NOW }).list.length === 1 && messages({ tab: 'all', now: NOW }).list.length === 4);
     chk('PG-3', '列表字段齐：来源+发信人+概括', /钉钉 · 张伟/.test(M.list[0].source) && typeof M.list[0].summary === 'string');
+    // ★★ 2026-10-14 加（用户第 4.1 条）：图片消息在**列表里**只显示「图片消息」几个字，
+    //   不带 mediaId 那串链接。用**真形态**试（采集留下的就是这种），别用编的样例。
+    chk('PG-3b', '★★ 图片消息在列表里剥成「图片消息」四个字，且**不留 mediaId**（用户第 4.1 条原话）', (() => {
+      const raw = '[图片消息](mediaId=@lQLPKck4jBI_1I3NAYvNAcGwrBt7GU_5sHcKnJMKiTWkAA)@老陈  我今…';
+      const out = stripImageMark(raw);
+      return out.includes('［图片消息］') && !/mediaId/.test(out) && out.includes('@老陈');
+    })(), stripImageMark('[图片消息](mediaId=@lQLPKck4jBI_1I3NAYvNAcGwrBt7GU_5sHcKnJMKiTWkAA)@老陈  我今…'));
+    chk('PG-3c', '★ 三种形态都剥得掉：`@` 开头 / `$` 开头 / 被截断的概括',
+      !/mediaId/.test(stripImageMark('[图片消息](mediaId=$iwEdAqNqbmcDAQTRBwgF0QKuBrCO)@某人'))
+      && !/mediaId/.test(stripImageMark('[图片消息](mediaId=@lQLPKck4jBI_1I3NAYvNAcGwrBt7')));
 
     // 待办：逾期 / 今天 / 无期限 / 已完成
     const todo = (mid, topic, due, ops = []) => store.upsert(makeEvent({ type: 'todo', payload: { topic, detail: '细节', due, executor: '我', publisher: '张伟' }, origin: { channel: 'manual', sender: '我', messageId: mid }, _at: NOW }).event);
