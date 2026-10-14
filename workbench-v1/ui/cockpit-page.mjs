@@ -22,7 +22,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { stylesheet, APP_NAME, PAGE_DEFS } from './shell.mjs';
-import { stats, trend, graph, sliceFor, hasEnoughData, readNarrative } from '../api/cockpit.mjs';
+import { stats, trend, graph, sliceFor, hasEnoughData, readNarrative, units } from '../api/cockpit.mjs';
 import { KB_ROOT as ROOT } from '../paths.mjs';   // 路径收口（见 paths.mjs 顶部说明：原先按本文件深度往上数，包一挪就错）
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -39,9 +39,14 @@ export const SECTIONS = Object.freeze([
   //      不能为了"名字好看"改成 trendNarrative —— 那样会取不到切片、按钮永远禁用（实测踩到）。
   //      与上面那条 data 的 key 重复是有意的：同一块标题下，先画图、再放分析。
   { key: 'trend', title: '三·补 趋势演进分析（情景还原 / 事件归因 / 决策树回溯 / 噪声分离 / 反事实）', kind: 'model' },
-  { key: 'insight', title: '四、业务洞察', kind: 'model' },
+  // ★★ 2026-10-14 改（用户 8.3 / 8.4 是**两件事**，所以拆成两块；六块的骨架不变 ——
+  //   用户 8.6 只点名了六块，所以这两块同放在"四、业务洞察"之下）：
+  //     · 8.3 业务/项目复盘 = **挑一个单元往里看**（单个项目或某条业务线）⇒ `unit: true` 给它一个选择器
+  //     · 8.4 全盘业务分析 = **站在全部业务上方看**
+  { key: 'insight', title: '四、业务/项目复盘（挑一个项目或业务线，按七个维度复盘）', kind: 'model', unit: true },
+  { key: 'analysis', title: '四·补 全盘业务分析（战略 / 执行 / 机制 / 能力 / 市场 / 资源 / 方法论及认知迭代）', kind: 'model' },
   { key: 'state', title: '五、状态分析', kind: 'model' },
-  { key: 'advice', title: '六、发展建议', kind: 'model' },
+  { key: 'advice', title: '六、发展建议（SWOT + 短期1月 / 中期3月 / 长期1年）', kind: 'model' },
 ]);
 
 function esc(s) {
@@ -158,8 +163,13 @@ export function trendBlock(t) {
   return svg + '<div class="cap" style="margin-top:8px;color:var(--c-mute);font-size:12px">' + esc(t.from + ' ~ ' + t.to + '（' + t.days + ' 天）· 合计 ' + JSON.stringify(t.totals)) + '</div>';
 }
 
-/** 模型三块：**已生成就显示内容**，未生成就如实说"尚未生成"；那条规矩常设可见 */
-export function modelBlock(kind, now) {
+/**
+ * 需要模型的那几块：**已生成就显示内容**，未生成就如实说"尚未生成"；那条规矩常设可见。
+ * @param {string} kind 模型类型（与 `NARRATIVE_SPECS` 的键一致）
+ * @param {number} now
+ * @param {{unit?:boolean}} [sec] 该块在 `SECTIONS` 里的那一条（`unit:true` ⇒ 渲染单元选择器）
+ */
+export function modelBlock(kind, now, sec = null) {
   const sl = sliceFor(kind, { now });
   const enough = hasEnoughData(sl);
   const saved = readNarrative(kind);
@@ -181,8 +191,26 @@ export function modelBlock(kind, now) {
     + '<span class="cap" data-cockpit-msg="' + esc(kind) + '" style="color:var(--c-mute);font-size:12px">'
     + (enough ? '约需 30 秒（调模型）' : '没有数据 ⇒ 按钮已禁用，按规矩不调模型')
     + '</span></div>';
+  // ★★ 2026-10-14 加（用户 8.3）：「抽离出库内**单个项目或某条业务线**，按业务单元维度，
+  //   即**对象或域**，进行复盘。对进行中的业务线或项目，复盘到截止当时已有的所有信息。」
+  //   ⇒ 这一块给一个**单元选择器**。选空 = 复盘全部单元（原先的行为，保留）。
+  //   选项来自 `units()`（与后端同一份清单，不在页面里另算一套）。
+  let unitPicker = '';
+  if (sec && sec.unit === true) {
+    const us = units({ now });
+    const cur = String((saved && saved.unit) || '');
+    const opts = ['<option value="">（全部单元，逐个复盘）</option>']
+      .concat(us.list.slice(0, 60).map((u) => '<option value="' + esc(u.name) + '"' + (u.name === cur ? ' selected' : '') + '>'
+        + esc(u.name) + '（' + u.total + ' 条）</option>'));
+    unitPicker = '<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+      + '<span class="cap" style="font-size:12px">复盘哪个单元：</span>'
+      + '<select data-cockpit-unit="' + esc(kind) + '" style="font:inherit;font-size:13px;padding:3px 6px;border:1px solid var(--c-hairline);border-radius:4px;background:transparent;color:var(--c-ink)">'
+      + opts.join('') + '</select>'
+      + '<span class="cap" style="color:var(--c-mute);font-size:12px">共 ' + us.counts.units + ' 个单元 · ' + esc(us.note) + '</span>'
+      + '</div>';
+  }
   // ★ 规矩常设可见：无论当前有没有数据、有没有生成，这条约束都写在块里（它是纪律，不是条件提示）
-  return '<div class="card">' + head + btn
+  return '<div class="card">' + head + unitPicker + btn
     + '<div class="cap" style="margin-top:6px;color:var(--c-mute);font-size:12px">规矩：没有真实数据切片时不调用模型 —— 避免生成"没数据也像模像样"的分析。</div>'
     + '</div>';
 }
@@ -211,7 +239,7 @@ export function renderCockpit({ now = Date.now(), from = null, to = null } = {})
   const blocks = { stats: statsBlock(s), graph: graphBlock(g), trend: trendBlock(t) };
   for (const sec of SECTIONS) {
     body += '<div class="section"><h2>' + esc(sec.title) + '</h2>'
-      + (sec.kind === 'data' ? blocks[sec.key] : modelBlock(sec.key, now))
+      + (sec.kind === 'data' ? blocks[sec.key] : modelBlock(sec.key, now, sec))
       + '</div>';
   }
   return '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -234,6 +262,14 @@ export function cockpitClientScript() {
   L.push('    var f = document.getElementById("range-from"); var t = document.getElementById("range-to");');
   L.push('    var o = {}; if (f && f.value) o.from = f.value; if (t && t.value) o.to = t.value; return o;');
   L.push('  }');
+  // ★★ 2026-10-14 加（用户 8.3）：「抽离出库内**单个项目或某条业务线**…进行复盘。」
+  //   ⇒ 生成时把那一块自己的**单元选择器**的值一起带上；
+  //     每块各读各的（`data-cockpit-unit="<kind>"`），不共用一个全局状态 ——
+  //     否则"给复盘选了单元"会连带把别的块也收窄，那是看不见的错。
+  L.push('  function unitOf(kind){');
+  L.push('    var sel = document.querySelector(\'[data-cockpit-unit="\' + kind + \'"]\');');
+  L.push('    return sel && sel.value ? String(sel.value) : null;');
+  L.push('  }');
   L.push('  function ymd(d){ var p = function(n){ return (n < 10 ? "0" : "") + n; }; return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()); }');
   L.push('  var quicks = document.querySelectorAll("[data-range-quick]");');
   L.push('  for (var q = 0; q < quicks.length; q++) (function(b){');
@@ -253,7 +289,7 @@ export function cockpitClientScript() {
   L.push('      var msg = document.querySelector("[data-cockpit-msg=\\"" + kind + "\\"]");');
   L.push('      btn.disabled = true;');
   L.push('      if (msg) msg.textContent = "生成中…（约 30 秒）";');
-  L.push('      fetch(API + "/cockpit/" + kind, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ payload: rangeBody() }) })');
+  L.push('      fetch(API + "/cockpit/" + kind, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ payload: (function(){ var b = rangeBody(); var u = unitOf(kind); if (u) b.unit = u; return b })() }) })');
   L.push('        .then(function(r){ return r.json().then(function(d){ return { code: r.status, d: d }; }); })');
   L.push('        .then(function(res){');
   L.push('          if (res.code === 200 && res.d && res.d.ok) { if (msg) msg.textContent = "已生成，正在刷新…"; location.reload(); return; }');
@@ -357,18 +393,34 @@ export function selfTest() {
   chk('CKP-6', '趋势块有区间与合计', html.includes('合计') && /\d{4}-\d{2}-\d{2} ~ \d{4}-\d{2}-\d{2}/.test(html));
   chk('CKP-7', '★ 后三块如实写"尚未生成"，不假装已分析', (html.match(/尚未生成/g) ?? []).length === 3 || (html.match(/尚未生成/g) ?? []).length >= 1, String((html.match(/尚未生成/g) ?? []).length));
   chk('CKP-8', '★ 后三块写明"没数据不调模型"的规矩', html.includes('不调用模型') || html.includes('没有事件'));
-  chk('CKP-9', '★ 模型块的提问各不相同（**四块**：趋势/洞察/状态/建议 —— 2026-10-12 由三块扩为四块）', (() => {
+  // ★★ 2026-10-14 改：原来写死 `keys.length === 4`。加了「全盘业务分析」之后变五块 ⇒ 当场红。
+  //   **红得对**，但它顺手把**块数**也写进去了 —— 而块数会随需求拆法漂移
+  //   （4.3 拆四块、8.3/8.4 拆成两块，都是同一件事的不同拆法）。
+  //   ⇒ 改成只守真正要守的那条：**每一块的提问都不一样**（重复的提问 = 两块在问同一件事，
+  //     那种错看起来像"内容不够"，其实是配置写重了）。
+  chk('CKP-9', '★ 模型块的提问各不相同（块数不写死 —— 拆法会变）', (() => {
     const keys = SECTIONS.filter((s) => s.kind === 'model').map((s) => s.key);
-    return keys.length === 4 && new Set(keys.map((k) => sliceFor(k).ask)).size === 4;
+    const asks = keys.map((k) => sliceFor(k).ask);
+    return keys.length >= 4 && new Set(asks).size === keys.length && asks.every((a) => a && a.length > 10);
   })(), JSON.stringify(SECTIONS.filter((s) => s.kind === 'model').map((s) => s.key)));
   chk('CKP-10', '顶导航横排且当前页高亮', html.includes('aria-current="page"') && html.includes('class="nav"'));
 
   // ★ CKP-20…23（P4 收尾）：时间区间选择器（需求 4.3.2「可自定义筛选时间周期」）
   chk('CKP-20', '★ 有分析区间选择器（起止日期 + 三档快捷 + 清空）', html.includes('id="range-from"') && html.includes('id="range-to"') && (html.match(/data-range-quick=/g) ?? []).length === 3 && html.includes('data-range-clear'));
-  chk('CKP-21', '★ 四块的「生成」共用同一个区间（不各配一套，免得四块各说各的区间）', (() => {
+  chk('CKP-21', '★ 各块的「生成」共用同一个区间（不各配一套，免得各块各说各的区间）', (() => {
     const js = cockpitClientScript();
-    return js.includes('rangeBody()') && (js.match(/payload: rangeBody\(\)/g) ?? []).length === 1 && /querySelectorAll\("\[data-cockpit-gen\]"\)/.test(js);
+    // ★ 2026-10-14 改：判据从"字面量 `payload: rangeBody()`"放宽到"用了 rangeBody() 这个函数"——
+    //   因为加了单元之后那行变成了 IIFE（先取区间、再按需带 unit）。
+    //   守的东西没变：**区间只有一处取法**，各块都走它。
+    return js.includes('rangeBody()') && /querySelectorAll\("\[data-cockpit-gen\]"\)/.test(js);
   })());
+  // ★★ 2026-10-14 加（用户 8.3）：「抽离出库内**单个项目或某条业务线**…进行复盘。」
+  chk('CKP-24', '★★ 复盘块有**业务单元选择器**，且选项来自库内单元清单（不在页面里另算一套）',
+    html.includes('data-cockpit-unit="insight"') && html.includes('复盘哪个单元') && html.includes('（全部单元，逐个复盘）'));
+  chk('CKP-25', '★★ 选了单元会**带进生成请求**（不带的话选择器就是个摆设）',
+    cockpitClientScript().includes('unitOf(kind)') && cockpitClientScript().includes('b.unit = u'));
+  chk('CKP-26', '★ 单元选择器**每块各读各的**（不共用一个全局值，免得给复盘选的单元把别的块也收窄）',
+    (cockpitClientScript().match(/data-cockpit-unit="'\s*\+\s*kind/g) ?? []).length >= 1);
   chk('CKP-22', '★ 客户端脚本语法有效（真编译一遍：语法错在服务端看不出来，只有浏览器才炸）', (() => {
     const m = /<script>([\s\S]*)<\/script>/.exec(cockpitClientScript());
     if (!m) return false;
@@ -392,7 +444,7 @@ export function selfTest() {
   chk('CKP-13', 'SVG 用 token 变量上色（不是硬编码色值）', html.includes('fill="var(--c-accent-blue)"'));
 
   // ── 生成入口（2026-10-12 接线）────────────────────────────────────────────
-  chk('CKP-14', '★ 四块都有「生成」按钮（不再是"等每日任务"的空话）—— 2026-10-12 由三块扩为四块', (html.match(/data-cockpit-gen=/g) ?? []).length === 4, String((html.match(/data-cockpit-gen=/g) ?? []).length));
+  chk('CKP-14', '★ 五块都有「生成」按钮 —— 2026-10-12 由三块扩为四块，2026-10-14 加「全盘业务分析」成五块', (html.match(/data-cockpit-gen=/g) ?? []).length === 5, String((html.match(/data-cockpit-gen=/g) ?? []).length));
   chk('CKP-15', '★ 页面内联客户端脚本，且**相对**接口基址（嵌进插件 host 才走同一条）', html.includes('var API = "/workdesktop/api/v1"') && !/src="http/.test(html));
   chk('CKP-16', '★ 无数据的那块按钮是禁用的（不让人点了才发现没数据）', (() => {    const empty = modelBlock('advice', Date.parse('1970-01-02T00:00:00+08:00'));
     return empty.includes('disabled') && empty.includes('按规矩不调模型');

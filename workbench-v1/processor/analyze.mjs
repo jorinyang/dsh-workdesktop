@@ -39,6 +39,26 @@ export function runModel(prompt, { timeoutMs = 180000 } = {}) {
   return { ok: true, text: out };
 }
 
+/**
+ * 调模型，**失败重试一次**（2026-10-14 加）。
+ *
+ * 来由：真机实测里，同一段提示词有时**第一次拿不回来**（`spawnSync powershell.exe ETIMEDOUT`），
+ *   重发一次就正常。这类"偶发不答"如果直接判失败，驾驶舱那一块会莫名其妙一直生成不出来，
+ *   而重发一次的代价只是一次调用。
+ *
+ * ⚠️ 只重试**一次**：真不通时不该无限重试（那会把一次点击变成几分钟的等待）。
+ * ⚠️ 重试的是**同一段提示词**；"减料重试"是调用方的事（见 `cockpit.mjs#narrative`）——
+ *   两者治的不是同一个病：这里治"偶发"，那里治"内容让它想太久"。
+ */
+export function runModelWithRetry(prompt, { timeoutMs = 180000, retries = 1 } = {}) {
+  let last = runModel(prompt, { timeoutMs });
+  for (let i = 0; i < retries && last.ok !== true; i += 1) {
+    last = runModel(prompt, { timeoutMs });
+    if (last.ok === true) return { ...last, retried: i + 1 };
+  }
+  return last;
+}
+
 /** 可视化判断（规则；只给建议） */
 export const VISUAL_RULES = Object.freeze([
   { tool: 'coordinates', why: '内容含维度/排序/分布/对比 ⇒ 适合用坐标系落成一张定位图', re: /维度|排序|优先级|分布|对比|占比|矩阵|象限/ },

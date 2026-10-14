@@ -355,11 +355,17 @@ export function handler(req, res) {
           const payload = raw.payload && typeof raw.payload === 'object' ? raw.payload : raw;
           const from = typeof payload.from === 'string' ? payload.from : null;
           const to = typeof payload.to === 'string' ? payload.to : null;
+          // ★ 2026-10-14 加（用户 8.3）：复盘"单个项目或某条业务线"时带上的**业务单元**。
+          //   不校验它的合法性（单元清单是从库里现算的、会随数据变）——
+          //   只传字符串下去，由 `sliceFor` 把它写进提示词；**未知单元不会报错**，
+          //   模型会如实说"这个单元在切片里没有材料"（比在这里猜一份合法清单可靠）。
+          const unit = typeof payload.unit === 'string' && payload.unit.trim() !== '' ? payload.unit.trim() : null;
           if (from || to) console.error(`[v1] cockpit/${kind} 区间 ${from ?? '-'} ~ ${to ?? '-'}`);
+          if (unit) console.error(`[v1] cockpit/${kind} 单元 ${unit}`);
           const { narrative } = await import('./cockpit.mjs');
-          const r = await narrative(kind, { from, to });
+          const r = await narrative(kind, { from, to, unit });
           if (r.ok !== true) return json(res, r.refused ? 409 : 502, { ok: false, kind, refused: !!r.refused, error: r.why });
-          return json(res, 200, { ok: true, kind, label: r.label, cached: !!r.cached, fp: r.fp, text: r.text });
+          return json(res, 200, { ok: true, kind, label: r.label, cached: !!r.cached, fp: r.fp, unit: r.unit ?? null, text: r.text });
         } catch (e) {
           return json(res, 500, { ok: false, error: '生成失败：' + (e && e.message ? e.message : String(e)) });
         }

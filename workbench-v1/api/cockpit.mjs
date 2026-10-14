@@ -147,12 +147,30 @@ export const NARRATIVE_SPECS = Object.freeze({
     shape: '按上面五种方法，**每种一段**（段首写方法名），每段不超过 150 字；结尾给一句"最该补的那件事"',
   },
   insight: {
-    label: '业务洞察',
+    label: '业务/项目复盘',
     ask: '按业务单元（项目 / 业务线）复盘全过程，逐维度洞察',
     unitGuide: '先按数据切片里的发信人 / 目录 / 主题把内容归到**业务单元**（项目或业务线）；归不进去的写"未能归属"，不要硬塞',
-    // 需求 4.3.3 的七个维度
+    // 需求 4.3.3 的七个维度（用户 8.3 逐字点名，一维不许漏）
     dimensions: Object.freeze(['业务逻辑', '决策与执行', '组织与能力', '机遇与风险', '客户与市场', '财务与资源', '规律与机制']),
     shape: '先写"业务单元"清单（每个一行：它是什么 + 切片里的依据），再按上面七个维度逐条写（每条约 80 字）；某一维度切片里没材料就写"切片里没有这方面的材料"',
+    // ★★ 2026-10-14 加（用户 8.3）：「抽离出库内**单个项目或某条业务线**，按业务单元维度，
+    //   即**对象或域**，进行复盘。**对进行中的业务线或项目，复盘到截止当时已有的所有信息。**」
+    //   ⇒ 这一块支持**指定一个单元**只复盘它；不指定就复盘全部单元（原来只有这一种）。
+    unitSelectable: true,
+  },
+  // ★★ 2026-10-14 加（用户 8.4 原话）：
+  //   「**全盘业务分析**：结合库内的方法论，对全盘业务进行分析。从以下方面进行分析：
+  //     战略；执行；机制；能力；市场；资源；方法论及认知迭代。实时将最准确的业务状态呈现出来。」
+  //   与 `insight`（单个项目/业务线复盘）**是两件事**，所以**分开两块**：
+  //     · insight   = 挑一个单元往里看（8.3）
+  //     · analysis  = 站在全部业务上方看（8.4）
+  //   ⚠️ 两者的 `dimensions` 看着像，但落点不同：8.3 的七维是"这个项目怎么样"，
+  //     8.4 的七方面是"我这一摊子怎么样"。合并成一块必然两头都写不深。
+  analysis: {
+    label: '全盘业务分析',
+    ask: '结合库内方法论，对**全盘业务**做一次分析，把当前最准确的业务状态呈现出来',
+    dimensions: Object.freeze(['战略', '执行', '机制', '能力', '市场', '资源', '方法论及认知迭代']),
+    shape: '按上面七个方面逐条写（每条约 80 字）；每条给一个判断（在推进 / 停住了 / 看不清），并指出这条判断依据的是切片里的哪一个数；最后一句写"最不确定的是哪一项"',
   },
   state: {
     label: '状态分析',
@@ -171,12 +189,63 @@ export const NARRATIVE_SPECS = Object.freeze({
   },
 });
 
+/**
+ * **业务单元清单**（用户 8.3 要的"按业务单元维度，即**对象或域**"）。
+ *
+ * 口径（照用户的话办，不自己发明）：
+ *   · 群聊消息 ⇒ 单元 = **群名**（那就是一条业务线：某个客户的群、某个项目的群）
+ *   · 单聊     ⇒ 单元 = **发信人**（对象）
+ *   · 笔记/日程/待办 ⇒ 单元 = 它自己的来源客户端名或主题前缀；实在归不进去的
+ *     归到「未能归属」—— **如实列出来**，不硬塞进某个单元（硬塞会让人以为归好了）。
+ *
+ * 返回按条数降序，带每单元的事件数（页面据此让人挑一个去复盘）。
+ */
+export function units({ now = Date.now() } = {}) {
+  const map = new Map();
+  const put = (name, kind) => {
+    const k = String(name || '').trim() || '未能归属';
+    if (!map.has(k)) map.set(k, { name: k, total: 0, by: { message: 0, note: 0, todo: 0, schedule: 0 } });
+    const u = map.get(k); u.total += 1; u.by[kind] = (u.by[kind] ?? 0) + 1;
+  };
+  for (const e of store.list({ type: 'message' })) {
+    const p = e.payload ?? {};
+    put(p.isDirect === true ? (p.sender ?? '') : (p.conversationName ?? p.conversationId ?? ''), 'message');
+  }
+  for (const e of store.list({ type: 'note' })) {
+    const p = e.payload ?? {};
+    // 笔记没有"群"这个概念 ⇒ 用主题里最靠前的那一段当单元锚（形如「客户名 · 事项」）
+    put(String(p.topic ?? '').split(/[·|｜:：\-—]/)[0], 'note');
+  }
+  for (const e of store.list({ type: 'todo' })) put(String(e.payload?.topic ?? '').split(/[·|｜:：\-—]/)[0], 'todo');
+  for (const e of store.list({ type: 'schedule' })) put(String(e.payload?.topic ?? '').split(/[·|｜:：\-—]/)[0], 'schedule');
+  const list = [...map.values()].sort((a, b) => b.total - a.total);
+  return {
+    list,
+    note: '单元口径：群聊取群名（一条业务线）· 单聊取发信人（对象）· 笔记/日程/待办取主题首段。'
+      + '归不进任何单元的归到「未能归属」并如实列出（不硬塞）。',
+    counts: { units: list.length, events: list.reduce((n, u) => n + u.total, 0) },
+  };
+}
+
 /** 需要模型的三块：先取真实数据切片，再交给模型；**没数据就不调** */
-export function sliceFor(kind, { from = null, to = null, now = Date.now() } = {}) {
+export function sliceFor(kind, { from = null, to = null, now = Date.now(), unit = null } = {}) {
   const s = stats({ now }); const t = trend({ from, to, now }); const g = graph({ now });
   const spec = NARRATIVE_SPECS[kind];
-  const byKind = { trend: '发展趋势', insight: '业务洞察', state: '状态分析', advice: '发展建议' };
-  return { kind, label: byKind[kind] ?? kind, ask: spec?.ask ?? '', spec: spec ?? null, stats: s, trend: t, graphCounts: g.counts, events: t.totals };
+  const byKind = { trend: '发展趋势', insight: '业务/项目复盘', analysis: '全盘业务分析', state: '状态分析', advice: '发展建议' };
+  const sl = { kind, label: byKind[kind] ?? kind, ask: spec?.ask ?? '', spec: spec ?? null, stats: s, trend: t, graphCounts: g.counts, events: t.totals };
+  // ★ 2026-10-14（用户 8.3）：复现"单个项目或某条业务线"时把**单元清单**带进材料，
+  //   并在指定了单元时把范围收窄到它 —— 让模型能真的"只看这一个"。
+  if (spec?.unitSelectable) {
+    const u = units({ now });
+    sl.units = { note: u.note, list: u.list.slice(0, 40).map((x) => ({ name: x.name, total: x.total, by: x.by })) };
+    sl.selectedUnit = unit ? String(unit) : null;
+    if (unit) {
+      sl.ask = `${sl.ask}。**只看「${unit}」这一个单元**，别的单元的内容一概不要写进来。`;
+    } else {
+      sl.ask = `${sl.ask}。**先把全部单元列出来**，再逐个复盘（单元多的挑条数最多的前几个）。`;
+    }
+  }
+  return sl;
 }
 /** 按 kind 拼提示词里的"逐项要求"（**四块的要求都是显式清单**，不是一句泛泛的话） */
 export function specLines(kind) {
@@ -218,16 +287,47 @@ export function readNarrative(kind) {
  * @param {'insight'|'state'|'advice'} kind
  * @param {{from?:string,to?:string,now?:number,modelFn?:Function,force?:boolean}} o
  */
-export async function narrative(kind, { from = null, to = null, now = Date.now(), modelFn = null, force = false } = {}) {
-  const sl = sliceFor(kind, { from, to, now });
+export async function narrative(kind, { from = null, to = null, now = Date.now(), modelFn = null, force = false, unit = null } = {}) {
+  const sl = sliceFor(kind, { from, to, now, unit });
   if (!hasEnoughData(sl)) {
     // ★ 规矩：没有真实数据切片就不调模型（不给它机会生成"没数据也像模像样"的分析）
     return { ok: false, refused: true, why: `区间内没有事件（${JSON.stringify(sl.events)}）⇒ 按规矩不调用模型`, kind, label: sl.label };
   }
-  const material = JSON.stringify({ stats: sl.stats, totals: sl.trend.totals, series: sl.trend.series, graph: sl.graphCounts });
+  // ★★ 2026-10-14 加（用户 8.3）：`unit` 要进**材料**、**指纹**、**落盘**三处，一处都不能漏：
+  //   · 进材料 ⇒ 模型才看得到"有哪些单元、这次只看哪个"；
+  //   · 进指纹 ⇒ **换一个单元必须重算**（只进材料不进指纹，换个单元会命中上次的缓存、拿到别人的复盘）；
+  //   · 进落盘 ⇒ 页面重开时能显示"这次复盘的是哪个单元"。
+  // ★★ 2026-10-14 加：**给模型的材料必须限长**。
+  //
+  //   来由（真机实测）：加上「全盘业务分析」之后，生成一直卡着不回来 ——
+  //   我先怀疑模型不通，单独拿一句短提示词试，**2.9 秒就回来了**。
+  //   所以卡的不是模型，是**我塞给它的材料太大**（整条趋势序列 + 全量图谱计数 + 单元清单）。
+  //
+  //   ⇒ 材料只保留**人能看的那点量**：
+  //     · 趋势序列：只给**最近 40 天**（再往前对"当前状态"没有增量信息，只是把提示词撑长）；
+  //     · 单元清单：只给条数最多的 **20 个**；
+  //     · 兜底：整段材料序列化之后超过 24000 字就**截断并如实标注**（不静默丢）。
+  //   ⚠️ 截断要**说出来**（`truncated: true` 进材料），否则模型会把"没给它"当成"没有"，
+  //     然后写出"切片里没有这方面的材料" —— 那是被我自己截出来的假象。
+  const slimSeries = (sl.trend.series ?? []).slice(-40);
+  const materialObj = {
+    stats: sl.stats,
+    totals: sl.trend.totals,
+    series: slimSeries,
+    seriesNote: sl.trend.series.length > slimSeries.length
+      ? `趋势序列只给了最近 ${slimSeries.length} 天（共 ${sl.trend.series.length} 天）—— 更早的天数没有放进来，不要据此判断"那几天没有事件"`
+      : `趋势序列共 ${slimSeries.length} 天，全部给出`,
+    graph: sl.graphCounts,
+    ...(sl.units ? { units: { note: sl.units.note, list: sl.units.list.slice(0, 20) } } : {}),
+  };
+  let material = JSON.stringify(materialObj);
+  const LIMIT = 24000;
+  let truncated = false;
+  if (material.length > LIMIT) { material = material.slice(0, LIMIT); truncated = true }
+  if (truncated) material += '\n…（材料过长已截断：只给了前一部分，**不要据此判断"剩下的没有"**）';
   const fp = fpOf(sl.ask + material);
   const prev = readNarrative(kind);
-  if (!force && prev && prev.fp === fp) return { ok: true, cached: true, kind, label: sl.label, text: prev.text, fp };
+  if (!force && prev && prev.fp === fp) return { ok: true, cached: true, kind, label: sl.label, text: prev.text, fp, unit: prev.unit ?? null };
 
   const prompt = [
     '你在为业务驾驶舱写一块分析。要求：先给判断，再给理由，最后给下一步；**只依据下面的真实数据，不要编**。',
@@ -235,24 +335,74 @@ export async function narrative(kind, { from = null, to = null, now = Date.now()
     `这一块是：${sl.label}。${sl.ask}`,
     ...specLines(kind),
     '',
-    `【真实数据切片】（区间 ${sl.trend.from} ~ ${sl.trend.to}）`,
+    `【真实数据切片】（区间 ${sl.trend.from} ~ ${sl.trend.to}${sl.selectedUnit ? ` · 只复盘单元「${sl.selectedUnit}」` : ''}）`,
     material,
   ].join('\n');
 
-  const m = modelFn ? await modelFn(prompt) : await (async () => {
-    const { runModel } = await import('../processor/analyze.mjs');
-    return runModel(prompt);
-  })();
+  // ★★ 2026-10-14 加：**挂住就短一点再试**（真机实测逼出来的）。
+  //
+  //   实测事实（都量过）：
+  //     · 一句短提示词 ⇒ 2.9 秒回来；
+  //     · 长度 / 换行 / 中文 / JSON / 单引号 六种形状全试过 ⇒ 都通（最长 2005 字，3 秒）；
+  //     · **这一块的提示词（3625 字）⇒ 300 秒拿不回来**（`spawnSync powershell.exe ETIMEDOUT`）。
+  //   ⇒ 卡住的**不是形式，是这一段真实内容**让模型想得太久（或者它自己卡住了）。
+  //     我没有它的内部状态可看，所以不去猜原因，改成**工程上能兜住的**：
+  //     第一次给全量；拿不回来就把材料**砍到一半**再试一次；再不行就如实报失败。
+  //
+  //   ⚠️ **重试这件事与"用不用桩"无关**，所以第一版把重试写在"真模型"那条分支里是错的：
+  //     注入桩时根本不走那段 ⇒ 想验"减料重试"都验不了（真机自检当场露馅）。
+  //     ⇒ 现在两条路都走同一个 `callOnce`，桩也能验重试路径。
+  //   ⚠️ 减料要**写进材料**（"材料被压缩过"那句），否则模型会把"没给它"当成"没有"，
+  //     然后写出"切片里没有这方面的材料" —— 那是被我砍出来的假象。
+  //   ⚠️ 两次都失败就**如实报失败**，不返回半截文本冒充分析。
+  //
+  //   ★ 重试分层想清楚（第一版混在一起，桩验时"减料重试"标记没置上，读起来也乱）：
+  //     · **偶发不答**（同一段提示词重发就好）⇒ 由 `runModelWithRetry` 在**真模型那一层**管；
+  //     · **内容让它想太久**（重发也没用）⇒ 由这里管：换一段更短的提示词。
+  //     两层各管一个病，**注入桩时只验第二层**（桩不会偶发，它每次都按你写的回）。
+  const callOnce = async (p) => {
+    if (modelFn) return modelFn(p);
+    const { runModelWithRetry } = await import('../processor/analyze.mjs');
+    return runModelWithRetry(p, { timeoutMs: 240000, retries: 1 });
+  };
+  let m = await callOnce(prompt);
+  // ★ 只有**超时**才走减料重试（2026-10-14 想清楚的一层）。
+  //
+  //   理由：减料治的是"**模型想得太久**"，不是"调用报错了"。
+  //     普通失败（模型服务报错、返回非 0）再发一段短的一样会失败，
+  //     白白多调一次模型（驾驶舱一次调用是要花时间的）。
+  //   ⇒ 判据就一条：失败理由里带 ETIMEDOUT / 超时 / timeout。
+  //   ⚠️ 这条同时也让"普通失败"的行为变得可预期：**失败就是失败，不折腾**。
+  const isTimeout = (x) => /ETIMEDOUT|timed?\s?out|超时/i.test(String(x?.why ?? ''));
+  if (m.ok !== true && isTimeout(m)) {
+    // ★ 压缩要**真的压下去**。第一版写的是 `Math.max(4000, material.length / 2)` ——
+    //   而材料只有 3275 字 ⇒ 那个 4000 的下限**比材料本身还长** ⇒ 一个字都没砍掉
+    //   （实测：3656 → 3531，只少了 125 字）。检查当场抓到"压缩版确实更短"勉强过、
+    //   但"减料重试"这条路的用意完全落空。
+    //   ⇒ 改成**按比例压整段提示词**（材料和逐项要求一起压），并且下限设小（600 字）。
+    //     理由：卡的是"模型要想多久"，与哪一段被砍无关 —— 所以压总长最直接。
+    const slimPrompt = prompt.replace(material, material.slice(0, Math.max(600, Math.floor(material.length * 0.4))))
+      + '\n（注意：材料被压缩过，**不要据此判断"没提到的就没有"**）';
+    const slim = slimPrompt.length < prompt.length * 0.8
+      ? slimPrompt
+      : prompt.slice(0, Math.max(1200, Math.floor(prompt.length * 0.6))) + '\n（材料被压缩过，不要据此判断"没提到的就没有"）';
+    const second = await callOnce(slim);
+    if (second.ok === true) m = { ...second, retried: 'slim', firstWhy: m.why };
+    else m = { ok: false, why: `两次都不行 —— 全量：${String(m.why).slice(0, 80)} ／ 压缩后：${String(second.why).slice(0, 80)}` };
+  }
   if (m.ok !== true) return { ok: false, why: `模型未产出：${m.why}`, kind, label: sl.label, fp };
 
-  const doc = { kind, label: sl.label, ask: sl.ask, from: sl.trend.from, to: sl.trend.to, fp, at: new Date().toISOString(), text: m.text, events: sl.events };
+  const doc = { kind, label: sl.label, ask: sl.ask, from: sl.trend.from, to: sl.trend.to, fp, at: new Date().toISOString(), text: m.text, events: sl.events, unit: sl.selectedUnit };
   try {
     fs.mkdirSync(narrativeDir(), { recursive: true });
     const tmp = `${narrativeFile(kind)}.tmp-${process.pid}`;
     fs.writeFileSync(tmp, JSON.stringify(doc, null, 2) + '\n', 'utf8');
     fs.renameSync(tmp, narrativeFile(kind));
   } catch (e) { return { ok: false, why: `写入失败：${e.message}`, kind, fp }; }
-  return { ok: true, cached: false, kind, label: sl.label, text: m.text, fp };
+  // ★ 2026-10-14：`retried` 要**带出来**。第一版在 `m` 上标了却没写进返回值 ⇒
+  //   外面永远看不到"这次是减料之后才成功的"（自检当场抓到 `retried=undefined`）。
+  //   它有用处：连续几次都走减料，说明材料对不同模型都太重，该改的是材料本身，不是重试。
+  return { ok: true, cached: false, kind, label: sl.label, text: m.text, fp, unit: sl.selectedUnit, retried: m.retried ?? null, firstWhy: m.firstWhy ?? null };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -313,7 +463,17 @@ export async function selfTest() {
     const sl = sliceFor('insight', { from: '2026-10-05', to: '2026-10-12', now: NOW });
     chk('CKT-13', '★ 模型三块的输入切片带真实数据（统计+趋势+图谱计数）', sl.stats.messages.total === 2 && sl.trend.totals.note === 1 && typeof sl.graphCounts.nodes === 'number');
     chk('CKT-14', '★ 有数据才允许调模型（没数据不生成分析）', hasEnoughData(sl) === true && hasEnoughData({ events: { message: 0, note: 0, todo: 0, schedule: 0 } }) === false);
-    chk('CKT-15', '三块的标签与提问各不相同', sliceFor('insight').label === '业务洞察' && sliceFor('state').label === '状态分析' && sliceFor('advice').label === '发展建议' && sliceFor('insight').ask !== sliceFor('advice').ask);
+    // ★★ 2026-10-14 改：原来写死 `sliceFor('insight').label === '业务洞察'`。
+    //   用户 8.3/8.4 把那一块拆成**两件事**（项目复盘 / 全盘分析）之后，标签变了 ⇒ 当场红。
+    //   **红得对**，它守的"标签与提问各不相同"没变，只是把**当时的标签字面**也写进去了。
+    //   ⇒ 标签字面留给文案去改（那本来就会变）；这里只守**各不相同**这个不变式。
+    chk('CKT-15', '★ 每块的标签与提问各不相同（标签字面不写死 —— 文案会改）', (() => {
+      const kinds = ['trend', 'insight', 'analysis', 'state', 'advice'];
+      const labels = kinds.map((k) => sliceFor(k).label);
+      const asks = kinds.map((k) => sliceFor(k).ask);
+      return new Set(labels).size === kinds.length && new Set(asks).size === kinds.length
+        && labels.every((x) => x && x.length >= 2) && asks.every((x) => x && x.length > 10);
+    })(), JSON.stringify(['trend', 'insight', 'analysis', 'state', 'advice'].map((k) => sliceFor(k).label)));
 
     // ★ CKT-52…56（P4）：四块的落点**逐项照需求写死**（需求 4.3.2–4.3.5 点名的那几项，一项都不许漏）
     chk('CKT-52', '★ 四块都在（含趋势那块：需求 4.3.2 的五种分析）', ['trend', 'insight', 'state', 'advice'].every((k) => Object.keys(NARRATIVE_SPECS).includes(k)), JSON.stringify(Object.keys(NARRATIVE_SPECS)));
@@ -339,13 +499,33 @@ export async function selfTest() {
       return want.every((w) => NARRATIVE_SPECS.state.dimensions.includes(w));
     })(), JSON.stringify(NARRATIVE_SPECS.state.dimensions));
 
+    // ★★ 2026-10-14 加（用户 8.3 / 8.4）：
+    chk('CKT-60', '★★ 全盘业务分析：用户 8.4 点名的**七个方面**逐条在', (() => {
+      const want = ['战略', '执行', '机制', '能力', '市场', '资源', '方法论及认知迭代'];
+      const got = NARRATIVE_SPECS.analysis.dimensions;
+      return want.every((w) => got.includes(w)) && got.length === want.length;
+    })(), JSON.stringify(NARRATIVE_SPECS.analysis.dimensions));
+    chk('CKT-61', '★★ 复盘与全盘是**两块**（用户 8.3、8.4 是两件事，合起来必然两头都写不深）',
+      Object.keys(NARRATIVE_SPECS).includes('insight') && Object.keys(NARRATIVE_SPECS).includes('analysis')
+      && NARRATIVE_SPECS.insight.ask !== NARRATIVE_SPECS.analysis.ask);
+    chk('CKT-62', '★ 单元清单带口径说明，且"归不进去的"如实列出（不硬塞）',
+      /未能归属/.test(units({ now: NOW }).note) && /不硬塞/.test(units({ now: NOW }).note),
+      units({ now: NOW }).note.slice(0, 80));
+    chk('CKT-63', '★★ 指定单元 ⇒ 提问里**指名只看它**（选择器不是摆设）',
+      /只看/.test(sliceFor('insight', { now: NOW, unit: '示例单元' }).ask)
+      && String(sliceFor('insight', { now: NOW, unit: '示例单元' }).ask).includes('示例单元'),
+      sliceFor('insight', { now: NOW, unit: '示例单元' }).ask.slice(0, 90));
+    chk('CKT-64', '★ 未指定单元 ⇒ 提问是"先列全部单元再逐个复盘"（与指定时不同）',
+      /先把全部单元列出来/.test(sliceFor('insight', { now: NOW }).ask));
+    chk('CKT-65', '★ 单元清单进了材料（模型看得到有哪些单元可选）',
+      Array.isArray(sliceFor('insight', { now: NOW }).units?.list));
+
     // 模型三块：生成 / 幂等 / 拒绝
     const stubModel = async () => ({ ok: true, text: '判断：推进中\n理由：有真实事件\n下一步：继续' });
     const n1 = await narrative('state', { from: '2026-10-05', to: '2026-10-12', now: NOW, modelFn: stubModel });
     chk('CKT-16', '★ 有数据 ⇒ 生成并落盘一块', n1.ok === true && n1.cached === false && fs.existsSync(narrativeFile('state')), JSON.stringify({ ok: n1.ok, fp: n1.fp }));
     chk('CKT-17', '落盘内容含输入指纹与区间（可复算）', (() => { const d = readNarrative('state'); return !!d && d.fp === n1.fp && d.from === '2026-10-05'; })());
-    const n2 = await narrative('state', { from: '2026-10-05', to: '2026-10-12', now: NOW, modelFn: async () => ({ ok: true, text: '不该被调用' }) });
-    chk('CKT-18', '★ 幂等：输入没变 ⇒ 用缓存，不重复调模型', n2.cached === true && n2.text === '判断：推进中\n理由：有真实事件\n下一步：继续', JSON.stringify({ cached: n2.cached }));
+    const n2 = await narrative('state', { from: '2026-10-05', to: '2026-10-12', now: NOW, modelFn: async () => ({ ok: true, text: '不该被调用' }) });    chk('CKT-18', '★ 幂等：输入没变 ⇒ 用缓存，不重复调模型', n2.cached === true && n2.text === '判断：推进中\n理由：有真实事件\n下一步：继续', JSON.stringify({ cached: n2.cached }));
     const n3 = await narrative('state', { from: '2026-10-05', to: '2026-10-12', now: NOW, modelFn: async () => ({ ok: true, text: '强制重生成' }), force: true });
     chk('CKT-19', 'force 可强制重生成', n3.cached === false && n3.text === '强制重生成');
     const n4 = await narrative('advice', { from: '2020-01-01', to: '2020-01-02', now: NOW, modelFn: async () => { throw new Error('不该被调用'); } });
@@ -353,6 +533,38 @@ export async function selfTest() {
     const n5 = await narrative('insight', { from: '2026-10-05', to: '2026-10-12', now: NOW, modelFn: async () => ({ ok: false, why: '模型超时' }) });
     chk('CKT-21', '★ 模型失败 ⇒ 不落盘（页面仍是"尚未生成"，不留空壳）', n5.ok === false && !fs.existsSync(narrativeFile('insight')));
     chk('CKT-22', '未生成的那块读出来是 null（页面据此显示尚未生成）', readNarrative('insight') === null && readNarrative('state') !== null);
+    // ★★ 2026-10-14 加（真机实测逼出来的两条）：
+    //   ① 超时 ⇒ **换成压缩版再试**（治"内容让它想太久"）；
+    //   ② 普通失败 ⇒ **不折腾**（减料治不了报错，只会白多调一次）。
+    const slimCalls = [];
+    const n6 = await narrative('analysis', {
+      from: '2026-10-05', to: '2026-10-12', now: NOW,
+      modelFn: async (p) => {
+        slimCalls.push(p.length);
+        return p.includes('材料被压缩过') || p.includes('不要据此判断')
+          ? { ok: true, text: '（桩）压缩版成功' }
+          : { ok: false, why: '调用失败：spawnSync powershell.exe ETIMEDOUT' };
+      },
+    });
+    chk('CKT-66', '★★ 超时 ⇒ 换**压缩版**再试一次（治"内容让它想太久"）',
+      n6.ok === true && n6.retried === 'slim' && slimCalls.length === 2, `调了 ${slimCalls.length} 次 · ${slimCalls.join(' → ')}`);
+    chk('CKT-67', '★★ 压缩版**明显更短**（第一版的下限比材料还长 ⇒ 等于没压，实测只少 125 字）',
+      slimCalls.length === 2 && slimCalls[1] < slimCalls[0] * 0.8,
+      `${slimCalls[0]} → ${slimCalls[1]}（砍掉 ${slimCalls.length === 2 ? Math.round((1 - slimCalls[1] / slimCalls[0]) * 100) : '?'}%）`);
+    let plainCalls = 0;
+    const n7 = await narrative('state', {
+      from: '2026-10-05', to: '2026-10-12', now: NOW, force: true,
+      modelFn: async () => { plainCalls += 1; return { ok: false, why: '模型返回非 0（exit=1）' } },
+    });
+    chk('CKT-68', '★★ **普通失败不折腾**（只调一次；减料治不了报错，只会白多调一次）',
+      n7.ok === false && plainCalls === 1 && !/两次都不行/.test(String(n7.why)), `调了 ${plainCalls} 次`);
+    // 超时两次都拿不回来 ⇒ 如实报失败，不返回半截文本
+    const n8 = await narrative('advice', {
+      from: '2026-10-05', to: '2026-10-12', now: NOW, force: true,
+      modelFn: async () => ({ ok: false, why: 'ETIMEDOUT' }),
+    });
+    chk('CKT-69', '★ 超时两次都不行 ⇒ **如实报失败**（不返回半截文本冒充分析）',
+      n8.ok === false && n8.text === undefined && /两次都不行/.test(String(n8.why)), String(n8.why).slice(0, 70));
   } finally {
     if (prev === undefined) delete process.env.WB_V1_OUT; else process.env.WB_V1_OUT = prev;
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* noop */ }
