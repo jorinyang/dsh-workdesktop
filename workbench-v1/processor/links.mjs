@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';   // 用于同名让名时按 URL 取短摘要（见落盘那段注释）
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath , pathToFileURL } from 'node:url';
 import { KB_ROOT as ROOT, KB_ROOT, hasKbRoot } from '../paths.mjs';   // 路径收口（见 paths.mjs 顶部说明：原先按本文件深度往上数，包一挪就错）
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -241,7 +241,8 @@ export async function fetchOnce({ fetchFn = defaultFetch, dryRun = false, maxIte
 //   末行给 `PASS = n   FAIL = m`，否则节拍的假绿守卫会把这步当空转。
 //   ★ **空队列不算失败**（Q10：没有待爬就跳过）⇒ FAIL 只在抛异常时出现。
 // ══════════════════════════════════════════════════════════════════════════════
-if (process.argv[1] && process.argv[1].endsWith('links.mjs')) {
+const __isMain = (() => { try { const entry = process.argv[1]; return !!entry && import.meta.url === pathToFileURL(entry).href } catch { return false } })();
+if (__isMain) {
   console.log('############ 工作台 v1.0 · 链接抓取 ############');
   try {
     const r = await fetchOnce({ dryRun: process.argv.includes('--dry-run') });
@@ -404,7 +405,7 @@ export async function selfTest() {
 //   它同时就是"接 skills 的挂点"：要把某类链接交给某个 skill，替换 `fetchFn` 即可。
 // ══════════════════════════════════════════════════════════════════════════════
 
-if (process.argv[1] && process.argv[1].endsWith('links.mjs') && process.argv.includes('--drain')) {
+if (__isMain && process.argv.includes('--drain')) {
   const dry = process.argv.includes('--dry-run');
   const t0 = Date.now();
   try {

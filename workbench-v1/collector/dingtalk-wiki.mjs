@@ -31,6 +31,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -422,7 +423,8 @@ export function fetchBodiesOnce({ run = defaultRun, dryRun = false, max = BODY_M
 
 // 命令行入口（定时任务用；包装脚本 `_meta/tools/v1-kb-bodies.cmd`）。
 // ★ 为什么必须有入口：本项目已三次踩到"没有命令行入口 ⇒ 计划任务只看到 exit=0"这种假绿。
-if (process.argv[1] && process.argv[1].endsWith('dingtalk-wiki.mjs') && process.argv.includes('--bodies')) {
+const __isMain = (() => { try { const entry = process.argv[1]; return !!entry && import.meta.url === pathToFileURL(entry).href } catch { return false } })();
+if (__isMain && process.argv.includes('--bodies')) {
   // 命令行入口（定时任务用；`_meta/tools/v1-kb-bodies.cmd`）。
   // ★ 为什么必须有入口：本项目已三次踩到"没有命令行入口 ⇒ 计划任务只看到 exit=0"这种假绿。
   const dry = process.argv.includes('--dry-run');

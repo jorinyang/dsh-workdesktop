@@ -18,7 +18,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath , pathToFileURL } from 'node:url';
 
 import { makeEvent } from '../schema.mjs';
 import * as store from '../store.mjs';
@@ -156,6 +156,58 @@ export function createEvent(type, payload, { origin = null, at = null } = {}) {
 }
 
 const EVENT_FOR = { messages: 'message', notes: 'note', todos: 'todo', schedules: 'schedule' };
+
+/**
+ * **这条事件还需不需要取相关上下文**（用户 2026-10-14 要的"流入时取一次、之后不重复取"）。
+ *
+ * ⚠️ 判据本体在 `processor/context-gate.mjs`（**中立小模块**），这里只是转出去方便调用。
+ *   为什么不直接写在这个文件里：分析引擎也要用同一个判据，而 `server.mjs` 会动态 import
+ *   分析引擎 ⇒ 写在这里就成了**两边互相引用**（懒加载下当时不炸，但那是埋着的隐患）。
+ */
+import { needsContext as needsContextGate, queryOf } from '../processor/context-gate.mjs';
+export { needsContext } from '../processor/context-gate.mjs';
+
+/**
+ * **给一条事件补一次相关上下文**（**只召回，不调模型**）。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 为什么把这件事提成一个函数（原来只写在"新建消息"那一小段里）
+ *
+ *   实测：原来**只有"经接口新建消息"这一条路**会就地召回（ops 记 `recalled-on-create`），
+ *   依据是需求 3.3.3 里的一句话。流入的另外几条路**都没有这一步**：
+ *     · **采集器进来的消息**（钉钉/飞书/微信…，占了绝大多数）—— 采集器走 `makeEvent` + `store.upsert`，
+ *       根本不经过接口；
+ *     · **待办 / 日程 / 笔记**经接口新建 —— 那种情况下原来 `type !== 'message'` 直接就 return 了。
+ *   ⇒ 所以"流入时取上下文"实际上**只覆盖了一小部分**。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 与"分析引擎"是什么关系（两处都在取，会不会重复）
+ *
+ *   · 这里是**新建时当场取**（点"存为笔记"那一刻就取好，详情页立刻有材料可显示）；
+ *   · 分析引擎是**兜底清扫**（采集器那条路不经过接口，只能靠它按批补）。
+ *   两者**共用上面的 `needsContext`** ⇒ 谁先跑都一样，**不会重复取**。
+ *   ⚠️ 判据必须一致，否则会出现"接口取过一遍、引擎又取一遍"——那正是用户要避免的。
+ */
+export async function recallIntoEvent(type, id, evt, { deps = _deps, force = false } = {}) {
+  if (!force && !needsContextGate(evt)) {
+    const had = evt?.context?.recalled ?? [];
+    return { skipped: true, hits: had.length, recalled: had, recallError: evt?.context?.recallError ?? null };
+  }
+  const q = queryOf(evt);
+  if (q === '') return { skipped: true, hits: 0, recalled: [], recallError: null, why: '没有可检索的文本' };
+  const { recall } = await import('../processor/recall.mjs');
+  let hits = []; let recallError = null;
+  try {
+    const rr = await (deps.recall ?? recall)(q);
+    if (rr.ok === true) hits = rr.hits; else recallError = rr.why;
+  } catch (e) {
+    recallError = `召回异常：${String(e && e.message).slice(0, 120)}`;
+  }
+  store.patch(type, id, { context: { recalled: hits, at: new Date().toISOString(), recallError } }, { op: 'recalled-on-create', by: 'api', evidence: { hits: hits.length, recallError } });
+  // ⚠️ 回执里**要带 `recalled` 数组本体**，不只是条数 —— 原来那条路返回的就是数组，
+  //   我改成只给计数时 `API-10c` 当场变红（界面上也可能直接用它）。**能少给信息就别改形状。**
+  return { hits: hits.length, recalled: hits, recallError };
+}
 
 /**
  * **可注入的动作实现**（只给自检用；生产路径为 null ⇒ 走动态 import 的真实现）。
@@ -664,24 +716,24 @@ export function handler(req, res) {
       const r = createEvent(type, b.json?.payload ?? b.json ?? {});
       if (r.ok === false) return json(res, r.code, { error: '校验未通过', errors: r.errors });
       // ★ 需求 3.3.3 原话："在消息页面可以新增一条新消息，**在记录的时候同时可以检索知识库召回相关上下文**"。
-      //   ⇒ 新增消息后就地做一次召回（与"分析引擎只召回不调模型"同一条成本口径：**不调模型**）。
-      //   召回失败**不影响消息落库**，只如实记进 `context.recallError`（分清"查不到"与"桥断了"）。
-      if (type !== 'message') return json(res, 200, { ok: true, id: r.id, action: r.action, note: '已落运行态，将由筛选引擎结构化并双写知识库' });
+      //   ⇒ 新增后就地做一次召回（与"分析引擎只召回不调模型"同一条成本口径：**不调模型**）。
+      // ★★ 2026-10-14 扩到**四类**（用户原话：「所有信息/待办/日程/笔记在流入到工作台的时候
+      //   做一次相关上下文的获取和分析」）。原来只有 message 会取，另外三类直接 return。
+      //   召回失败**不影响落库**，只如实记进 `context.recallError`（分清"查不到"与"桥断了"）。
       return (async () => {
-        const { recall } = await import('../processor/recall.mjs');
-        const q = String(r.event?.payload?.summary ?? r.event?.payload?.raw ?? '').slice(0, 200);
-        let hits = []; let recallError = null;
-        if (q !== '') {
-          // 自检可注入候选（见 `_deps` 的注释：ESM 命名空间只读，猴子补丁不可用）
-          const rr = await (_deps.recall ?? recall)(q);
-          if (rr.ok === true) hits = rr.hits;
-          else recallError = rr.why;
+        const r2 = await recallIntoEvent(type, r.id, r.event ?? store.getById(type, r.id));
+        const ctx = { recalled: r2.recalled ?? [], recallError: r2.recallError ?? null };
+        if (type !== 'message') {
+          return json(res, 200, {
+            ok: true, id: r.id, action: r.action,
+            context: ctx,
+            note: `已落运行态（相关上下文 ${r2.hits ?? 0} 条）；筛选引擎会结构化并双写知识库`,
+          });
         }
-        store.patch('message', r.id, { context: { recalled: hits, at: new Date().toISOString(), recallError } }, { op: 'recalled-on-create', by: 'api', evidence: { hits: hits.length, recallError } });
         return json(res, 200, {
           ok: true, id: r.id, action: r.action,
-          context: { recalled: hits, recallError },
-          note: recallError ? '已落运行态；召回不可用（已如实记下原因，不是"没有相关材料"）' : '已落运行态，并已召回相关上下文',
+          context: ctx,
+          note: r2.recallError ? '已落运行态；召回不可用（已如实记下原因，不是"没有相关材料"）' : `已落运行态，并已召回相关上下文 ${r2.hits ?? 0} 条`,
         });
       })().catch((e) => json(res, 200, { ok: true, id: r.id, action: r.action, context: { recalled: [], recallError: `召回异常：${e.message}` }, note: '已落运行态；召回异常已记录' }));
     });
@@ -1101,7 +1153,8 @@ export async function selfTest() {
   return { pass, fail: out.length - pass, details: out };
 }
 
-if (process.argv[1] && process.argv[1].endsWith('server.mjs')) {
+const __isMain = (() => { try { const entry = process.argv[1]; return !!entry && import.meta.url === pathToFileURL(entry).href } catch { return false } })();
+if (__isMain) {
   const port = Number(process.argv[2] || 8791);
   startServer({ port }).then((s) => {
     console.log(`工作台 API 已起：${s.url}（只监听本机 ${s.port}）`);

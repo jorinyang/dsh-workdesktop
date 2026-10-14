@@ -359,7 +359,18 @@ export async function selfTest() {
 // 直接跑（`node _meta/workbench/v1/api/endpoints.mjs`）＝ 真机那一遍
 // ══════════════════════════════════════════════════════════════════════════════
 
-const isMain = process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/').split('/').pop());
+// ★ 2026-10-14 加严用的：把 argv[1] 转成 file URL 再与 import.meta.url 精确比对
+import { pathToFileURL } from 'node:url';
+
+// ★ 2026-10-14 改严：原来写的是"`import.meta.url` 以 argv[1] 的**文件名**结尾"——
+//   同名的文件在库里不止一个时会误判，而且 import 这个模块的脚本也可能被它当成"直接运行"。
+//   照 `ui/interactions.mjs` 的写法：把 argv[1] 转成 file URL 再**精确比对**。
+const isMain = (() => {
+  try {
+    const entry = process.argv[1];
+    return !!entry && import.meta.url === pathToFileURL(entry).href;
+  } catch { return false }
+})();
 if (isMain) {
   console.log('############ 直接对接口的检查（不经过面板）############');
   console.log('');

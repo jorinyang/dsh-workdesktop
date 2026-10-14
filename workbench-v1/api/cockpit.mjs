@@ -373,13 +373,13 @@ export async function narrative(kind, { from = null, to = null, now = Date.now()
   //     两层各管一个病，**注入桩时只验第二层**（桩不会偶发，它每次都按你写的回）。
   const callOnce = async (p) => {
     if (modelFn) return modelFn(p);
-    const { runModelWithRetry } = await import('../processor/analyze.mjs');
+    const { runModelInWorker } = await import('../processor/analyze.mjs');
     // ★★ 2026-10-14：**这一块的提示词是多行的，必须走文件那条路**（`viaFile: true`）。
     //   真机实测的经过：五块全部"失败"，报的是 `Unexpected argument: +` / `/` ——
     //   提示词里的加号、斜杠、星号在命令行里被当成了**独立参数**，
     //   而报出来的样子**像模型故障**（我先怀疑模型、又怀疑提示词太长，都猜错了方向）。
     //   `runModel`（走 `--message`）只适合**单行短提示词**；多行的走 `--messages-file`。
-    return runModelWithRetry(p, { timeoutMs: 240000, retries: 1, viaFile: true });
+    return runModelInWorker(p, { timeoutMs: 240000, retries: 1, viaFile: true });
   };
   let m = await callOnce(prompt);
   // ★ 只有**超时**才走减料重试（2026-10-14 想清楚的一层）。

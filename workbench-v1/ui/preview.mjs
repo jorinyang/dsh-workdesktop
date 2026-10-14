@@ -10,7 +10,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath , pathToFileURL } from 'node:url';
 import { renderPage, PAGE_DEFS, SWITCHES, STATUS_ITEMS } from './shell.mjs';
 import { probeAll } from './probes.mjs';
 import { KB_ROOT as ROOT } from '../paths.mjs';   // 路径收口（见 paths.mjs 顶部说明：原先按本文件深度往上数，包一挪就错）
@@ -56,7 +56,8 @@ export async function renderAll({ api = '/workdesktop/api/v1' } = {}) {
   return { written, switches, switchesOk: ok, updatedAt, why: why ?? null, probes, api };
 }
 
-if (process.argv[1] && process.argv[1].endsWith('preview.mjs')) {
+const __isMain = (() => { try { const entry = process.argv[1]; return !!entry && import.meta.url === pathToFileURL(entry).href } catch { return false } })();
+if (__isMain) {
   const r = await renderAll();
   console.log(`已渲染 ${r.written.length} 页 → ${path.relative(ROOT, OUT)}`);
   console.log(`开关（真实来源${r.switchesOk ? '' : '读取失败'}${r.updatedAt ? ` · ${r.updatedAt}` : ''}）：` + SWITCHES.map((s) => `${s.label}=${r.switches[s.key] === true ? '开' : r.switches[s.key] === false ? '关' : '未知'}`).join('  '));

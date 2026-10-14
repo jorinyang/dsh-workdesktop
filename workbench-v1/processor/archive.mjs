@@ -19,6 +19,7 @@
  */
 
 import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
@@ -221,7 +222,8 @@ export function archiveAll(opts = {}) {
 //   ★ **审计拒绝不算失败** —— 拒绝未处置的记录正是本引擎该做的事，FAIL 只在抛异常时出现
 //     （抛了就非零退出，包装脚本照样能看见）。
 // ══════════════════════════════════════════════════════════════════════════════
-if (process.argv[1] && process.argv[1].endsWith('archive.mjs')) {
+const __isMain = (() => { try { const entry = process.argv[1]; return !!entry && import.meta.url === pathToFileURL(entry).href } catch { return false } })();
+if (__isMain) {
   console.log('############ 工作台 v1.0 · 审计与归档 ############');
   const led = await archiveAll({});
   console.log('  ' + led.why);

@@ -14,7 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath , pathToFileURL } from 'node:url';
 import { KB_ROOT as ROOT } from '../paths.mjs';   // 路径收口（见 paths.mjs 顶部说明：原先按本文件深度往上数，包一挪就错）
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -100,7 +100,8 @@ export async function selfTest() {
   return { pass, fail: out.length - pass, details: out };
 }
 
-if (process.argv[1] && process.argv[1].endsWith('probes.mjs')) {
+const __isMain = (() => { try { const entry = process.argv[1]; return !!entry && import.meta.url === pathToFileURL(entry).href } catch { return false } })();
+if (__isMain) {
   probeAll().then((all) => {
     for (const [k, v] of Object.entries(all)) {
       const s = v.ok === true ? '正常' : v.ok === false ? '不可用' : '未探明';

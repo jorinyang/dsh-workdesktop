@@ -26,6 +26,7 @@
  *   不会假装"这两个群没消息"。`health()` 会把"授权在不在"单独报出来。
  */
 import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { makeEvent } from '../schema.mjs';
 import * as store from '../store.mjs';
@@ -300,7 +301,8 @@ export async function selfTest() {
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
-if (process.argv[1] && process.argv[1].endsWith('dingtalk-cross-org.mjs')) {
+const __isMain = (() => { try { const entry = process.argv[1]; return !!entry && import.meta.url === pathToFileURL(entry).href } catch { return false } })();
+if (__isMain) {
   const args = process.argv.slice(2);
   if (args.includes('--health')) {
     const h = health();

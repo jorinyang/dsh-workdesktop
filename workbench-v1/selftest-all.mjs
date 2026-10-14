@@ -95,6 +95,11 @@ await run('P1s', 'P1 相关上下文概括（LLM 概括 · 不带路径）', asy
 //   单开一组的理由：它的失效方式很安静 —— 原来那两处取的是"原文截断"，看起来也是"一段文字"，
 //   只有把真样例摆出来才看得出**那是断在半句上的**，不是一句话。
 await run('P1u', 'P1 一句话概括（消息转待办/转日程的标题）', async () => (await import(base + 'processor/brief.mjs')).selfTest());
+// ★ 2026-10-14 加：**"还要不要取相关上下文"的唯一判据**（用户原话：「流入时取一次」、
+//   「转换时按已有的」、「执行动作时不再重复获取」）。
+//   单开一组的理由：这条判据被**接口新建**和**分析引擎清扫**两处共用 ——
+//   两处各写一份必然漂，而漂了的表现是"同一个东西被召回两次"（白打检索服务、且看不出来）。
+await run('P1v', 'P1 上下文判据（流入取一次 · 之后不重复取）', async () => (await import(base + 'processor/context-gate.mjs')).selfTest());
 // ★ 2026-10-14 加：**底部状态栏「实时回复」四态**（用户第 1 条：黄=仅监听 / 绿=响应中 / 灰=关闭 / 红=离线）。
 //   单开一组：这三个灯是**用户眼睛直接看的东西**，而它们是"文案 + 颜色"两处拼出来的，
 //   任何一处被改歪都表现为"灯的颜色和字对不上" —— 那种错不盯着屏幕看不出来，所以要写成可判的。
@@ -128,6 +133,46 @@ await run('API', 'P4/P5 本地接口', async () => (await import(base + 'api/ser
 //   本组是**纯离线**判定自检（样例照真实结构抄的，含负向对照）；
 //   真机那一遍另外跑：`node _meta/workbench/v1/api/endpoints.mjs`。
 await run('EP', '接口产出（离线判定）', async () => (await import(base + 'api/endpoints.mjs')).selfTest());
+
+// ★★ 2026-10-14 加：**全库体检 —— 命令行入口的"是不是被直接运行"判据够不够严**。
+//   来由（真机踩到的）：给分析引擎补 `--run` 入口时写的是
+//     `if (process.argv[1].endsWith('analyze.mjs')) { … }`
+//   —— 于是**别的脚本 import 这个模块时，判据也命中**（`process.argv[1]` 是**调用方**的路径），
+//   一 import 就跑整个入口、还读了调用方的参数（表现是我那个验证脚本莫名其妙打出一句
+//   "空查询 ⇒ 不检索"然后自己退了）。全库扫下来**12 个文件**都是这个写法。
+//   ⇒ 这是一条**全库性**的检查（不是某一个文件的事），所以放在总套件这一层。
+{
+  const fsx = await import('node:fs');
+  const px = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const baseDir = fileURLToPath(base);            // ⚠️ `base` 是 file URL，扫描目录要用真路径
+  const files = [];
+  const walk = (d) => {
+    for (const x of fsx.readdirSync(d, { withFileTypes: true })) {
+      const p = px.join(d, x.name);
+      if (x.isDirectory()) walk(p); else if (x.name.endsWith('.mjs')) files.push(p);
+    }
+  };
+  walk(baseDir);
+  const weak = [];
+  for (const f of files) {
+    const lines = fsx.readFileSync(f, 'utf8').split('\n');
+    lines.forEach((l, i) => {
+      if (/^\s*(\*|\/\/)/.test(l)) return;                                  // 注释不算
+      if (/process\.argv\[1\][^\n]*\.endsWith\(/.test(l)) {
+        weak.push(`${px.relative(baseDir, f)}:${i + 1}`);
+      }
+    });
+  }
+  const out = [];
+  out.push({
+    id: 'CLI-GUARD',
+    desc: '★★ 全库：入口判据不许只判文件名后缀（否则别人 import 时会顺带跑一遍入口）',
+    ok: weak.length === 0,
+    detail: weak.join(' · ') || `扫了 ${files.length} 个文件，全部用 import.meta.url 精确比对`,
+  });
+  await run('P7d', 'P7 全库体检（入口判据）', async () => ({ pass: out.filter((x) => x.ok).length, fail: out.filter((x) => !x.ok).length, details: out }));
+}
 
 console.log('');
 const bad = rows.filter((r) => r.fail > 0);

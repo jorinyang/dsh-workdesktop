@@ -24,7 +24,8 @@
  */
 
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath , pathToFileURL } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import { KB_ROOT as ROOT, ragBridgePath } from '../paths.mjs';   // 路径收口（见 paths.mjs 顶部说明：原先按本文件深度往上数，包一挪就错）
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -68,12 +69,67 @@ export function normalizeHit(h) {
   };
 }
 
-/** 真跑：惰性加载底层桥（测试时不会碰到它） */
+/** worker 兜底超时：桥自己给子进程 300s，这里留余量。超时即终止线程，不让请求无限悬着。 */
+const WORKER_TIMEOUT_MS = Number(process.env.WB_V1_RECALL_TIMEOUT_MS ?? 360000);
+
+/**
+ * 在**独立线程**里跑一次同步的桥。
+ *
+ * ★★ 2026-10-14：**这就是「面板假死」的修法。**
+ *   桥（`rag-bridge.mjs#queryRagBatch`）内部是 `spawnSync`，一次查询实测 17–26s
+ *   （其中 ~15s 装载 bge-m3）。在 HTTP 请求路径上直接调它 = **面板事件循环被按住
+ *   15–26 秒**，期间不响应任何请求 ⇒ 看门狗 guard 的 HTTP 探针（4s 超时）连续 4 次
+ *   超时 ⇒ 判定「假死（事件循环阻塞）」并强制重启面板。
+ *   实测代价：2026-10-12 ~ 10-14 共 5 次（10-12 20:17 / 10-14 16:50、17:06、17:25、19:00），
+ *   每次都在「流入时取上下文」被触发之后。
+ *   桥的同步语义不动（离线构建脚本依赖它），把**调用点**挪进 worker：主线程 await，
+ *   事件循环照常转，HTTP 照常响应。
+ *
+ * ★ 不许静默回退成「直接调桥」：那会把阻塞原样带回来，而且坏得无声无息 ——
+ *   正是本项目反复警惕的那类静默降级。worker 起不来就如实抛，由 recall() 归到 ok:false，
+ *   让「桥断了」和「查不到」分得开。
+ */
+function runBridgeInWorker(payload) {
+  return new Promise((resolve, reject) => {
+    let worker;
+    try {
+      worker = new Worker(new URL('./recall-worker.mjs', import.meta.url), { workerData: payload });
+    } catch (e) {
+      reject(new Error(`召回 worker 启动失败：${e.message}`));
+      return;
+    }
+    let settled = false;
+    const finish = (fn, arg) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      worker.terminate().catch(() => {});
+      fn(arg);
+    };
+    const timer = setTimeout(
+      () => finish(reject, new Error(`召回 worker 超时（${Math.round(WORKER_TIMEOUT_MS / 1000)}s）`)),
+      WORKER_TIMEOUT_MS,
+    );
+    worker.once('message', (msg) => {
+      if (msg && msg.ok) finish(resolve, msg.raw);
+      else finish(reject, new Error((msg && msg.why) || '召回 worker 未给出原因'));
+    });
+    worker.once('error', (e) => finish(reject, e));
+    worker.once('exit', (code) => { if (code !== 0) finish(reject, new Error(`召回 worker 退出码 ${code}`)); });
+  });
+}
+
+/**
+ * 真跑：在 worker 里加载底层桥并查询（测试时传 runner 桩，不会碰到这里）。
+ * 不再直接 `import(ragBridgePath())` —— 见 runBridgeInWorker 的说明。
+ */
 export async function realRunner({ query, k }) {
-  const { pathToFileURL } = await import('node:url');
-  const mod = await import(pathToFileURL(ragBridgePath()).href);   // RAG 桥属知识库侧，不在本包内
-  const raw = mod.queryRagBatch([{ query, k }], { runtime: process.env.WB_V1_RAG_RUNTIME ?? 'worker', purpose: PURPOSE });
-  return raw;
+  return runBridgeInWorker({
+    query,
+    k,
+    runtime: process.env.WB_V1_RAG_RUNTIME ?? 'worker',
+    purpose: PURPOSE,
+  });
 }
 
 /**
@@ -196,7 +252,8 @@ export function selfTest() {
 }
 
 // CLI（供手工核对召回质量；用完显式退出 —— 检索桥会持有句柄）
-if (process.argv[1] && process.argv[1].endsWith('recall.mjs')) {
+const __isMain = (() => { try { const entry = process.argv[1]; return !!entry && import.meta.url === pathToFileURL(entry).href } catch { return false } })();
+if (__isMain) {
   const q = process.argv.slice(2).join(' ');
   recall(q).then((r) => {
     console.log(JSON.stringify({ ok: r.ok, why: r.why, floor: r.floor, raw: r.raw_count, dropped: r.dropped, hits: r.hits.map((h) => ({ s: h.similarity, p: h.path })) }, null, 1));

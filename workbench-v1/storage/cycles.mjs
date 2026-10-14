@@ -24,7 +24,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath , pathToFileURL } from 'node:url';
 
 import * as store from '../store.mjs';
 import { runEngine } from '../ledger.mjs';
@@ -204,7 +204,8 @@ export async function runCycles({ now = Date.now(), modelFn = null, dryRun = fal
 //   · 末行给 \`PASS = n   FAIL = m\` —— 节拍包装靠它 + 新台账行判"是不是空转"（假绿守卫）
 //   · **写不出资产不算失败**（周期没到 / 指纹没变 ⇒ 本来就不该写）；FAIL 只在抛异常时出现
 // ══════════════════════════════════════════════════════════════════════════════
-if (process.argv[1] && process.argv[1].endsWith('cycles.mjs')) {
+const __isMain = (() => { try { const entry = process.argv[1]; return !!entry && import.meta.url === pathToFileURL(entry).href } catch { return false } })();
+if (__isMain) {
   const DRY = process.argv.includes('--dry-run');
   const only = process.argv.includes('--weekly') ? 'weekly' : (process.argv.includes('--monthly') ? 'monthly' : 'all');
   console.log('############ 工作台 v1.0 · 存储周期（' + only + (DRY ? ' · 干跑' : '') + '）############');
@@ -286,7 +287,15 @@ export async function selfTest() {
     //   所以这两条查的是源码事实：① 有入口；② 非干跑分支**真的注入了**模型。
     {
       const src = fs.readFileSync(new URL(import.meta.url), 'utf8');
-      chk('CYC-13', '★ 有命令行入口（否则计划任务跑它是静默退出＝假绿）', /process\.argv\[1\][\s\S]{0,80}cycles\.mjs/.test(src));
+      // ★ 2026-10-14 改：这条原来断言的是**源文件里有一段特定写法的文本**
+      //   （`process.argv[1] … cycles.mjs`）。那一轮把入口判据从"只判文件名后缀"
+      //   改成"用 import.meta.url 精确比对"之后，**它当场就红了** —— 而入口本身是好好的。
+      //   ⇒ 那是"**断言写法而不是断言行为**"的典型：检查应该问"有没有入口、入口严不严"，
+      //     不该问"代码长得像不像我上次写的那段"。
+      //   现在两条一起守：① 有入口；② 入口判据是**精确比对**（不许只判后缀）。
+      chk('CYC-13', '★ 有命令行入口，且入口判据是精确比对（不靠文件名后缀）',
+        /__isMain|isMain/.test(src) && /import\.meta\.url/.test(src)
+        && !/^\s*if \(process\.argv\[1\][^\n]*\.endsWith\(/m.test(src));
       chk('CYC-14', '★ 非干跑分支注入了模型（否则 exit=0 但一个资产都不产出）',
         /if \(!DRY\)[\s\S]{0,200}runModel/.test(src) && /modelFn\s*=\s*runModel/.test(src));
     }

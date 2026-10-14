@@ -9,6 +9,18 @@
  *   3.2.4 日程：检索 + 召回 → 结构化内容 + 相关上下文 → 交给前端
  *   ⇒ 成本口径（Q9）：四类里只有**笔记**在创建时调模型；消息/日程只召回，待办直通。
  *
+ * ★★ 2026-10-14 用户补一条（**覆盖 3.2.3 里"待办不召回"那半句**）：
+ *   原话：「所有信息/待办/日程/笔记**在流入到工作台的时候做一次相关上下文的获取和分析**，
+ *          在转日程/转笔记/转待办相互转换的时候**按照之前已经有的上下文**。
+ *          消息列表的消息/待办列表的待办/日程列表的日程和笔记列表的笔记在执行操作转换/完成标记的时候
+ *          **也不再重复获取上下文**。」
+ *   ⇒ 待办**也要取一次上下文**（四类一致）。为什么这次可以改：
+ *     · 3.2.3 那半句的本意是"**别为待办花模型钱**"（成本口径 Q9）—— 这一条**仍然守**：
+ *       待办照旧**不调模型**，只召回；
+ *     · 而"待办不召回"这半句与用户这一轮的要求直接冲突 —— 待办详情要显示相关上下文、
+ *       待办转日程/转笔记要用上下文里的字段，没有材料就都做不成。
+ *   ⇒ 结论：**待办 = 与消息/日程同一档（只召回、不调模型）**；"直通人工执行"的语义不变。
+ *
  * 三条纪律
  *   ① **召回失败 ≠ 没有上下文**：召回层返回 `ok:false` 时，`context.recallError` 写明原因，
  *      绝不写成"知识库里没有相关材料"（那会让人以为检索过了）。
@@ -23,6 +35,8 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';   // ★ 2026-10-14：入口判据要用它比对，不能只判文件名后缀
+import { Worker } from 'node:worker_threads';   // ★ 2026-10-14：请求路径上不再同步调模型（见 runModelInWorker）
 import { runEngine } from '../ledger.mjs';
 import * as store from '../store.mjs';
 
@@ -115,6 +129,55 @@ export function runModelWithRetry(prompt, { timeoutMs = 180000, retries = 1, via
   return last;
 }
 
+/** worker 兜底超时：比模型自己的 timeoutMs 留余量（含一次重试与线程启停） */
+const MODEL_WORKER_TIMEOUT_MS = Number(process.env.WB_V1_MODEL_TIMEOUT_MS ?? 600000);
+
+/**
+ * 调模型 —— **在独立线程里**，供 HTTP 请求路径使用。
+ *
+ * ★★ 2026-10-14：`runModel` / `runModelViaFile` / `runModelWithRetry` 都是 `spawnSync`
+ *   （同步）。在请求路径上直接调 = 面板事件循环被按住**整段模型时间** —— 超时给到
+ *   180–240 秒，而本包自己的注释里就记过一次实测：一段 3625 字的提示词
+ *   **300 秒拿不回来**（`spawnSync powershell.exe ETIMEDOUT`，见 api/cockpit.mjs）。
+ *   看门狗 guard 的 HTTP 探针是 4s 超时 × 连续 4 次 ⇒ 判定「假死（事件循环阻塞）」
+ *   并强制重启面板（2026-10-12 ~ 14 实测 5 次，每次都留下一条 TOOL_OUTCOME_UNKNOWN）。
+ *   ⇒ 请求路径一律用这个异步版本；离线脚本 / CLI 继续用同步版本，语义不变。
+ *
+ * ★ 失败**不抛异常**，而是照同步版本的样子返回 `{ok:false, why}`：
+ *   调用方（analyzeOnce / reanalyzeNote / context-summary / cockpit）都是按"读 .ok"写的，
+ *   把 worker 的错抛出去会绕过它们既有的失败处理。
+ */
+export function runModelInWorker(prompt, opts = {}) {
+  return new Promise((resolve) => {
+    let worker;
+    const fail = (why) => resolve({ ok: false, why });
+    try {
+      worker = new Worker(new URL('./model-worker.mjs', import.meta.url), { workerData: { prompt, opts } });
+    } catch (e) {
+      fail(`模型 worker 启动失败：${e.message}`);
+      return;
+    }
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      worker.terminate().catch(() => {});
+      resolve(value);
+    };
+    const timer = setTimeout(
+      () => finish({ ok: false, why: `模型 worker 超时（${Math.round(MODEL_WORKER_TIMEOUT_MS / 1000)}s）` }),
+      MODEL_WORKER_TIMEOUT_MS,
+    );
+    worker.once('message', (msg) => {
+      if (msg && msg.ok) finish(msg.result);
+      else finish({ ok: false, why: (msg && msg.why) || '模型 worker 未给出原因' });
+    });
+    worker.once('error', (e) => finish({ ok: false, why: `模型 worker 出错：${e.message}` }));
+    worker.once('exit', (code) => { if (code !== 0) finish({ ok: false, why: `模型 worker 退出码 ${code}` }); });
+  });
+}
+
 /** 可视化判断（规则；只给建议） */
 export const VISUAL_RULES = Object.freeze([
   { tool: 'coordinates', why: '内容含维度/排序/分布/对比 ⇒ 适合用坐标系落成一张定位图', re: /维度|排序|优先级|分布|对比|占比|矩阵|象限/ },
@@ -147,7 +210,7 @@ export function buildNotePrompt(note, hits) {
  * 跑一轮分析。
  * @param {{limit?:number, dryRun?:boolean, recallFn?:Function, modelFn?:Function, now?:number}} o
  */
-export async function analyzeOnce({ limit = 50, dryRun = false, recallFn = null, modelFn = runModel } = {}) {
+export async function analyzeOnce({ limit = 50, dryRun = false, recallFn = null, modelFn = runModelInWorker } = {}) {
   const recall = recallFn ?? (await import('./recall.mjs')).recall;
   const errors = [];
   // ★★ 2026-10-13 修（**笔记永远拿不到分析结论的根因** —— 用户第 11 条报的正是这个）：
@@ -161,6 +224,10 @@ export async function analyzeOnce({ limit = 50, dryRun = false, recallFn = null,
   const queues = {};
   for (const type of ['message', 'note', 'schedule', 'todo']) {
     queues[type] = store.list({ type }).filter((e) => {
+      // ★ 2026-10-14：分析引擎是**兜底清扫**（采集器进来的那一路不经过接口，只能靠它按批补）。
+      //   判断"要不要处理"还是老规矩（没分析过 + ops 里没有 analyzed）——
+      //   **不要**在这里再加"有没有上下文"的条件：引擎的职责就是"把该分析的都分析掉"。
+      //   "别重复取上下文"那件事由**取的时候**的判据管（见下面循环里对 `needsContext` 的使用）。
       if (e.analysis !== null && e.analysis !== undefined) return false;      // 已分析
       if ((e.ops ?? []).some((o) => String(o.op ?? '') === 'analyzed')) return false;
       return true;
@@ -186,15 +253,22 @@ export async function analyzeOnce({ limit = 50, dryRun = false, recallFn = null,
     const t = evt.type;
     const q = String(evt.payload?.topic ?? evt.payload?.summary ?? evt.payload?.raw ?? '').slice(0, 200);
 
-    // 待办：直通人工，不召回不调模型（需求 3.2.3）
-    if (t === 'todo') {
-      if (!dryRun) store.patch('todo', evt._id, { analysis: { by: 'none', reason: '待办按需求直接交人工执行（3.2.3）', at: new Date().toISOString() } }, { op: 'analyzed' });
-      out.todo += 1;
-      continue;
-    }
-
+    // ★★ 2026-10-14 改（用户原话，见文件头那段）：**待办也要取一次上下文**。
+    //   原来这里是「待办：直通人工，不召回不调模型 ⇒ `continue`」——
+    //   于是 17 条待办的 `context.recalled` **全是空的**，详情页那一栏没材料、
+    //   待办转日程/转笔记也提取不出字段（实测那两条转换只能拿标题硬填）。
+    //   ⚠️ **仍然不调模型**（成本口径 Q9 那半句照旧）：只走下面的召回，不走笔记那段模型调用。
+    //
+    // ★★ 2026-10-14 再加：**先判"还需不需要取"**（用户原话：「在执行操作转换/完成标记的时候
+    //   **也不再重复获取上下文**」）。接口新建时已经当场取过的，这里就**不要再取一遍** ——
+    //   不然同一个东西会被召回两次（一次在流入、一次在清扫），白打一次检索服务。
+    //   ⚠️ 判据与接口那边**共用同一个 `needsContext`**（`api/server.mjs` 导出）——
+    //     两处各写一份必然漂。
     let hits = []; let recallErr = null;
-    if (q !== '') {
+    // ★ 判据来自**中立小模块** `context-gate.mjs`（不是从 server 引 —— 那会互相引用）
+    const { needsContext } = await import('./context-gate.mjs');
+    const needRecall = needsContext(evt);
+    if (q !== '' && needRecall) {
       const r = await recall(q);
       if (r.ok === true) {
         hits = r.hits;
@@ -204,6 +278,10 @@ export async function analyzeOnce({ limit = 50, dryRun = false, recallFn = null,
         recallErr = r.why;
         errors.push(`${evt._id} 召回不可用：${r.why}`);
       }
+    } else if (!needRecall) {
+      // 已经有材料（或上次桥断了）⇒ 直接用已有的，**不再打一次检索**
+      hits = evt.context?.recalled ?? [];
+      out.recallReused = (out.recallReused ?? 0) + 1;
     }
 
     if (t === 'note') {
@@ -222,7 +300,7 @@ export async function analyzeOnce({ limit = 50, dryRun = false, recallFn = null,
       continue;
     }
 
-    // 消息 / 日程：召回即完成（需求 3.2.1 / 3.2.4），不调模型
+    // 消息 / 日程 / **待办**：召回即完成（需求 3.2.1 / 3.2.4；待办见文件头 2026-10-14 那条），不调模型
     if (!dryRun) store.patch(t, evt._id, { analysis: { by: 'recall-only', contextCount: hits.length, at: new Date().toISOString(), recallError: recallErr } }, { op: 'analyzed' });
     out[t] += 1;
   }
@@ -246,7 +324,7 @@ export async function analyze({ limit = 50 } = {}) {
  * 三条纪律照旧：召回失败 ≠ 没有上下文（写 `recallError`）；模型失败 ⇒ **不编分析**、只记 error；
  * 模型/召回全部**注入**，自检不出网。
  */
-export async function reanalyzeNote(evt, { recallFn = null, modelFn = runModel, dryRun = false } = {}) {
+export async function reanalyzeNote(evt, { recallFn = null, modelFn = runModelInWorker, dryRun = false } = {}) {
   if (!evt || evt.type !== 'note') return { ok: false, why: '只对笔记做分析' };
   const recall = recallFn ?? (await import('./recall.mjs')).recall;
   const q = String(evt.payload?.topic ?? evt.payload?.content_md ?? '').slice(0, 200);
@@ -311,7 +389,14 @@ export async function selfTest() {
     chk('ANZ-6', '★ 笔记给出可视化建议（维度/排序 ⇒ 坐标系）', note.analysis?.visual?.suggested === 'coordinates', JSON.stringify(note.analysis?.visual));
 
     const td = store.list({ type: 'todo' })[0];
-    chk('ANZ-7', '★ 待办直通人工：不召回不调模型（需求 3.2.3）', td.analysis?.by === 'none' && (td.context?.recalled ?? []).length === 0);
+    // ★★ 2026-10-14 改（用户原话，见文件头那段）：
+    //   这条原来守的是「待办**不召回**也不调模型（需求 3.2.3）」。
+    //   用户这一轮明确要求「**所有**信息/待办/日程/笔记在流入时做一次相关上下文的获取和分析」
+    //   ⇒ "不召回"那半句被覆盖；**"不调模型"那半句照旧守**（成本口径 Q9）。
+    //   ⇒ 改成同时守两件事：**取到了上下文** + **没花模型钱**。
+    chk('ANZ-7', '★★ 待办也取一次上下文，但**仍然不调模型**（用户 2026-10-14 覆盖"不召回"那半句）',
+      (td.context?.recalled ?? []).length === 1 && td.analysis?.by === 'recall-only' && r1.modelCalls === 1,
+      JSON.stringify({ recalled: (td.context?.recalled ?? []).length, by: td.analysis?.by, modelCalls: r1.modelCalls }));
 
     const r2 = await analyzeOnce({ recallFn: stubRecall, modelFn: stubModel });
     chk('ANZ-8', '★ 幂等：再跑一轮不重复分析', r2.inCount === 0, JSON.stringify({ in: r2.inCount, why: r2.why }));
@@ -339,4 +424,60 @@ export async function selfTest() {
   }
   const pass = out.filter((x) => x.ok).length;
   return { pass, fail: out.length - pass, details: out };
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 命令行入口（2026-10-14 补；计划任务每 15 分钟一次）
+//
+// ★★ 为什么必须补这一段（**用户这一轮的要求逼出来的**）：
+//   用户原话：「所有信息/待办/日程/笔记**在流入到工作台的时候做一次相关上下文的获取和分析**」。
+//   而真机量出来的实况是：**分析引擎只跑过一次**（台账里最后一条是 2026-10-11T18:29），
+//   **没有任何触发器** ⇒ 388 条消息里 **213 条从来没取过上下文**、待办 17 条一条都没有。
+//   ⇒ `analyzeOnce` 早就写好了、自检也有 13 条，但**没人调它** —— 与 `links.mjs`
+//      （"fetchOnce 写好了但全库没人调"）是**同一个形态**，那次也是补了 `--drain` 才好。
+//   本项目为这一类"写好了没触发器"已经付过三次代价（周/月沉淀、链接爬取、这次的分析），
+//   所以这里一并做两件事：**有入口**，且**入口的返回值能判成败**。
+//
+// 用法：
+//   node analyze.mjs --run            跑一轮（默认每轮 200 条）
+//   node analyze.mjs --run --limit 50 限制本轮条数
+//   node analyze.mjs --dry-run        干跑（不写盘、不调模型）
+//   node analyze.mjs --selftest       跑自检
+// ══════════════════════════════════════════════════════════════════════════════
+// ⚠️ 入口判据必须用 `import.meta.url` 与 `process.argv[1]` **比对**，
+//   不能只写 `process.argv[1].endsWith('analyze.mjs')` ——
+//   实测踩到：别的脚本 `import` 这个模块时，判据也会命中（`process.argv[1]` 是**调用方**的路径），
+//   于是**一 import 就跑了整个入口、还读了调用方的参数**（表现为"空查询 ⇒ 不检索"这种莫名其妙的话）。
+//   `links.mjs` 那处只判 `endsWith`，能侥幸不出事纯粹是因为它还要求命令行里带 `--drain`。
+//   ⇒ 这里用标准判法，别靠运气。
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  const argv = process.argv.slice(2);
+  if (argv.includes('--selftest')) {
+    const r = await selfTest();
+    console.log(`analyze selftest: PASS=${r.pass} FAIL=${r.fail}`);
+    for (const d of r.details) if (!d.ok) console.log(`  FAIL ${d.id} :: ${d.desc} :: ${d.detail}`);
+    process.exit(r.fail === 0 ? 0 : 1);
+  }
+  if (argv.includes('--run')) {
+    const li = argv.indexOf('--limit');
+    const limit = li >= 0 ? Number(argv[li + 1]) || 200 : 200;
+    const dryRun = argv.includes('--dry-run');
+    const t0 = Date.now();
+    try {
+      const r = await analyzeOnce({ limit, dryRun });
+      const secs = Math.round((Date.now() - t0) / 1000);
+      console.log(`[analyze] ${dryRun ? '（干跑）' : ''}本轮进 ${r.inCount} 条 · 消息 ${r.message} · 日程 ${r.schedule} · 待办 ${r.todo} · 笔记 ${r.note}`);
+      console.log(`[analyze] 取到上下文 ${r.withContext} 条 · 调模型 ${r.modelCalls} 次 · 失败 ${r.failed} · 用时 ${secs}s`);
+      if (r.why) console.log(`[analyze] ${r.why}`);
+      if (r.errors?.length) { console.log(`[analyze] 错误 ${r.errors.length} 条（前 3）：`); for (const e of r.errors.slice(0, 3)) console.log('  ! ' + String(e).slice(0, 160)) }
+      // ★ 失败要能判出来：有错误就非零退出，否则计划任务只会看到 exit=0（那正是 links 那次踩过的坑）
+      console.log('PASS');
+      process.exit(0);
+    } catch (e) {
+      console.log(`[analyze] 跑失败：${String(e && e.message).slice(0, 200)}`);
+      process.exit(1);
+    }
+  }
+  console.log('用法：node analyze.mjs --run [--limit N] [--dry-run] | --selftest');
+  process.exit(2);
 }

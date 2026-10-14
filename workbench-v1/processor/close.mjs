@@ -20,6 +20,7 @@
  */
 
 import * as store from '../store.mjs';
+import { pathToFileURL } from 'node:url';
 
 const DAY = 86400000;
 export const dayStart = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
@@ -277,7 +278,8 @@ export async function selfTest() {
 //     （只按条件①判，不假装两种都判过了）。
 //   末行给 PASS/FAIL，否则节拍包装的假绿守卫会把这步当空转。
 // ══════════════════════════════════════════════════════════════════════════════
-if (process.argv[1] && process.argv[1].endsWith('close.mjs')) {
+const __isMain = (() => { try { const entry = process.argv[1]; return !!entry && import.meta.url === pathToFileURL(entry).href } catch { return false } })();
+if (__isMain) {
   console.log('############ 工作台 v1.0 · 自动关闭 ############');
   const fsCLI = await import('node:fs');
   let minutes = [];

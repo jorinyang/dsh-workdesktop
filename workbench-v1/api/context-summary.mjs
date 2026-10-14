@@ -96,7 +96,10 @@ export async function summarizeContext({ type, evt, deps = {} } = {}) {
   //   第一版我把路径写成了 `../processor/model.mjs` —— **那个文件不存在**，
   //   真正的产地是 `../processor/analyze.mjs`。写错的后果是**只有真调模型时才炸**，
   //   所以自检必须覆盖"模型这一层"（见 `selfTest` 的 CS-5，注入一个假的模型函数）。
-  const modelFn = deps.modelFn ?? (await import('../processor/analyze.mjs')).runModel;
+  // ★ 2026-10-14：改用 `runModelInWorker` —— 这段摘要在**流入时**就地生成，走在 HTTP
+  //   请求路径上；同步的 `runModel` 是 spawnSync，会把面板事件循环按住整段模型时间
+  //   （超时 180s 起），面板随即被看门狗判「假死」重启。理由见 analyze.mjs#runModelInWorker。
+  const modelFn = deps.modelFn ?? (await import('../processor/analyze.mjs')).runModelInWorker;
   const topic = evt?.payload?.topic ?? evt?.payload?.summary ?? String(evt?.payload?.raw ?? '').slice(0, 60);
   const brief = [
     `【当前${type === 'note' ? '笔记' : type === 'todo' ? '待办' : type === 'schedule' ? '日程' : '消息'}】${String(topic).slice(0, 120)}`,

@@ -19,7 +19,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath , pathToFileURL } from 'node:url';
 
 import { stylesheet, APP_NAME, PAGE_DEFS } from './shell.mjs';
 import { stats, trend, graph, sliceFor, hasEnoughData, readNarrative, units } from '../api/cockpit.mjs';
@@ -456,7 +456,8 @@ export function selfTest() {
   return { pass, fail: out.length - pass, details: out };
 }
 
-if (process.argv[1] && process.argv[1].endsWith('cockpit-page.mjs')) {
+const __isMain = (() => { try { const entry = process.argv[1]; return !!entry && import.meta.url === pathToFileURL(entry).href } catch { return false } })();
+if (__isMain) {
   fs.mkdirSync(OUT, { recursive: true });
   const f = path.join(OUT, 'cockpit.html');
   fs.writeFileSync(f, renderCockpit(), 'utf8');

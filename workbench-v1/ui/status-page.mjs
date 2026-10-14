@@ -12,7 +12,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath , pathToFileURL } from 'node:url';
 
 import { stylesheet, APP_NAME, PAGE_DEFS, STATUS_ITEMS, SWITCHES } from './shell.mjs';
 import { health as registryHealth, V1_START } from '../collector/registry.mjs';
@@ -115,7 +115,8 @@ export function renderStatus() {
   return html;
 }
 
-if (process.argv[1] && process.argv[1].endsWith('status-page.mjs')) {
+const __isMain = (() => { try { const entry = process.argv[1]; return !!entry && import.meta.url === pathToFileURL(entry).href } catch { return false } })();
+if (__isMain) {
   fs.mkdirSync(OUT, { recursive: true });
   const f = path.join(OUT, 'status.html');
   fs.writeFileSync(f, renderStatus(), 'utf8');
