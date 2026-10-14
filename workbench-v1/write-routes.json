@@ -15,6 +15,16 @@
    "reason": "消息转待办或转日程（写入目标事件并回写来源操作留痕）"
   },
   {
+   "route": "POST /workdesktop/api/v1/conversations/:id/act",
+   "engine": "process",
+   "reason": "会话级动作（用户 2026-10-14 原话 + 追问裁定）：**按条勾选**若干条原文，聚合『勾选原文 + 各自的召回材料 + 会话级上下文』后提取结构化字段，转待办 / 转日程 / 转笔记；或把这些条标为已回复。一条都不勾 ⇒ 默认整条会话。挂在 conversations 而不是 messages 上，是因为它一次处理**多条**、落点是一个目标事件。"
+  },
+  {
+   "route": "GET /workdesktop/api/v1/conversation",
+   "engine": "store",
+   "reason": "只读：**会话详情**（用户 2026-10-14：「点击会话列表进入会话详情……信息原文应该是按照时间顺序，将当天该会话的所有信息按时间排序」）。会话 id 形如 `2026-10-14__cid:xxx==`，含 `:` `/` `+` `=`，**套不进 `detail/:type/:id` 那条正则** ⇒ 单独开一条，用查询串传 id（不塞进路径段，省得为它放宽路径字符集）。"
+  },
+  {
    "route": "POST /workdesktop/api/v1/messages/:id/replied",
    "engine": "process",
    "reason": "把消息标记为已回复（人工确认，或由沟通工具回复检测自动置位）"

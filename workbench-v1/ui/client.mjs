@@ -42,6 +42,104 @@ export function clientScript(apiBase) {
   L.push('');
   L.push('  function el(tag, cls, text) { var d = document.createElement(tag); if (cls) d.className = cls; if (text !== undefined) d.textContent = text; return d; }');
   L.push('');
+  // ══════════════════════════════════════════════════════════════════════════════
+  // ★★ 2026-10-14 加（用户原话）：「**点击会话列表进入会话详情**，会话详情中，除了现有的
+  //   来源渠道、发信人之外，**信息原文应该是按照时间顺序，将当天该会话的所有信息按时间排序
+  //   （XX：XX  XXXXXXXXXXX）**。在**相关上下文**中的分析改为**每 15 分钟让大模型跑一次
+  //   当天该会话的信息**，获取与当天会话信息相关的上下文，并列举在此处。
+  //   下面的转待办、转日程、转笔记的按钮，需要获取的内容是**当前会话中包含的内容以及相关上下文**。
+  //   "已回复"按钮同样将该会话**整体**移动到"已回复"中，**直到该会话有新消息流入再移动回来**。」
+  //
+  // 为什么单独一个函数、不复用 openDetail：
+  //   会话详情**不是一条事件**（它是"某天某个会话的一批消息"），
+  //   数据来自 `/conversation?id=` 而不是 `/detail/<type>/<id>`。两条路的形状不同，
+  //   硬塞进 openDetail 只会让那个函数变成"看 id 形态决定干什么"——那种写法本项目栽过。
+  // ══════════════════════════════════════════════════════════════════════════════
+  L.push('  function openConversation(id) {');
+  L.push('    fetch(API + "/conversation?id=" + encodeURIComponent(id)).then(function (r) { return r.json(); }).then(function (cv) {');
+  L.push('      if (!cv || cv.error) { alert("取会话失败：" + ((cv && cv.error) || "未知")); return; }');
+  // ── 信息原文：按时间排序，**每条前面一个勾选框**（用户原话："应该是可以按条进行选择（支持单选及多选）"）──
+  //   为什么要勾选：一个会话里的多条消息**可能被分别**转待办/转日程/转笔记/标已回复，
+  //   所以"对哪几条动手"必须由人来定；不勾＝默认整条会话（追问裁定）。
+  L.push('      var picked = {};');
+  L.push('      var pre = el("div", "ov-conv-body");');
+  L.push('      var bar = el("div", "ov-conv-bar");');
+  L.push('      var allBox = el("input"); allBox.type = "checkbox"; allBox.className = "ov-conv-all";');
+  L.push('      var allLab = el("label", "ov-conv-alllab"); allLab.appendChild(allBox); allLab.appendChild(el("span", null, "全选"));');
+  L.push('      bar.appendChild(allLab);');
+  L.push('      var cnt = el("span", "ov-conv-cnt", "已选 0 条");');
+  L.push('      bar.appendChild(cnt);');
+  L.push('      var boxes = [];');
+  L.push('      (cv.messages || []).forEach(function (mm) {');
+  L.push('        var line = el("div", "ov-conv-line");');
+  L.push('        var cb = el("input"); cb.type = "checkbox"; cb.className = "ov-conv-cb"; cb.setAttribute("data-mid", mm.id);');
+  L.push('        cb.addEventListener("change", function () { picked[mm.id] = cb.checked; var n = countPicked(); allBox.checked = (n === boxes.length && n > 0); cnt.textContent = "已选 " + n + " 条"; });');
+  L.push('        boxes.push(cb);');
+  L.push('        line.appendChild(cb);');
+  L.push('        line.appendChild(el("span", "ov-conv-hm", mm.hm || ""));');
+  L.push('        var who = mm.sender ? (mm.sender + "：") : "";');
+  L.push('        var txt = String(mm.raw || "").replace(/\\[(图片|视频|语音|文件)消息\\]\\(mediaId=[^)\\s]*\\)?/g, "［$1消息］").replace(/mediaId=[^)\\s]*/g, "").replace(/\\s{2,}/g, " ").trim();');
+  L.push('        line.appendChild(el("span", "ov-conv-txt", who + txt));');
+  L.push('        pre.appendChild(line);');
+  L.push('      });');
+  L.push('      function countPicked() { var n = 0; for (var k in picked) if (picked[k]) n++; return n; }');
+  L.push('      allBox.addEventListener("change", function () {');
+  L.push('        for (var i = 0; i < boxes.length; i++) { boxes[i].checked = allBox.checked; picked[boxes[i].getAttribute("data-mid")] = allBox.checked; }');
+  L.push('        cnt.textContent = "已选 " + countPicked() + " 条";');
+  L.push('      });');
+  L.push('      var bodyWrap = el("div", "ov-block");');
+  L.push('      bodyWrap.appendChild(el("div", "ov-block-h", "信息原文（按时间，共 " + ((cv.messages || []).length) + " 条 · 勾选要处理的那几条）"));');
+  L.push('      bodyWrap.appendChild(bar);');
+  L.push('      bodyWrap.appendChild(pre);');
+  // ── 相关上下文：**会话级**那份（每 15 分钟由大模型跑出来）──
+  L.push('      var ctxWrap = el("div", "ov-block");');
+  L.push('      ctxWrap.appendChild(el("div", "ov-block-h", "相关上下文（每 15 分钟由模型分析当天该会话）"));');
+  L.push('      if (cv.convContext) {');
+  L.push('        ctxWrap.appendChild(el("div", "ov-ctx-text", String(cv.convContext)));');
+  L.push('        if (cv.convContextStale) ctxWrap.appendChild(el("div", "ov-ctx-note", "（这段之后该会话又有新消息，下一轮会重算）"));');
+  L.push('      } else if (cv.convContextError) {');
+  L.push('        ctxWrap.appendChild(el("div", "ov-ctx-text", "分析未产出：" + cv.convContextError));');
+  L.push('      } else {');
+  L.push('        ctxWrap.appendChild(el("div", "ov-ctx-note", "正在分析（每 15 分钟一轮，稍后回来看）"));');
+  L.push('      }');
+  L.push('      if (cv.convContextAt) ctxWrap.appendChild(el("div", "ov-ctx-note", "分析时间：" + String(cv.convContextAt).slice(11, 19)));');
+  // ── 动作：把手上的勾选一起传下去（不勾 ⇒ ids 为空 ⇒ 服务端按"整条会话"处理）──
+  L.push('      var ops = ["已回复", "转待办", "转日程", "转笔记"];');
+  L.push('      overlay(cv.day + " · " + (cv.sender || "") + "（" + (cv.channel || "") + "）", [');
+  L.push('        ["来信渠道", cv.channel || "—"],');
+  L.push('        ["发信人", cv.sender || "—"],');
+  L.push('        ["当天消息数", String(cv.count || 0) + "（已回复 " + (cv.repliedCount || 0) + " 条）"],');
+  L.push('      ], ops, function (name) {');
+  L.push('        var ids = []; for (var k in picked) if (picked[k]) ids.push(k);');
+  L.push('        onConversationOp(cv, name, ids);');
+  L.push('      }, cv, [bodyWrap, ctxWrap]);');
+  L.push('    }).catch(function (e) { alert("取会话异常：" + (e && e.message)); });');
+  L.push('  }');
+  L.push('');
+  // 会话级动作：把**勾选的那些原文**（不勾＝整会话）+ 相关上下文交给服务端聚合提取。
+  L.push('  function onConversationOp(cv, name, ids) {');
+  L.push('    ids = ids || [];');
+  // 转日程要具体起止时间（契约不接受空）——与单条那条路一致，先问一次
+  L.push('    var payload = { op: name, ids: ids };');
+  L.push('    if (ids.length === 0) payload.whole = 1;');
+  L.push('    if (name === "转日程") {');
+  L.push('      var st = window.prompt("转日程需要具体起止时间（YYYY-MM-DDTHH:mm）。留空则由服务端从勾选的原文里解析：", "");');
+  L.push('      if (st) { payload.start = st; payload.end = st; }');
+  L.push('    }');
+  L.push('    if (name === "转待办") {');
+  L.push('      var tp = window.prompt("待办主题（留空则用勾选的原文概括）：", "");');
+  L.push('      if (tp) payload.topic = tp;');
+  L.push('    }');
+  L.push('    fetch(API + "/conversations/" + encodeURIComponent(cv.id) + "/act", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ payload: payload }) })');
+  L.push('      .then(function (r) { return r.json().then(function (b) { return { code: r.status, body: b } }) })');
+  L.push('      .then(function (x) {');
+  L.push('        if (x.code === 404) { alert("这个操作还没有对应的写路径（未登记）"); return; }');
+  L.push('        if (x.code >= 400) { alert("操作失败：" + JSON.stringify(x.body.error || x.body.errors || x.body)); return; }');
+  L.push('        location.reload();');
+  L.push('      })');
+  L.push('      .catch(function (e) { alert("操作请求失败：" + (e && e.message)); });');
+  L.push('  }');
+  L.push('');
   L.push('  function overlay(title, rows, ops, onOp, det, extraNode) {');
   L.push('    var back = el("div", "overlay-back");');
   L.push('    var box = el("div", "overlay");');
@@ -144,6 +242,10 @@ export function clientScript(apiBase) {
   L.push('    var path = spec.path.replace("{id}", id);');
   L.push('    var payload = { op: name };');
   L.push('    for (var k in (spec.body || {})) payload[k] = spec.body[k];');
+  // ⚠️ 这里曾经有一行 `if (extra && extra.whole) …` —— **已删**。
+  //   会话级的三个"转"改走 `POST /conversations/:id/act`（见 `onConversationOp`）之后，
+  //   这条单条路径不再需要 `whole`/`convId`，而 `extra` 也随之没有调用方了。
+  //   留着会是**死参数**（看着像支持，其实没人用）—— 那比没有更坏。
   // 转日程要具体起止时间（契约不接受空）：先问一次，用户不给就交给服务端按消息解析（它会 409 并说明）
   L.push('    if (spec.body && spec.body.to === "schedule") {');
   L.push('      var st = window.prompt("转日程需要具体起止时间（YYYY-MM-DDTHH:mm）。留空则由服务端从消息里解析：", "");');
@@ -471,6 +573,9 @@ export function clientScript(apiBase) {
   //   ⇒ 页签一变行序就错位，点第 3 行会开第 5 条（安静的错）。见 shell.mjs#listBlock 的注释。
   L.push('      var id = li.getAttribute("data-id");');
   L.push('      if (!id) { alert("这一行没有带 id（服务端未写入 data-id）"); return; }');
+  // ★★ 2026-10-14 加（用户原话）：「**点击会话列表进入会话详情**」。
+  //   会话行带 `data-conv="1"`（服务端写的，**不靠猜 id 形态**），走会话详情那条路。
+  L.push('      if (li.getAttribute("data-conv") === "1") { openConversation(id); return; }');
   L.push('      openDetail(TYPE, id);');
   L.push('    });');
   L.push('  }');

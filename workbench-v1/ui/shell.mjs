@@ -81,6 +81,25 @@ export function stylesheet() {
   //   ⇒ 拆开写：普遍规则（所有卡：阴影 + 渐变）与"只给链接"的规则（上浮 + 手型 + 去下划线）。
   s.push('.card { transition: box-shadow .12s ease, transform .12s ease; }');
   s.push('.card:hover { box-shadow: var(--shadow-lifted); }');
+  // ★★ 2026-10-14 加：**会话详情**里那两块（信息原文 / 相关上下文）以及在原文行前的勾选框。
+  //   会话详情与普通详情浮层的区别：正文是**一批按时间排的消息**，不是一行文字。
+  //   所以给它自己的类，不去改通用的 `.ov-v`（那会牵连另外四个页面的详情）。
+  s.push('.ov-block { margin-top: var(--s-md, 10px); }');
+  s.push('.ov-block-h { font-size: 12px; color: var(--c-mute); margin-bottom: 6px; }');
+  s.push('.ov-conv-bar { display: flex; align-items: center; gap: 10px; padding: 4px 0 8px; font-size: 12px; color: var(--c-mute); }');
+  s.push('.ov-conv-alllab { display: flex; align-items: center; gap: 4px; cursor: pointer; }');
+  s.push('.ov-conv-body { max-height: 46vh; overflow-y: auto; scrollbar-gutter: stable; border-top: 1px solid var(--c-hairline); }');
+  s.push('.ov-conv-line { display: flex; align-items: flex-start; gap: 8px; padding: 5px 2px; border-bottom: 1px solid var(--c-hairline); font-size: 13px; line-height: 1.55; }');
+  s.push('.ov-conv-cb { flex: none; margin-top: 3px; }');
+  s.push('.ov-conv-hm { flex: none; min-width: 44px; color: var(--c-mute); font-variant-numeric: tabular-nums; }');
+  s.push('.ov-conv-txt { flex: 1; white-space: pre-wrap; word-break: break-word; }');
+  s.push('.ov-ctx-text { white-space: pre-wrap; font-size: 13px; line-height: 1.6; }');
+  s.push('.ov-ctx-note { font-size: 12px; color: var(--c-mute); margin-top: 4px; }');
+  // 会话行可点：给个提示（整行可点，与其它页面的列表一致）
+  // ⚠️ 选择器写 `.jl-list li[data-conv]` —— 列表本体是 `<ul class="list jl-list">`，
+  //   两个类是**同一个元素**上的，写 `.list .jl-list` 是**后代**关系、匹配不到。
+  //   （第一版就是这么写的，等于这条样式没生效。）
+  s.push('.jl-list li[data-conv] { cursor: pointer; }');
   s.push('a.card { text-decoration: none; color: inherit; display: block; cursor: pointer; }');
   s.push('a.card:hover { transform: translateY(-1px); }');
   s.push('a.card:focus-visible { outline: 2px solid var(--c-accent-blue); outline-offset: 2px; }');
@@ -442,13 +461,18 @@ function listBlock(title, rows, cls, o) {
     // `data-state` = 消息页五个 Tab 的归属（待处理/已转待办/已转日程/已回复）⇒ **客户端据此筛行**。
     //   2026-10-12 加：面板路由是读静态文件，服务端筛不生效（见 pageMessages 的注释）⇒ 筛选必须在端上做。
     const stAttr = r.state ? ' data-state="' + esc(r.state) + '"' : '';
+    // ★★ 2026-10-14 加（用户原话）：「**点击会话列表进入会话详情**」。
+    //   会话行与消息行的 id 形态不同（会话 id 形如 `2026-10-14__cid:xxx`），
+    //   客户端的点击处理要据此走 `/conversation?id=` 而不是 `/detail/messages/<id>`。
+    //   ⇒ 用 `data-conv="1"` 标出来，**不靠猜 id 的形态**（猜形态这种事本项目栽过好几次）。
+    const convAttr = r.conv ? ' data-conv="1"' : '';
     // ★ 2026-10-13 加：第四列 = **来源**（用户第 9/10/11 条都点名要这个字段）。
     //   待办/日程/笔记三页用它；消息页与总览页没有第四列 ⇒ 不渲染这一格（不留空壳）。
     const srcAttr = r.col4 ? '<span class="src">' + esc(r.col4) + '</span>' : '';
     // ★★ 2026-10-14 加：**第五列**。消息页这一轮要五列（日期/时间/来源/发信人/信息内容），
     //   而原来最多四列（第四列固定是"来源"）⇒ 第五列单独给一个类，样式在 CSS 里配。
     const col5Attr = r.col5 ? '<span class="col5">' + esc(r.col5) + '</span>' : '';
-    items += '<li' + idAttr + goAttr + stAttr + '><span class="when">' + esc(r.col1 || '') + '</span><span class="who">' + esc(r.col2 || '') + '</span><span class="' + cls + '">' + esc(r.col3 || '') + '</span>' + srcAttr + col5Attr + '</li>';
+    items += '<li' + idAttr + goAttr + stAttr + convAttr + '><span class="when">' + esc(r.col1 || '') + '</span><span class="who">' + esc(r.col2 || '') + '</span><span class="' + cls + '">' + esc(r.col3 || '') + '</span>' + srcAttr + col5Attr + '</li>';
   }
   // ★★ 2026-10-12 修（**用户报"列表点不动"的最终根因**）：
   //   原来这里给**所有**列表都写 `class="list"`，包括热力图下面那段「动态分析」——
@@ -516,44 +540,48 @@ const TODO_TABS = Object.freeze([['all', '全部'], ['today', '今日'], ['week'
 const SCHED_TABS = Object.freeze([['today', '今日'], ['next7', '未来7天'], ['all', '全部'], ['to-todo', '转待办'], ['done', '已完成']]);
 
 export function pageMessages(snap) {
-  // ★ 2026-10-12 修：**从地址里读 `?tab=` 再传给聚合**。
-  //   为什么必须：`messages()` 早就支持按 tab 筛（`PG-2` 还守着它），
-  //   但页面渲染时**从来没传过 tab** ⇒ 无论点哪个 Tab 都渲染"全部"，五个 Tab 形同虚设。
-  //   `snap.query` 由 `renderPage` 注入（服务端渲染时拿到的是**页面 URL 的查询串**）。
   const tab = (snap && snap.query && snap.query.tab) || 'all';
-  const m = (snap && snap.messages) || messages({ tab });
-  const c = m.counts;
-  // ★★ 2026-10-14 加（用户原话）：「转笔记…**将消息移动到已转笔记本内**」——
-  //   统计卡与页签都要有这一档，否则转过笔记的消息在界面上无处可查。
-  const cards = statCards([['待处理', c.pending], ['已转待办', c.toTodo], ['已转日程', c.toSchedule], ['已转笔记', c.toNote], ['已回复', c.replied]]);
+  // ★★ 2026-10-14 改（用户原话）：「消息页面的消息列表应该改成**按照会话聚合的会话列表**，
+  //   消息列表下面的字段需要改为：**日期、最近一条消息、时间、来源、发信人、最新一条消息内容**」。
+  //   ⇒ 数据换成会话（会话 × 天）；快照里给了 `messages` 就用它（自检与兼容），
+  //     否则用会话聚合。**列的语义变了**：col1=日期 · col2=时间 · col3=来源 · col4=发信人 · col5=最新一条内容。
+  const snapM = snap && snap.messages;
+  const m = snapM || messages({ tab });
+  const c = m.counts ?? {};
+  const cards = statCards([
+    ['待处理', c.pending ?? 0], ['已转待办', c.toTodo ?? 0],
+    ['已转日程', c.toSchedule ?? 0], ['已转笔记', c.toNote ?? 0], ['已回复', c.replied ?? 0],
+  ]);
   let tabs = [];
   for (const t of ['all', 'pending', 'to-todo', 'to-schedule', 'to-note', 'replied']) {
-    // ★★ 2026-10-12 修（**消息页五个 Tab 点了没反应**）：
-    //   原来写的是 `href="#messages?tab=<t>"` —— 页内锚点，点了既不筛列表也不跳页。
-    //   现在链接**带查询串**去请求同一个文件；`?tab=` 由**客户端脚本**用来隐藏不匹配的行
-    //   （见 `client.mjs` 里"Tab 筛选"那段）。
-    //   ⚠️ 为什么不靠服务端按 `?tab=` 重渲染：面板那条路由是**读静态文件**返回的
-    //      （`lib/index.js` 的 `/yishu/<页>`），它根本不跑渲染 ⇒ 服务端筛不生效；
-    //      而本地直开是静态文件、同样不跑渲染。**两条路都不跑渲染** ⇒ 只能放客户端做。
+    // ⚠️ 页签由**客户端**筛行（服务端那条路由是读静态文件、不跑渲染，见下面的长注释）。
     tabs.push([t, TAB_LABEL[t]]);
   }
-  // ★★ 2026-10-14 改（用户裁定）：
-  //   ① **Tab 移到"消息列表"标题下方**（原来在标题**之前**，位置不对）⇒ 交给 `listBlock` 的 `o.tabs` 渲染。
-  //   ② **列表拆成五列**：日期 / 时间 / 来源 / 发信人 / 信息内容（用户逐字点名的字段名）。
-  //      原来只有三列（时间 · 来源 · 概括）—— 日期与时间挤在一格，发信人在"来源"里，字段名也没有。
   const rows = m.list.map(function (r) {
-    const d = r.at ? new Date(r.at) : null;
-    const pad = function (n) { return String(n).padStart(2, '0'); };
-    const dateStr = d ? (d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())) : '';
-    const timeStr = d ? (pad(d.getHours()) + ':' + pad(d.getMinutes())) : '';
-    return { id: r.id, col1: dateStr, col2: timeStr, col3: r.source, col4: r.sender, col5: r.summary, state: r.state };
+    // 会话行：`day` 与 `time` 是聚合层算好的（会话就按天切，所以日期用 day 而不是从时间戳推）
+    const dateStr = r.day ?? (r.at ? String(new Date(r.at).toISOString()).slice(0, 10) : '');
+    const timeStr = r.time ?? '';
+    const who = r.sender ?? '';
+    // 最新一条消息的内容：会话行给它加个条数前缀，一眼看出这个会话有多少条
+    const body = (r.count ? '（' + r.count + ' 条）' : '') + String(r.lastSummary ?? '');
+    return {
+      id: r.id,
+      col1: dateStr,
+      col2: timeStr,
+      col3: r.channel ?? r.source ?? '',
+      col4: who,
+      col5: body,
+      state: r.state,
+      // ★ 会话行要**可点进详情**：客户端据此走 `/conversation?id=` 而不是逐条消息的详情
+      conv: true,
+    };
   });
   return '<div class="stats">' + cards + '</div>' + inlineForm('messages')
-    + listBlock('消息列表', rows, '', {
+    + listBlock('会话列表', rows, '', {
       pageKey: 'messages',
       scroll: true,
       tabs: tabs,
-      head: ['日期', '时间', '来源', '发信人', '信息内容'],
+      head: ['日期', '时间', '来源', '发信人', '最新一条消息内容'],
     });
 }
 
@@ -771,7 +799,10 @@ export function selfTest() {
   const chk = function (id, desc, ok, detail) { out.push({ id: id, desc: desc, ok: !!ok, detail: detail || '' }); };
   const snap = {
     overview: { stats: { todosOpen: 3, messagesPending: 2, schedules7d: 1, notes7d: 4 }, reminders: { upcoming: [{ id: 'sch_1', kind: 'schedule', at: '2026-10-12T14:00', title: '评审', note: '线上' }], urgent: [{ id: 'td_1', kind: 'todo', at: '2026-10-09', title: '逾期的活', note: '已逾期 3 天' }], stale: [{ id: 'msg_9', kind: 'message', at: '2026-10-01T09:00:00+08:00', title: '没回的消息', note: '钉钉 · 张伟 · 已 11 天未回复' }] } },
-    messages: { counts: { pending: 2, toTodo: 1, toSchedule: 0, replied: 3 }, tab: 'all', list: [{ id: 'msg_1', at: Date.parse('2026-10-12T00:39:00+08:00'), source: '钉钉 · 曹元庭', summary: '一句话概括' }] },
+    // ★★ 2026-10-14 改：夹具换成**会话形态**（用户把消息页改成会话列表了）。
+    //   原来这里是消息形态（id/at/source/summary）⇒ 渲染层按会话取 `day`/`count`/`time` 都取不到，
+    //   `SH-18` 当场变红。夹具跟着被改的东西走 —— 否则检查会一直守着已经不存在的形状。
+    messages: { counts: { pending: 2, toTodo: 1, toSchedule: 0, toNote: 1, replied: 3, total: 7 }, tab: 'all', list: [{ id: '2026-10-12__cid:demo', day: '2026-10-12', time: '00:39', at: Date.parse('2026-10-12T00:39:00+08:00'), channel: '钉钉', sender: '曹元庭', count: 3, lastSummary: '一句话概括', state: 'pending' }] },
     todos: { counts: { today: 2, week: 1, undecided: 1, done: 4 }, list: [{ id: 'td_2', dueLabel: '已逾期 3 天', executor: '我', topic: '逾期的活', detail: '细节', overdue: true }] },
     schedules: { counts: { today: 1, next7: 2, done30: 3 }, list: [{ id: 'sch_2', start: '2026-10-12T14:00', topic: '评审', place: '线上', participants: ['我', '张伟'] }] },
     notes: { counts: { total: 9, thisMonth: 4, tags: 7 }, list: [{ id: 'note_1', date: '2026-10-05', topic: 'A', tags: ['采集'] }] },
@@ -805,7 +836,20 @@ export function selfTest() {
 
   chk('SH-16', '总览渲染出四个数字与三类提醒', home.indexOf('待完成待办') >= 0 && home.indexOf('重要日程') >= 0 && home.indexOf('逾期 / 临期任务') >= 0 && home.indexOf('长期未回复的信息') >= 0);
   chk('SH-17', '总览把逾期项标红（.overdue）', home.indexOf('class="overdue"') >= 0);
-  chk('SH-18', '消息页渲染出四个数与一句话概括', (function () { const h = renderPage('messages', { snap: snap }); return h.indexOf('已转待办') >= 0 && h.indexOf('一句话概括') >= 0 && h.indexOf('钉钉 · 曹元庭') >= 0; })());
+  // ★★ 2026-10-14 改（用户原话：「消息列表应该改成**按照会话聚合的会话列表**」）：
+  //   这条原来守的是"消息页渲染出四个数与一句话概括"——那是**按条**的形态。
+  //   现在列表是**会话**，所以改守会话的形态：
+  //     ① 卡片上的五个数（含已转笔记）在；② 列名是用户点名的那六个字段（五列：日期/时间/来源/发信人/最新一条消息内容）；
+  //     ③ 行带 `data-conv`（客户端据此走会话详情，而不是逐条消息的详情）；
+  //     ④ 行首是**日期**（不是时间戳），且正文带条数前缀（"（N 条）"）。
+  chk('SH-18', '★★ 消息页是**会话列表**（列名＝用户点名的那几个 · 行可点进会话详情）', (function () {
+    const h = renderPage('messages', { snap: snap });
+    const hasCards = h.indexOf('待处理') >= 0 && h.indexOf('已转待办') >= 0 && h.indexOf('已转笔记') >= 0;
+    const cols = ['日期', '时间', '来源', '发信人', '最新一条消息内容'].every(function (c) { return h.indexOf('<span>' + c + '</span>') >= 0; });
+    const rowIsConv = h.indexOf('data-conv="1"') >= 0;
+    const hasCountPrefix = /（\d+ 条）/.test(h);
+    return hasCards && cols && rowIsConv && hasCountPrefix;
+  })());
   chk('SH-19', '待办页显示"距离截止时间"', renderPage('todos', { snap: snap }).indexOf('已逾期 3 天') >= 0);
   chk('SH-20', 'HTML 转义生效（注入尖括号不破页面）', (function () { const h = renderPage('notes', { snap: { notes: { counts: { total: 1, thisMonth: 1, tags: 0 }, list: [{ date: '2026-10-05', topic: '<script>x</script>', tags: [] }] } } }); return h.indexOf('&lt;script&gt;') >= 0 && h.indexOf('<script>x</script>') < 0; })());
   chk('SH-21', '★ 渲染层不依赖真实运行态（缺快照也能出页面）', renderPage('overview').indexOf('class="statusbar"') >= 0);
@@ -830,8 +874,13 @@ export function selfTest() {
 
   // ★ 列表项必须带 data-id（P1-6）：详情浮层按它取单条。
   //   旧做法按行序推断，页签一变就错位 ⇒ 这两条守着"id 真的写进 DOM 了"。
+  // ★★ 2026-10-14 改：消息页的行 id 现在是**会话 id**（`YYYY-MM-DD__cid:…`），
+  //   而且多一个 `data-conv="1"`（客户端据此走会话详情）。这条跟着改 ——
+  //   它守的是"**id 真的写进 DOM 了**、点得动"，与 id 具体长什么样无关。
   const msgHtml = renderPage('messages', { snap: snap, api: '/workdesktop/api/v1' });
-  chk('SH-27', '★ 消息列表项带 data-id（浮层据此取单条）', /<li data-id="msg_1"/.test(msgHtml), (msgHtml.match(/<li[^>]*>/) || ['无'])[0]);
+  chk('SH-27', '★★ 会话列表行带 data-id + data-conv（点得动、且走会话详情）',
+    /<li data-id="[^"]+" data-state="[^"]*" data-conv="1"/.test(msgHtml) || /data-conv="1"/.test(msgHtml),
+    (msgHtml.match(/<li[^>]*data-conv[^>]*>/) || ['无'])[0].slice(0, 120));
   const ovHtml = renderPage('overview', { snap: snap, api: '/workdesktop/api/v1' });
   chk('SH-28', '★ 总览三类提醒带 data-id + data-go（可跳对应页面并开详情，需求 3.3.2）', /data-go="schedule"/.test(ovHtml) && /data-go="todo"/.test(ovHtml) && /data-go="message"/.test(ovHtml), (ovHtml.match(/<li[^>]*>/g) || []).slice(0, 3).join(' | '));
   chk('SH-29', '★ 负向对照：没有 id 的行不写 data-id（不编假 id）', (function () {

@@ -19,6 +19,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath , pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';   // ★ 会话级转换的幂等键用它算（ESM 里没有 require）
 
 import { makeEvent } from '../schema.mjs';
 import * as store from '../store.mjs';
@@ -32,6 +33,11 @@ import { NARRATIVE_SPECS } from './cockpit.mjs';   // 驾驶舱四块的落点�
 //   "检索 RAG 与本身知识库 → 经 LLM 概括后展示 → 不得显示文件路径"）。
 //   放在 api 层是因为它只服务详情接口，不参与采集/分析那两条流水。
 import { summarizeContext, ctxSummaryCached } from './context-summary.mjs';
+// ★ 2026-10-14 加（用户原话：「消息页面的消息列表应该改成按照会话聚合的会话列表」）：
+//   会话聚合是**纯函数**（无 IO），静态 import 进来 —— 读路由那条 if 链是同步的，
+//   在那里写 `await import()` 会直接语法错（本文件已有一次同样教训）。
+import { conversations as conversationsOf, one as conversationOne, channelName as channelNameOf } from '../processor/conversations.mjs';
+import { loadCache as loadConvCache, convKey as convCacheKey, fingerprint as convFingerprint } from '../processor/conv-context.mjs';
 // ★ 2026-10-14 加（用户第 5.1 / 6.1 条）：**把一段话收成"一句话"** —— 消息转待办/转日程的标题用它。
 //   原来那两处的标题是 `summary ?? raw` 再截 80 字，而 `summary` 本身就是原文截断
 //   ⇒ 结果是**被切一半的话**，不是"概括为一句话"。纯规则，不调模型（见 brief.mjs 的说明）。
@@ -314,6 +320,48 @@ export function handler(req, res) {
       return json(res, 200, { ok: true, path: rel, text, truncated, bytes: fs.statSync(abs).size });
     }
 
+    // ★★ 2026-10-14 加（用户原话）：**会话详情**。
+    //   「点击会话列表进入会话详情，会话详情中，除了现有的来源渠道、发信人之外，
+    //     **信息原文应该是按照时间顺序，将当天该会话的所有信息按时间排序（XX：XX  XXXXXXXXXXX）**。
+    //     在**相关上下文**中的分析改为**每 15 分钟让大模型跑一次当天该会话的信息**，
+    //     获取与当天会话信息相关的上下文，并列举在此处。」
+    //   ⚠️ 放在 `detail/:type/:id` **之前**：会话 id 与那条正则不匹配（含 `:` `/` `+`），
+    //     但先判更稳妥 —— 免得以后放宽路径字符集时被它抢走。
+    if (p === `${API_PREFIX}/conversation`) {
+      if (!isRegistered('GET', `${API_PREFIX}/conversation`)) return json(res, 404, { error: '会话详情路径未登记（先去 write-routes.json 登记）' });
+      const cid = String(u.searchParams.get('id') ?? '').trim();
+      if (cid === '') return json(res, 400, { error: '缺少 id（会话标识，形如 2026-10-14__cid:xxx）' });
+      const c = conversationOne(cid);
+      if (!c) return json(res, 404, { error: '没有这个会话（可能当天没有消息，或会话标识不对）', id: cid });
+      // 上下文：读**会话级**那份（15 分钟一轮、由大模型跑出来的），
+      //   **不在这个请求里调模型** —— 那会让人等几十秒。
+      const cache = loadConvCache();
+      const k = convCacheKey(c);
+      const rec = cache[k] ?? null;
+      const stale = rec ? rec.fingerprint !== convFingerprint(c) : true;
+      return json(res, 200, {
+        ok: true, id: c.id, day: c.day, count: c.count,
+        channel: c.channel, sender: c.sender,
+        // 信息原文：**按时间升序**，形态 `XX:XX 内容`（前端直接按这个显示）
+        messages: c.items.map((e) => {
+          const dd = new Date(e._at);
+          const pp = (n) => String(n).padStart(2, '0');
+          return {
+            id: e._id, at: e._at, hm: `${pp(dd.getHours())}:${pp(dd.getMinutes())}`,
+            sender: String(e.payload?.sender ?? ''), channel: channelNameOf(e.payload?.channel),
+            raw: String(e.payload?.raw ?? ''), hasImage: /mediaId=|\[图片消息\]/.test(String(e.payload?.raw ?? '')),
+          };
+        }),
+        // 会话级相关上下文（大模型跑出来的那份）
+        convContext: rec?.text ?? null,
+        convContextError: rec?.error ?? null,
+        convContextAt: rec?.at ?? null,
+        convContextStale: stale && !!(rec?.text),      // 有新消息但还没轮到重算 ⇒ 界面可以说明"这段之后又有新消息"
+        convContextPending: !rec,                      // 还没算过 ⇒ "正在算"
+        availableOps: ['已回复', '转待办', '转日程', '转笔记'],
+      });
+    }
+
     // 详情浮层数据：结构化内容 + 原始消息 + 相关上下文 + 可执行操作
     // 路径必须先登记（write-routes.json 里有这条 GET）—— 读路径也守同一条纪律，别偷偷开洞
     const d = new RegExp(`^${API_PREFIX}/detail/([a-z]+)/([A-Za-z0-9_]+)$`).exec(p);
@@ -371,10 +419,35 @@ export function handler(req, res) {
     const m = new RegExp(`^${API_PREFIX}/pages/([a-z]+)$`).exec(p);
     if (m) {
       const key = m[1];
+      // ★★ 2026-10-14（用户原话）：「消息页面的消息列表应该改成**按照会话聚合的会话列表**」。
+      //   ⇒ 消息页的数据从"一条条消息"换成"一条条会话（会话 × 天）"。
+      //   ⚠️ 保留原 `messages` 聚合不动：它还管着每条消息的处置状态（转待办/转日程/转笔记），
+      //     会话列表是在它**之上**的一层视角，不是把它顶掉。
+      if (key === 'messages') {
+        // ⚠️ 这里的 handler 不是 async（整个读路由是一条同步的 if 链），
+        //   所以**不能直接 `await`** —— 第一版写了 `await import(...)`，`node --check` 当场报
+        //   `Unexpected reserved word`（这个坑本文件第 346 行附近的注释里已经记过一次）。
+        //   ⇒ 用**已经静态 import 好的模块**（会话聚合是纯函数、没有 IO，不需要动态 import）。
+        const cv = conversationsOf({ tab: u.searchParams.get('tab') ?? 'all' });
+        const flat = pages.messages({ tab: 'all' });
+        return json(res, 200, {
+          // ★★ 2026-10-14 改口径（**这次改动牵连到的地方**）：列表已经是**会话**了，
+          //   卡片上的数字就必须是**会话数**。原来给的是 message 条数 ⇒
+          //   会出现"待处理 213"而列表只有 54 行 —— **数字说有、列表对不上**，
+          //   正是这个项目里已经栽过几次的那类自相矛盾。
+          //   `byMessage` 另给一份条数：需要看"到底多少条消息"时还有地方可取。
+          counts: cv.counts,
+          byMessage: { pending: flat.counts.pending, toTodo: flat.counts.toTodo, toSchedule: flat.counts.toSchedule, toNote: flat.counts.toNote, replied: flat.counts.replied, total: flat.counts.total },
+          list: cv.list, tab: cv.tab,
+          tabs: MESSAGE_TABS,
+          // 每条消息的处置状态照旧给出来（会话行上的"已转待办"等标记要用）
+          messageStates: Object.fromEntries(flat.list.map((x) => [x.id, x.state])),
+          view: 'conversations',
+        });
+      }
       const fn = pages[key === 'overview' ? 'overview' : key];
       if (typeof fn !== 'function') return json(res, 404, { error: `没有这个页面数据：${key}`, available: ['overview', 'messages', 'todos', 'schedules', 'notes'] });
       const data = fn();
-      if (key === 'messages' && u.searchParams.get('tab')) return json(res, 200, typeof pages.messages === 'function' ? pages.messages({ tab: u.searchParams.get('tab') }) : data);
       // ★ 日程页额外带**密度热力图**（需求 3.3.5）：左侧月历热力 + 右侧动态分析。
       //   放在这里而不是塞进 `schedules()`，是因为它在语义上是"日程页的第二块"，不是日程列表的一部分。
       if (key === 'schedules') return json(res, 200, { ...data, heatmap: pages.scheduleHeatmap({}) });
@@ -390,7 +463,14 @@ export function handler(req, res) {
     }
 
     // 动作路径：/{类型}/{id}/{动作} —— 详情浮层上的按钮走这里
-    const act = new RegExp(`^${API_PREFIX}/([a-z]+)/([A-Za-z0-9_]+)/([a-z-]+)$`).exec(p);
+    // ★★ 2026-10-14 改：**会话动作**的 id 里带 `:` `/` `+` `=`（形如 `2026-10-14__cid:cidYfn8k+5mWU/YcUESFbS5hg==`），
+    //   `[A-Za-z0-9_]+` 那条匹配不到 ⇒ 请求落到后面回 404「未知类型」。
+    //   ⇒ id 那一段放宽成"**除斜杠以外的任意可打印字符**"，并且要求客户端 **URL 编码**传进来
+    //     （`encodeURIComponent` 之后 `:` 变 `%3A`、`/` 变 `%2F`，所以「不含斜杠」这条仍然成立）。
+    //   ⚠️ 为什么不用"再开一条正则"：动作路由只有这一条，开第二条就得决定谁先匹配，
+    //     而这个项目已经为"两条相似判据谁先谁后"栽过（`下月底` 被 `月底` 抢先）。
+    //     放宽现有这一条、并**在下面校验类型**，只有一条路要走。
+    const act = new RegExp(`^${API_PREFIX}/([a-z]+)/([^/]+)/([a-z-]+)$`).exec(p);
     // 驾驶舱的"生成"入口：/cockpit/{kind} —— 只有两段，所以单独匹配（上面那条要求三段）
     //   走 `narrative()`：先取真实数据切片，**没数据就拒绝调模型**（避免生成"没数据也像模像样"的分析）。
     //   会等模型返回（实测约 36 秒），前端需显示"生成中"。
@@ -435,8 +515,14 @@ export function handler(req, res) {
       })();
     }
     if (act) {
-      const plural = act[1]; const id = act[2]; const action = act[3];
-      const t = { messages: 'message', notes: 'note', todos: 'todo', schedules: 'schedule' }[plural];
+      const plural = act[1];
+      // ★ 2026-10-14：id 那一段现在允许 URL 编码后的字符 ⇒ **取出来要解码一次**
+      //   （会话 id 里的 `:` `/` `+` `=` 在地址里都是 %XX 形态）。
+      //   ⚠️ 解码失败不吞：退回原样，让后面的"会话不存在 ⇒ 404"如实报出来。
+      let id = act[2];
+      try { id = decodeURIComponent(id) } catch { /* 保持原样 */ }
+      const action = act[3];
+      const t = { messages: 'message', notes: 'note', todos: 'todo', schedules: 'schedule', conversations: 'conversations' }[plural];
       if (!t) return json(res, 404, { error: `未知类型：${plural}` });
       // ★★ 一个请求**只读一次体**（2026-10-12 实测踩到的真 bug）：
       //   原先这段是 `return readBody(req).then((b) => { … })`，而后面笔记的两个动作**又各自调了一次**
@@ -448,6 +534,102 @@ export function handler(req, res) {
         if (b.ok === false) return json(res, 400, { error: b.why });
         const body = b.json ?? {};
         const op = String(body.payload?.op ?? body.op ?? '').trim();
+        // ★ 2026-10-14：`conversations` **不是 store 里的事件类型**（store 只认
+        //   message/note/todo/schedule）—— 它是"一批消息"的聚合视角。
+        //   ⇒ 会话那一条分支**必须在读 `evt` 之前返回**，否则这里会拿 'conversations'
+        //     去查 store、直接抛 `未知类型 "conversations"`（第一次就是这样炸的）。
+        if (t === 'conversations') {
+          const cid = String(id);
+          const c = conversationOne(cid);
+          if (!c) return json(res, 404, { error: '没有这个会话', id: cid });
+          const wantIds = Array.isArray(body.payload?.ids) ? body.payload.ids.map(String) : [];
+          // ★ 追问裁定 ②：**一条都不勾 ⇒ 默认取整个会话**（不报错、不空转）
+          const whole = body.payload?.whole === true || body.payload?.whole === 1 || wantIds.length === 0;
+          const picked = whole ? c.items : c.items.filter((e) => wantIds.includes(String(e._id)));
+          if (!picked.length) return json(res, 400, { error: '勾选的消息不在这个会话里（或已不存在）', ids: wantIds });
+          const pickedIds = picked.map((e) => String(e._id));
+
+          // ── 「已回复」：只标勾选的那些条（全选时等于整条会话）──
+          if (op === '已回复' || op === '回复' || op === 'replied') {
+            for (const mid of pickedIds) {
+              if (!(store.getById('message', mid)?.ops ?? []).some((o) => String(o.op ?? '') === 'replied')) {
+                store.patch('message', mid, {}, { op: 'replied', by: 'manual', conversationId: cid });
+              }
+            }
+            // 整条会话一次标完 ⇒ 额外留一条会话级痕迹（便于回查"当时是按会话处理的"）
+            if (whole) store.patch('message', pickedIds[pickedIds.length - 1], {}, { op: 'conversation-replied', by: 'manual', conversationId: cid, count: c.count });
+            return json(res, 200, {
+              ok: true, id: cid, op: 'replied', marked: pickedIds.length, whole,
+              note: whole ? '整条会话已标为已回复' : `已标为已回复 ${pickedIds.length} 条（其余仍留在待处理）`,
+            });
+          }
+
+          // ── 三种转换：把选中的原文 + 相关上下文聚合起来，再提取结构化字段 ──
+          return (async () => {
+            const kindMap = { '转待办': 'todo', '转日程': 'schedule', '转笔记': 'note', todo: 'todo', schedule: 'schedule', note: 'note' };
+            const to = kindMap[op];
+            if (!to) return json(res, 400, { error: '不认识的动作', op, allowed: ['已回复', '转待办', '转日程', '转笔记'] });
+            const opName = `to-${to}`;
+            // ① 被勾选消息的原文（**按时间顺序**拼起来 —— 与详情页显示同一顺序）
+            const rawText = picked.map((e) => String(e.payload?.raw ?? '')).filter((x) => x !== '').join('\n');
+            // ② 被勾选消息**各自的召回材料**（筛选触发分析时取的那份）
+            const perMsgCtx = [];
+            for (const e of picked) for (const h of (e.context?.recalled ?? [])) perMsgCtx.push(h);
+            // ③ **会话级上下文**（每 15 分钟由模型跑出来的那份）
+            let convText = null;
+            try { convText = loadConvCache()[convCacheKey(c)]?.text ?? null } catch { /* 读不到就当没有 */ }
+            // ★ 追问裁定 ③：两份**合用** —— 会话级那份讲清当天整段对话的背景，
+            //   按条的召回材料补充细节。会话级那份是**模型写的一段话**（不是召回片段），
+            //   所以把它当作一条材料塞进列表，让提取器一起看。
+            const recalled = convText
+              ? [{ path: '(会话级分析)', text: `【当天会话的相关上下文（模型分析）】\n${convText}`, similarity: null }, ...perMsgCtx]
+              : perMsgCtx;
+
+            const now = Date.now();
+            const sender = String(picked[picked.length - 1].payload?.sender ?? '');
+            let mk; let extractFrom = null;
+            if (to === 'note') {
+              const ex = extractNote(rawText, recalled, { now, over: {} });
+              mk = ex.payload; extractFrom = ex.from;
+            } else if (to === 'todo') {
+              const ex = extractTodo(rawText, recalled, { now, sender, over: {} });
+              mk = ex.payload; extractFrom = ex.from;
+            } else {
+              const { deriveScheduleWindow } = await import('../processor/detect.mjs');
+              const w = deriveScheduleWindow(rawText, { now });
+              if (!w.ok) {
+                return json(res, 409, {
+                  error: '转日程需要具体起止时间：勾选的这些原文里没解析出来，请把 start/end 一起传进来',
+                  hint: '日程契约要求 start/end 是 YYYY-MM-DD 或 YYYY-MM-DDTHH:mm（不接受空）',
+                  why: w.why,
+                });
+              }
+              const ex = extractSchedule(rawText, recalled, { now, sender, over: {} });
+              mk = { ...ex.payload, start: w.start, end: w.end }; extractFrom = ex.from;
+            }
+            // 幂等键按"会话 + 勾选的那批 + 目标类型"算：同一批勾选重复点不会建两条
+            const sig = pickedIds.slice().sort().join(',').slice(0, 200);
+            const made = createEvent(to, mk, {
+              origin: {
+                channel: picked[0].origin?.channel ?? 'manual',
+                sender,
+                messageId: `conv:${cid}:${to}:${createHash('sha1').update(sig).digest('hex').slice(0, 10)}`,
+                raw: rawText.slice(0, 500),
+              },
+              at: picked[0]._at ?? now,
+            });
+            if (made.ok === false) return json(res, 400, { error: `生成${to}失败`, errors: made.errors });
+            // 把这批消息标成"已转 X"（会话列表据此显示状态）
+            for (const mid of pickedIds) store.patch('message', mid, {}, { op: opName, by: 'manual', targetId: made.id, conversationId: cid });
+            return json(res, 200, {
+              ok: true, id: cid, to: made.id, kind: to, from: pickedIds.length, whole,
+              extractFrom,
+              material: `勾选原文 ${picked.length} 条 + 各自召回 ${perMsgCtx.length} 条${convText ? ' + 会话级上下文' : ''}`,
+              note: `已按勾选的 ${pickedIds.length} 条原文 + 相关上下文聚合提取，建出${to === 'todo' ? '待办' : to === 'schedule' ? '日程' : '笔记'}`,
+            });
+          })().catch((e) => json(res, 500, { error: `会话动作失败：${e.message}` }));
+        }
+
         const evt = store.getById(t, id);
         if (!evt) return json(res, 404, { error: '没有这条事件', type: t, id });
 
@@ -681,6 +863,8 @@ export function handler(req, res) {
           })().catch((e) => json(res, 500, { error: `交付物登记失败：${e.message}` }));
         }
 
+
+        // ④ 笔记动作（需求 3.3.6：可视化构建 / 分析笔记）
         //    · 分析笔记  ⇒ 重新召回 + 重新调模型，**覆盖**上一次结论（visual.built 这类落点保留）
         //    · 可视化构建 ⇒ 真调工具建模型（坐标系 / 工程图 / 建模中心），**成功才置 built**
         //    两条都不假装：模型失败 ⇒ 回 502 且事件里只留 error；工具失败 ⇒ 回 502 且 built 不置真
@@ -837,7 +1021,16 @@ export async function selfTest() {
 
     // 动作路径（详情浮层的按钮）
     const rep = await post('/messages/' + w.body.id + '/replied', {});
-    chk('API-23', '★ 消息标已回复（动作路径）', rep.code === 200 && (await get('/pages/messages')).body.counts.replied === 1, JSON.stringify(rep.body));
+    // ★★ 2026-10-14 改（消息页改成会话列表之后**这条的含义变了**）：
+    //   原来它问的是"按条的已回复数 == 1"（那时 `/pages/messages` 返回的是**消息**）。
+    //   现在返回的是**会话**，而且是**逐条**判状态（用户裁定："只标勾选的那些条"）——
+    //   这一条消息所在的会话里若还有别的没回复的消息，会话就仍是"待处理"（`replied` 为 0）。
+    //   ⇒ 判法改成看**这条消息自己的留痕** + **会话总数**（不再拿会话的 replied 数当"这条回复了"）。
+    const repEvt = store.getById('message', w.body.id);
+    chk('API-23', '★ 消息标已回复（动作路径）：**这条**真的被标了（会话状态按逐条算）',
+      rep.code === 200 && (repEvt.ops ?? []).some((o) => String(o.op ?? '') === 'replied')
+      && (await get('/pages/messages')).body.counts.total >= 1,
+      JSON.stringify({ code: rep.code, ops: (repEvt.ops ?? []).map((o) => o.op) }));
     const conv = await post('/messages/' + w.body.id + '/convert', { to: 'todo', topic: '由消息转来的待办', detail: '细节', executor: '我' });
     chk('API-24', '★ 消息转待办：建目标事件 + 来源留痕', conv.code === 200 && conv.body.kind === 'todo' && (await get('/pages/todos')).body.counts.total === 2, JSON.stringify(conv.body));
     const convBad = await post('/messages/' + w.body.id + '/convert', { to: 'whatever' });
@@ -1012,6 +1205,110 @@ export async function selfTest() {
       chk('API-63', '★★ 桶查得到的**不是空壳**：转过日程的待办真的在 to-schedule 档里',
         todos({ bucket: 'to-schedule', now: Date.now() }).list.some((x) => (x.ops ?? []).some((o) => o.op === 'to-schedule')),
         `档内 ${todos({ bucket: 'to-schedule', now: Date.now() }).list.length} 条`);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // ★★ 2026-10-14 加（用户原话 + 追问裁定）：**会话列表 · 会话详情 · 按条选择动作**
+    //   「流入的一个会话中的多条消息，有可能会被**分别**转待办、转日程、转笔记或转为已回复，
+    //     所以会话详情页中的消息原文应该是**可以按条进行选择**（支持单选及多选）……
+    //     被操作的原文，**加上相关上下文聚合起来**，再提取出结构化的信息，执行转换动作。」
+    //   追问裁定：① 已回复只标勾选的那些条；② 一条不勾 ⇒ 默认整会话；
+    //             ③ 上下文 = 会话级那份 + 被勾选消息各自的召回材料（两份合用）。
+    // ══════════════════════════════════════════════════════════════════════════
+    {
+      const CID = 'cidConvActChk';
+      // ⚠️ `store.upsert()` 返回的是 `{ action, _id }` —— **没有 `event` 这一层**。
+      //   我第一版按 `makeEvent(...).event` 传进去、又在外面取 `.event` ⇒ undefined
+      //   （今天在 `visual.mjs` 已经踩过同一个坑，这里又踩了一次）。
+      //   ⇒ 直接用 `makeEvent(...).event`（那才是事件本体）。
+      const mkMsg = (raw, at) => {
+        const made = makeEvent({
+          type: 'message',
+          payload: { channel: 'dingtalk', sender: '冯杰楠', raw, summary: raw.slice(0, 30), source: 'im', modality: 'text', isDirect: true, conversationId: CID },
+          origin: { channel: 'dingtalk', sender: '冯杰楠', messageId: `conv-act-${at}` },
+          _at: at,
+        });
+        store.upsert(made.event);
+        return made.event;
+      };
+      const t0 = Date.now() - 60000;
+      const m1 = mkMsg('先把接口联调的方案对一下，明天上午十点在3楼会议室。', t0);
+      const m2 = mkMsg('另外报价单我下午发你，记得看下权限配置。', t0 + 1000);
+      // 给其中一条灌一份**按条的召回材料**（验证"两份上下文合用"）
+      store.patch('message', m1._id, { context: { recalled: [{ text: '接口联调的历史方案在 Work/示例/联调.md（这条是召回片段）' }], at: new Date().toISOString() } }, { op: 'recall' });
+      const day = (() => { const dt = new Date(t0); const p = (n) => String(n).padStart(2, '0'); return `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())}` })();
+      const convId = `${day}__cid:${CID}`;
+
+      // ① /pages/messages 给的是**会话**（不是一条条消息）
+      const pm = await get('/pages/messages');
+      chk('API-64', '★★ 消息页返回的是**会话**（一条会话一行，不是一条消息一行）',
+        pm.body.view === 'conversations' && Array.isArray(pm.body.list)
+        && pm.body.list.every((x) => x.day && typeof x.count === 'number' && !('summary' in x)),
+        `会话 ${pm.body.list.length} 条 · counts.total=${pm.body.counts.total}`);
+      chk('API-65', '★ 会话行带 `repliedCount`（详情那行"已回复 N 条"要用）',
+        pm.body.list.every((x) => typeof x.repliedCount === 'number'));
+
+      // ② 会话详情：原文**按时间升序**，形态 `HH:MM`
+      const cd = await get(`/conversation?id=${encodeURIComponent(convId)}`);
+      chk('API-66', '★★ 会话详情：原文按时间升序，每条带 `HH:MM`（用户点名的形态）',
+        cd.code === 200 && cd.body.messages.length === 2
+        && /^\d{2}:\d{2}$/.test(cd.body.messages[0].hm)
+        && cd.body.messages[0].id === m1._id && cd.body.messages[1].id === m2._id,
+        JSON.stringify(cd.body.messages?.map((x) => x.hm)));
+      chk('API-67', '★ 会话详情给出四个动作（已回复/转待办/转日程/转笔记）',
+        ['已回复', '转待办', '转日程', '转笔记'].every((x) => (cd.body.availableOps ?? []).includes(x)),
+        JSON.stringify(cd.body.availableOps));
+      chk('API-68', '★ 会话详情带**会话级上下文**字段（没算过 ⇒ 标注"还在算"，不假装有）',
+        'convContext' in cd.body && (cd.body.convContextPending === true || typeof cd.body.convContext === 'string'),
+        JSON.stringify({ pending: cd.body.convContextPending, has: !!cd.body.convContext }));
+
+      // ③ **只勾一条**转待办 ⇒ 只标那一条，另一条不动
+      const c1 = await post(`/conversations/${encodeURIComponent(convId)}/act`, { op: '转待办', ids: [m1._id] });
+      chk('API-69', '★★ 只勾一条 ⇒ 建出目标事件，且**只标勾选的那一条**',
+        c1.code === 200 && !!c1.body.to
+        && (store.getById('message', m1._id).ops ?? []).some((o) => o.op === 'to-todo')
+        && !(store.getById('message', m2._id).ops ?? []).some((o) => o.op === 'to-todo'),
+        `HTTP ${c1.code} · to=${c1.body.to} · m1=${JSON.stringify((store.getById('message', m1._id).ops ?? []).map((o) => o.op))} · m2=${JSON.stringify((store.getById('message', m2._id).ops ?? []).map((o) => o.op))}`);
+      chk('API-70', '★★ 材料 = **勾选原文 + 各自的召回材料 + 会话级上下文**（三样合起来）',
+        /勾选原文 1 条/.test(String(c1.body.material ?? '')), String(c1.body.material ?? ''));
+      chk('API-71', '★ 回执给**逐字段来源**（看得出是从哪取的）', !!c1.body.extractFrom, JSON.stringify(c1.body.extractFrom ?? {}).slice(0, 80));
+
+      // ④ 幂等：同一批勾选再点一次 ⇒ **库里不重复建**
+      //   ⚠️ 判据**只能看"库里多了没有"**，不能看两次返回的 `to` 是否相同：
+      //     `createEvent` 每次都 `makeEvent` 出一个**新的 _id** 返回，而库里仍按
+      //     `origin.messageId`（幂等键）归一到**同一条已存在的事件**上（实测 `action=updated`）。
+      //     第一版断言了 `c1b.body.to === c1.body.to` ⇒ 必然不相等 ⇒ **把好的判成坏的**。
+      const before = store.list({ type: 'todo' }).length;
+      const c1b = await post(`/conversations/${encodeURIComponent(convId)}/act`, { op: '转待办', ids: [m1._id] });
+      chk('API-72', '★★ 同一批勾选重复点 ⇒ **库里不重复建**（幂等键＝会话+那批勾选+目标类型）',
+        c1b.code === 200 && store.list({ type: 'todo' }).length === before,
+        `待办条数 ${before} → ${store.list({ type: 'todo' }).length}`);
+
+      // ⑤ 一条都不勾 ⇒ **默认整条会话**
+      const c2 = await post(`/conversations/${encodeURIComponent(convId)}/act`, { op: '转笔记', ids: [] });
+      chk('API-73', '★★ 一条都不勾 ⇒ **默认整条会话**（追问裁定②）',
+        c2.code === 200 && c2.body.whole === true && c2.body.from === 2
+        && (store.getById('message', m2._id).ops ?? []).some((o) => o.op === 'to-note'),
+        JSON.stringify({ whole: c2.body.whole, from: c2.body.from, material: c2.body.material }));
+
+      // ⑥ 已回复：**只标勾选的那些条**（追问裁定①）
+      const c3 = await post(`/conversations/${encodeURIComponent(convId)}/act`, { op: '已回复', ids: [m2._id] });
+      chk('API-74', '★★ 已回复只标**勾选的那些条**（追问裁定①）',
+        c3.code === 200 && c3.body.marked === 1
+        && (store.getById('message', m2._id).ops ?? []).some((o) => o.op === 'replied'),
+        JSON.stringify({ marked: c3.body.marked, note: c3.body.note }));
+      const cvAfter = await get('/pages/messages');
+      const row = cvAfter.body.list.find((x) => x.id === convId);
+      // ⚠️ 判据要守的是**用户那条裁定本身**："只标勾选的那些条 ⇒ 会话不该被当成已回复"。
+      //   第一版写成 `state === 'pending'` —— **太窄**：此时另一条已经被转成日程/笔记了，
+      //   会话状态如实显示"已转日程/已转笔记"才是对的（那是这条会话当前的样子）。
+      //   把 state 钉成 pending 等于要求"转过的东西不许显示" —— 那是把判据写得比要求还严。
+      chk('API-75', '★★ 只回了一条 ⇒ 会话**不算已回复**（逐条判状态，不整会话移动）',
+        row && row.state !== 'replied' && row.repliedCount === 1,
+        JSON.stringify({ state: row?.state, repliedCount: row?.repliedCount, count: row?.count }));
+
+      // ⑦ 不存在的会话 ⇒ 404（不返回空壳）
+      chk('API-76', '★ 不存在的会话 ⇒ 404', (await get('/conversation?id=1999-01-01__cid:nope')).code === 404);
     }
 
     // ★ API-29 由「断言 501（未接线）」改成「断言真接线」——**这是本轮唯一一处改动既有断言**。

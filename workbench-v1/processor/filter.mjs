@@ -34,7 +34,7 @@ export function isFiltered(evt) {
 }
 
 /** 跑一轮筛选（同步；台账由 ledgered 版本记，或由调用方记） */
-export function runFilterOnce({ limit = 500, dryRun = false } = {}) {
+export function runFilterOnce({ limit = 500, dryRun = false, analyzeFn = null } = {}) {
   const errors = [];
   const pending = store.list({ type: 'message' })
     .filter((e) => !isFiltered(e) && (e.lifecycle === 'open' || e.lifecycle === 'processed'))
@@ -118,9 +118,43 @@ export function runFilterOnce({ limit = 500, dryRun = false } = {}) {
   };
 }
 
-/** 带台账的入口（调度用） */
+/**
+ * **筛选引擎驱动分析引擎**（用户 2026-10-14 原话）：
+ *   「分析引擎的触发器应该是在**筛选引擎**那儿，筛选引擎筛选出需要进行分析的内容，
+ *     应该**触发分析引擎**进行分析。」
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 为什么要改（原来的做法是我自己加的，不是用户要的）
+ *
+ *   上一轮我发现"分析引擎没有触发器、213 条消息从来没取过上下文"，就给它挂了一个
+ *   **独立的计划任务**（每 15 分钟）。那只解决了"有没有人调它"，没解决"**谁该调它**"。
+ *   ⇒ 用户要的是**由筛选引擎驱动**：筛选出该分析的东西，就地触发分析。
+ *     这样两件事在**同一条因果链**上：先筛（结构化 / 双写 / 抽链接 / 判定），
+ *     再分析（召回上下文 / 笔记出结论）。谁新进来、谁被筛过，就是"该分析"的那批。
+ *
+ * ⚠️ 为什么分析放在**筛选之后**、而不是之前：
+ *   分析要用的检索文本来自 `payload`，而筛选会把它结构化并双写知识库 ——
+ *   知识库里有了这条内容之后，**召回才有东西可命中**（尤其"同一条消息"自己那条）。
+ *   这也与紧挨着的 `detectOnce` 同一个位置、同一个理由（它俩都是"筛选之后的加工"）。
+ *
+ * ⚠️ 分析失败**不许拖垮筛选主链**（筛选是主职）：与 `detectOnce` 一样，错了只记声。
+ */
 export async function runFilter() {
-  return runEngine('filter', async () => runFilterOnce());
+  return runEngine('filter', async () => {
+    const r = runFilterOnce();
+    // ★ 筛选完就地触发分析（limit 给大一些：一轮把新筛出来的那批都过掉）
+    let analyze = null;
+    try {
+      const { analyzeOnce } = await import('./analyze.mjs');
+      analyze = await analyzeOnce({ limit: 400 });
+      if (analyze.inCount > 0) {
+        console.log(`[v1][filter] 触发分析 ${analyze.inCount} 条（取到上下文 ${analyze.withContext} · 调模型 ${analyze.modelCalls} · 复用已有 ${analyze.recallReused ?? 0}）`);
+      }
+    } catch (e) {
+      r.errors.push(`分析触发失败：${String(e && e.message).slice(0, 140)}`);
+    }
+    return { ...r, analyze };
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

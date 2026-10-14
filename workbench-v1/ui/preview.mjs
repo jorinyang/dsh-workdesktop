@@ -46,14 +46,32 @@ export async function renderAll({ api = '/workdesktop/api/v1' } = {}) {
   const statusDetail = {};
   for (const [k, v] of Object.entries(probes)) { status[k] = v.ok; statusDetail[k] = String(v.detail ?? '') }
   fs.mkdirSync(OUT, { recursive: true });
+  // ★★ 2026-10-14 加：**把会话数据喂给消息页**。
+  //   原来 `renderAll` 一个 `snap` 都不喂 ⇒ 静态页的消息列表**永远是空的**
+  //   （页面渲染时 `snap.messages` 拿不到就回落到内存里的空聚合）。
+  //   实测：面板里看到的是"消息列表 · 暂无"，而库里明明有几百条 —— 看着像没数据。
+  //   ⇒ 这里读一次会话聚合交给渲染层。**只喂消息页**（另外三页的静态渲染本来就有数据路径）。
+  let messagesSnap = null;
+  try {
+    const { conversations } = await import('../processor/conversations.mjs');
+    const cv = conversations({ tab: 'all' });
+    // 形状与接口一致（`pageMessages` 认 `counts` / `list`）
+    messagesSnap = { counts: cv.counts, list: cv.list, tab: cv.tab, view: 'conversations' };
+  } catch (e) {
+    console.log(`注意：会话聚合读不到（消息页将为空）：${String(e && e.message).slice(0, 120)}`);
+  }
   const written = [];
   for (const p of PAGE_DEFS) {
     const f = path.join(OUT, `${p.key}.html`);
     // api 注入 ⇒ 页面可点（详情浮层/新增）；不起服务时页面仍能静态看，只是按钮点了会报"取详情失败"
-    fs.writeFileSync(f, renderPage(p.key, { switches, status, statusDetail, api }), 'utf8');
+    // ⚠️ 快照要放在 **`snap` 这一层**（`renderPage` 读的是 `opt.snap.messages`）。
+    //   第一版我传成了 `opt.messages`（外面少包一层）⇒ 渲染层取不到 ⇒ 消息页显示"暂无"，
+    //   而统计卡却是有数的（那条路走的是另一份数据）—— **页面自相矛盾**，正是这次要修的那类。
+    const snap = p.key === 'messages' && messagesSnap ? { messages: messagesSnap } : undefined;
+    fs.writeFileSync(f, renderPage(p.key, { switches, status, statusDetail, api, snap }), 'utf8');
     written.push(f);
   }
-  return { written, switches, switchesOk: ok, updatedAt, why: why ?? null, probes, api };
+  return { written, switches, switchesOk: ok, updatedAt, why: why ?? null, probes, api, conversations: messagesSnap?.counts ?? null };
 }
 
 const __isMain = (() => { try { const entry = process.argv[1]; return !!entry && import.meta.url === pathToFileURL(entry).href } catch { return false } })();
