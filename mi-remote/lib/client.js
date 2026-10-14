@@ -448,6 +448,11 @@ window.__ModuleLoader__.load({
       '.dsmr-clickrow{cursor:pointer;border-radius:8px;padding:4px 6px;margin:0 -6px}',
       '.dsmr-clickrow:hover{background:var(--dsw-alias-bg-layer-2)}',
       '.dsmr-clickrow:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}',
+      /* 蓝牙设备列表（点"遥控器"那张未就绪的卡之后出现）：一行一个可点按钮 */
+      '.dsmr-btlist{display:flex;flex-direction:column;gap:4px;margin-top:6px}',
+      '.dsmr-btitem{text-align:left;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      /* "点这张卡即可处理"那句提示：弱一点，别抢状态本身的注意力 */
+      '.dsmr-link-how .dsmr-tiny{display:block;margin-bottom:2px}',
       '.dsmr-enterrow{display:flex;align-items:center;gap:9px;flex-wrap:wrap}',
       /*
        * 按钮：照 dsh-workdesktop 的规范（2026-09-25 第七轮 · 用户原话「列表页的按钮需要改为橙色背景」）
@@ -606,13 +611,106 @@ window.__ModuleLoader__.load({
       const rdevice = rseg !== null && rseg !== undefined && Array.isArray(rseg.devices) && rseg.devices.length > 0
         ? rseg.devices[0] : null
 
+      /*
+       * ── 「状态卡点了就能修」（2026-10-11 用户要求）────────────────────────────
+       *
+       * 用户原话：「设备如果是未连接状态，则默认显示可连接设备，点击链接；
+       *            采集器/引擎如果是未运行状态，点击之后开始运行；
+       *            VB-CABLE 卡片中同样，如果状态是离线，则点击之后加载激活」
+       *
+       * 三件事的难度差得很远，如实记着：
+       *   · 采集器/引擎 → 复用 `POST /bridge/auto`，最省事也最可靠；
+       *   · VB-CABLE    → `POST /cable/activate`，能修"设备被禁用"那一类；
+       *                   **装驱动那一步做不了**（要管理员 + 安装包），
+       *                   后端会回 `action:'install'`，界面照着如实说，不假装成功；
+       *   · 遥控器连接  → `POST /bt/scan` + `/bt/pair`。**搜索要十几秒**（蓝牙主动搜索），
+       *                   所以必须有"搜索中…"的状态，否则用户以为卡死了。
+       */
+      const [fixKind, setFixKind] = React.useState(null)   // 'bridge' | 'cable' | 'bt' | null
+      const [fixMsg, setFixMsg] = React.useState(null)
+      const [btDevices, setBtDevices] = React.useState(null)
+      const [btNote, setBtNote] = React.useState(null)
+
+      /** 把按键链路拉起来（采集器 + 引擎）。 */
+      const fixBridge = async () => {
+        setFixKind('bridge'); setFixMsg(null)
+        const result = await post('/bridge/auto', {})
+        if (result === null || result === undefined || result.ok !== true) {
+          setFixMsg('没起来：' + String((result && (result.hint || result.error)) || '未知原因'))
+        } else {
+          setFixMsg(result.reused === true ? '引擎已在运行' : '已启动')
+        }
+        setFixKind(null)
+        load()
+      }
+
+      /** 让 VB-CABLE 回到可用状态。 */
+      const fixCable = async () => {
+        setFixKind('cable'); setFixMsg(null)
+        const result = await post('/cable/activate', {})
+        if (result === null || result === undefined) { setFixMsg('没拿到结果'); setFixKind(null); return }
+        if (result.ok === true) {
+          setFixMsg(result.fixed && result.fixed.length > 0 ? ('已启用：' + result.fixed.join('、')) : 'CABLE 可用')
+        } else {
+          // 如实转达后端的话 —— 尤其是"装驱动那一步我做不了"这种情况
+          setFixMsg(String(result.message || result.howto || '没修好'))
+        }
+        setFixKind(null)
+        load()
+      }
+
+      /** 搜可连接的蓝牙设备。**会很慢**（十几秒），所以有专门的等待状态。 */
+      const scanBt = async () => {
+        setFixKind('bt'); setBtNote('正在搜索附近的设备…（蓝牙主动搜索，要十几秒）'); setBtDevices(null)
+        const result = await post('/bt/scan', {})
+        if (result === null || result === undefined || result.ok !== true) {
+          setBtNote('搜索失败：' + String((result && result.error) || '未知原因'))
+          setFixKind(null)
+          return
+        }
+        setBtDevices(result)
+        if (result.unpairedTimedOut === true) {
+          setBtNote('没搜到新设备（搜索超时）。确认遥控器已进配对模式：长按「菜单 + 主页」')
+        } else if ((result.unpaired || []).length === 0 && (result.pairedOffline || []).length === 0) {
+          setBtNote('没搜到设备。遥控器要先长按「菜单 + 主页」进配对模式')
+        } else {
+          setBtNote(null)
+        }
+        setFixKind(null)
+      }
+
+      /** 配对或连接一个设备。 */
+      const pairBt = async (device) => {
+        setFixKind('bt'); setBtNote('正在连接 ' + device.name + ' …')
+        const result = await post('/bt/pair', { id: device.id, alreadyPaired: device.paired === true })
+        if (result !== null && result !== undefined && result.ok === true) {
+          setBtNote('已连上 ' + String(result.name || device.name))
+          setBtDevices(null)
+          load()
+        } else {
+          setBtNote('没连上：' + String((result && (result.hint || result.status || result.error)) || '未知原因'))
+        }
+        setFixKind(null)
+      }
+
       /**
        * 状态卡里的一行"参数"。状态卡不能只有一句"就绪" —— 用户 2026-10-11 要求把
        * 具体参数也摆出来。label 固定宽度，value 占满剩余。
+       *
+       * `action` 给了就变成可点行（用于「采集器 / 引擎」那两行：未运行时点一下即启动）。
        */
-      const kv = (label, value, key) => h('div', { className: 'dsmr-kvrow', key: key === undefined ? label : key },
-        h('span', { className: 'dsmr-kv-k' }, label),
-        h('span', { className: 'dsmr-kv-v' }, value === null || value === undefined || value === '' ? '—' : String(value)))
+      const kv = (label, value, key, action) => h('div', {
+        className: 'dsmr-kvrow' + (action !== undefined && action !== null ? ' dsmr-clickrow' : ''),
+        key: key === undefined ? label : key,
+        ...(action !== undefined && action !== null
+          ? {
+            role: 'button', tabIndex: 0, onClick: action,
+            onKeyDown: (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); action() } },
+          }
+          : {}),
+      },
+      h('span', { className: 'dsmr-kv-k' }, label),
+      h('span', { className: 'dsmr-kv-v' }, value === null || value === undefined || value === '' ? '—' : String(value)))
 
       return h('div', { className: 'dsmr-sec dsmr-statussec', 'data-dsmr-sec': 'link' },
         h('div', { className: 'dsmr-sec-head' },
@@ -625,19 +723,43 @@ window.__ModuleLoader__.load({
           rows.map((row) => {
             const seg = (data.link && data.link[row.key]) || { ok: false, state: 'missing', howto: '' }
             const dev = Array.isArray(seg.devices) && seg.devices.length > 0 ? seg.devices[0] : null
-            return h('div', { className: 'dsmr-link', key: row.key, 'data-ok': seg.ok === true ? '1' : '0', 'data-dsmr-link': row.key },
+            const bad = seg.ok !== true
+            /*
+             * 未就绪时这张卡可点（用户 2026-10-11 要求）。点哪个键做什么：
+             *   remote → 搜附近的蓝牙设备并列出（选一个就能连）
+             *   cable  → 让 VB-CABLE 回到可用
+             *   wetype → 没得修（输入法得用户自己装/开），所以**不给点击形态**，
+             *            免得点了一下什么都不发生，反而像坏了
+             */
+            const canFix = bad && (row.key === 'remote' || row.key === 'cable')
+            const busy = fixKind !== null && ((row.key === 'remote' && fixKind === 'bt') || (row.key === 'cable' && fixKind === 'cable'))
+            const onFix = row.key === 'remote' ? scanBt : row.key === 'cable' ? fixCable : null
+            return h('div', {
+              className: 'dsmr-link' + (canFix ? ' dsmr-clickrow' : ''),
+              key: row.key,
+              'data-ok': seg.ok === true ? '1' : '0',
+              'data-dsmr-link': row.key,
+              'data-dsmr-fixable': canFix ? '1' : '0',
+              ...(canFix ? {
+                role: 'button', tabIndex: 0, onClick: onFix,
+                onKeyDown: (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onFix() } },
+              } : {}),
+            },
               h('span', { className: 'dsmr-dot', 'data-ok': seg.ok === true ? '1' : '0' }),
               h('div', { className: 'dsmr-link-body' },
                 h('div', { className: 'dsmr-link-name' }, row.name,
                   h('span', { className: 'dsmr-link-state', 'data-ok': seg.ok === true ? '1' : '0' },
-                    seg.ok === true ? t('ready')
-                      : seg.state === 'installed-not-running' ? t('installedNotRunning') : t('missing'))),
-                /* 遥控器：设备名 / 电量 / 按键链路两段 */
+                    busy ? '处理中…'
+                      : seg.ok === true ? t('ready')
+                        : seg.state === 'installed-not-running' ? t('installedNotRunning') : t('missing'))),
+                /* 遥控器：设备名 / 电量 / 按键链路两段（后两行未运行时点了就启动） */
                 row.key === 'remote' ? h('div', { className: 'dsmr-kvlist' },
                   kv('设备', rdevice === null ? null : rdevice.name),
                   kv('电量', battery === null || battery === undefined ? '未读取' : String(battery) + '%'),
-                  kv('采集器', bridge === null ? '—' : (bridge.collector === true ? '运行中' : '未运行')),
-                  kv('引擎', bridge === null ? '—' : (bridge.engine === true ? '运行中' : '未运行'))) : null,
+                  kv('采集器', bridge === null ? '—' : (bridge.collector === true ? '运行中' : '未运行'),
+                    'collector', bridge !== null && bridge.collector !== true ? fixBridge : null),
+                  kv('引擎', bridge === null ? '—' : (bridge.engine === true ? '运行中' : '未运行'),
+                    'engine', bridge !== null && bridge.engine !== true ? fixBridge : null)) : null,
                 /* VB-CABLE：设备名 / 方向 / 状态 / 序号 */
                 row.key === 'cable' ? h('div', { className: 'dsmr-kvlist' },
                   kv('设备', dev === null ? null : dev.name),
@@ -648,8 +770,31 @@ window.__ModuleLoader__.load({
                 row.key === 'wetype' ? h('div', { className: 'dsmr-kvlist' },
                   kv('进程', Array.isArray(seg.process) && seg.process.length > 0 ? seg.process.length + ' 个' : null),
                   kv('明细', Array.isArray(seg.process) && seg.process.length > 0 ? seg.process.join(' · ') : null)) : null,
-                seg.ok === true ? null : h('div', { className: 'dsmr-link-how' }, seg.howto)))
+                bad ? h('div', { className: 'dsmr-link-how' },
+                  canFix ? h('span', { className: 'dsmr-tiny' }, '点这张卡即可处理。') : null,
+                  h('span', null, seg.howto)) : null))
           }),
+          /*
+           * 处理失败/成功的反馈。**后端说什么就转达什么** ——
+           * 尤其 VB-CABLE"装驱动那一步做不了"，不能显示成"已修复"。
+           */
+          fixMsg === null ? null : h('div', { className: 'dsmr-note dsmr-tiny', 'data-dsmr-fixmsg': '1' }, fixMsg),
+          /* 蓝牙设备列表（点遥控器卡之后出现） */
+          btNote === null ? null : h('div', { className: 'dsmr-note dsmr-tiny', 'data-dsmr-btnote': '1' }, btNote),
+          btDevices === null ? null : (() => {
+            const list = [].concat(
+              (btDevices.unpaired || []).map((d) => ({ ...d, paired: false })),
+              (btDevices.pairedOffline || []).map((d) => ({ ...d, paired: true })))
+            if (list.length === 0) return null
+            // 像遥控器的排前面（名字里有 MI RC / Xiaomi / 小米 / 遥控 / Remote）
+            list.sort((a, b) => (b.likely === true ? 1 : 0) - (a.likely === true ? 1 : 0))
+            return h('div', { className: 'dsmr-btlist', 'data-dsmr-btlist': '1' },
+              list.map((d) => h('button', {
+                type: 'button', className: 'dsmr-btn dsmr-btitem', key: d.id,
+                'data-dsmr-btdev': d.id,
+                onClick: () => { void pairBt(d) },
+              }, (d.likely === true ? '★ ' : '') + d.name + (d.paired === true ? '（已配对，点一下连上）' : '（未配对，点一下配对）'))))
+          })(),
           /*
            * 语音输入路径卡：设备列表直接放在卡里（用户 2026-10-11 要求从浮层搬出来），
            * 所以这不再是个"点开才有的东西"，也不需要浮层。它是状态列里最高的一张，撑满剩余高度。
@@ -2532,9 +2677,101 @@ window.__ModuleLoader__.load({
         }
       })
 
+      /*
+       * ── 批准 / 拒绝：本插件自己注册的**可绑定**命令（2026-10-11 用户选定 B 方案）──────
+       *
+       * 背景：DSH 自己的 `approval.allow` / `approval.reject` 是用
+       * `shortcuts.registerFixed`（ui-approval/src/client/index.ts:81/84）注册的 ——
+       * 那一类的定义是"只读输入动作，键位**不可**被分配给可编辑命令"，
+       * 在 `definitions()` 里报 `defaults: {}`。**用户在设置里配不了它们。**
+       *
+       * 而 DSH 的批准请求是可编程应答的：待批准挂在 `uiSession.sessionStatus` 上，
+       * 是个带 `answer(outcome)` / `answerable` 的对象
+       * （ui-approval/src/client/contract/slots.ts:130/138）。所以这里绕开固定键位，
+       * 注册**两条普通命令**，它们有默认键位、用户可改，而且：
+       *
+       *   · **没有副作用** —— 只在真有批准请求时才做事。DSH 自带的裸 Enter 在没弹窗时
+       *     等于"发送消息"，拿它当批准键会把聊天框里的字发出去；
+       *   · 用户遥控器上已经绑好的 `Ctrl+Alt+Y` / `Ctrl+Alt+X` 不用改就能用
+       *     （那正是原来预设表里写的组合）。
+       *
+       * ⚠️ 依赖的是**内部 API**（`uiSession.sessionStatus` 与 `PendingApproval.answer`），
+       * 不是公开契约。DSH 升级若改了它们，这里会失效 —— 但失效的表现是"按了没反应"，
+       * 不会波及其它功能。所以每一层都 try/catch，拿不到就干净地返回 false。
+       */
+
+      /**
+       * 找当前挂着的批准请求。找不到返回 null（调用方据此什么都不做）。
+       */
+      function findPendingApproval() {
+        try {
+          const uiSession = ctx.get('uiSession')
+          if (uiSession === null || uiSession === undefined) return null
+          const status = uiSession.sessionStatus
+          if (status === null || status === undefined || typeof status.getSnapshot !== 'function') return null
+          const snapshot = status.getSnapshot()
+          if (snapshot === null || snapshot === undefined || typeof snapshot.get !== 'function') return null
+          /*
+           * 要按会话找回那个请求。会话 id 从 DOM 拿 —— 和 DSH 自己的
+           * `stop-shortcut.ts` 同一个做法（它读 `[data-conversation-session]`）。
+           * 当前会话的那一条就够：批准弹窗永远是当前会话的。
+           */
+          const scope = document.querySelector('[data-conversation-session]')
+          if (scope === null) return null
+          const sessionId = scope.dataset === undefined ? undefined : scope.dataset.conversationSession
+          if (sessionId === undefined || sessionId === '') return null
+          const entry = snapshot.get(sessionId)
+          if (entry === null || entry === undefined) return null
+          const pending = entry.pendingInteraction
+          if (pending === null || pending === undefined) return null
+          // 确认它真的是"可应答的批准"：有 answer 方法、且还没被答过
+          if (typeof pending.answer !== 'function') return null
+          if (pending.answerable !== true) return null
+          return pending
+        } catch (error) {
+          return null
+        }
+      }
+
+      /**
+       * 应答当前批准请求。`outcome` 取值见 `ApprovalDecision`：
+       * `'allowed-once'`（允许一次）或 `'rejected'`（拒绝）。
+       *
+       * 返回是否真的提交了 —— 没有待批准请求时返回 false，快捷键系统据此显示"不可用"。
+       */
+      function answerPendingApproval(outcome) {
+        const pending = findPendingApproval()
+        if (pending === null) return false
+        try {
+          const maybe = pending.answer(outcome)
+          if (maybe !== null && maybe !== undefined && typeof maybe.catch === 'function') {
+            maybe.catch((error) => {
+              console.warn('[dsh-mi-remote] 应答批准失败:', error)
+            })
+          }
+          return true
+        } catch (error) {
+          console.warn('[dsh-mi-remote] 应答批准抛错:', error)
+          return false
+        }
+      }
+
       const SHORTCUT_ACTIONS = PANEL_ACTIONS.concat([
         { id: 'remote.focus.composer', label: '聚焦聊天输入框', run: focusComposer, code: 'KeyF' },
         { id: 'remote.session.first', label: '打开第一条会话（配合语音筛选）', run: openFirstSession, code: 'KeyQ' },
+        /*
+         * 批准 / 拒绝。键位沿用原来预设表里那两个组合（用户遥控器的电源键已经绑在它们上面）。
+         * `onlyWhenApproval: true` 是给 resolve 用的标记：没有待批准请求时回报 `blocked`，
+         * 让 DSH 知道"这条现在没事可做"，而不是默默什么都不发生。
+         */
+        {
+          id: 'remote.approval.allow', label: '批准（允许一次）', code: 'KeyY',
+          onlyWhenApproval: true, run: () => answerPendingApproval('allowed-once'),
+        },
+        {
+          id: 'remote.approval.reject', label: '拒绝', code: 'KeyX',
+          onlyWhenApproval: true, run: () => answerPendingApproval('rejected'),
+        },
       ])
 
       /*
@@ -2568,27 +2805,42 @@ window.__ModuleLoader__.load({
             defaults: defaultsFor(action.code),
             regions: ['page', 'editable'],
             modals: [],
-            resolve: () => ({
-              status: 'handled',
-              run: () => {
-                if (action.kind !== undefined) { openRightPanel(action.kind); return }
-                /*
-                 * `openFirstSession` 是 async 的（要 await sessions.search），
-                 * 而 run 是同步调用点 —— 不能把 Promise 丢出去不管（未捕获的 rejection
-                 * 会冒到全局）。这里显式接住。
-                 */
-                try {
-                  const maybe = action.run()
-                  if (maybe !== null && maybe !== undefined && typeof maybe.catch === 'function') {
-                    maybe.catch((error) => {
-                      console.warn('[dsh-mi-remote] 快捷动作执行失败:', action.id, error)
-                    })
+            /*
+             * `onlyWhenApproval` 那两条：**没有待批准请求时回报 blocked**。
+             *
+             * 为什么不能一律 handled：那样遥控器按下去"没反应但也没提示"，
+             * 你会分不清是键没生效还是本来就没东西可批。回报 blocked 之后
+             * DSH 会显式告诉你这条命令当前不可用。
+             *
+             * 计时提示：判断放在 resolve 里（每次按键都会走），而不是注册时算一次 ——
+             * 批准弹窗是随时出现的，注册那一刻没有不代表之后没有。
+             */
+            resolve: () => {
+              if (action.onlyWhenApproval === true && findPendingApproval() === null) {
+                return { status: 'blocked', reason: '当前没有待批准的请求' }
+              }
+              return {
+                status: 'handled',
+                run: () => {
+                  if (action.kind !== undefined) { openRightPanel(action.kind); return }
+                  /*
+                   * `openFirstSession` 是 async 的（要 await sessions.search），
+                   * 而 run 是同步调用点 —— 不能把 Promise 丢出去不管（未捕获的 rejection
+                   * 会冒到全局）。这里显式接住。
+                   */
+                  try {
+                    const maybe = action.run()
+                    if (maybe !== null && maybe !== undefined && typeof maybe.catch === 'function') {
+                      maybe.catch((error) => {
+                        console.warn('[dsh-mi-remote] 快捷动作执行失败:', action.id, error)
+                      })
+                    }
+                  } catch (error) {
+                    console.warn('[dsh-mi-remote] 快捷动作执行失败:', action.id, error)
                   }
-                } catch (error) {
-                  console.warn('[dsh-mi-remote] 快捷动作执行失败:', action.id, error)
-                }
-              },
-            }),
+                },
+              }
+            },
           }))
         } catch (error) {
           console.warn('[dsh-mi-remote] 快捷键命令注册失败:', action.id, error)

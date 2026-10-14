@@ -99,6 +99,24 @@ KEYS = {
     'volumeup': 0xAF, 'volumedown': 0xAE, 'volumemute': 0xAD,
     'mediaplaypause': 0xB3, 'medianext': 0xB0, 'mediaprev': 0xB1,
     'mouseleft': 0x01, 'mouseright': 0x02, 'mousemiddle': 0x04,
+    # ── OEM 标点键 ──
+    # DSH 有几个快捷命令的默认键位就在这几个键上（settings.open = Ctrl+Alt+,
+    # shortcuts.open = Ctrl+/、terminal.new = Ctrl+`），所以必须能按下它们。
+    # 用 VK 而不是字符：SendInput 走的是虚拟键，而且 scan code 由 MapVirtualKey 反查，
+    # 这样浏览器算出来的 event.code 才是对的（Comma / Slash / Backquote）。
+    # 2026-10-11 补：改对预设表之后，自检"按键类预设的组合键全能翻译成键码"当场报出
+    # 这三个键 unknown —— 之前表是错的，所以从没暴露过。
+    ',': 0xBC, 'comma': 0xBC,
+    '.': 0xBE, 'period': 0xBE,
+    '/': 0xBF, 'slash': 0xBF,
+    ';': 0xBA, 'semicolon': 0xBA,
+    "'": 0xDE, 'quote': 0xDE,
+    '[': 0xDB, 'bracketleft': 0xDB,
+    ']': 0xDD, 'bracketright': 0xDD,
+    '\\': 0xDC, 'backslash': 0xDC,
+    '-': 0xBD, 'minus': 0xBD,
+    '=': 0xBB, 'equal': 0xBB,
+    '`': 0xC0, 'backquote': 0xC0,
 }
 for _c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
     KEYS[_c.lower()] = ord(_c)

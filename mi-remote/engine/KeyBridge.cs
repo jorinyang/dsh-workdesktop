@@ -679,6 +679,30 @@ namespace DshMiRemote
              * 面板侧的录制区就是按这三个名字存下来的。
              */
             table["MouseLeft"] = 0x01; table["MouseRight"] = 0x02; table["MouseMiddle"] = 0x04;
+            /*
+             * OEM 标点键。
+             *
+             * DSH 有几个快捷命令的默认键位就在这几个键上：settings.open = Ctrl+Alt+,
+             * shortcuts.open = Ctrl+/、terminal.new = Ctrl+`。少了它们，那三条预设
+             * 连"组合键能不能被认出来"都过不了（Parse 直接回 unknown-key）。
+             *
+             * 用 VK 而不是字符：注入走虚拟键，扫描码另外反查，这样浏览器算出来的
+             * event.code 才是对的（Comma / Slash / Backquote / Period …）。
+             *
+             * 2026-10-11 补。Python 版引擎（read-engine.py）里那张表要同步 ——
+             * 两边对同一个组合键必须给出同一个判断，否则"换个引擎就不好使"极难查。
+             */
+            table[","] = 0xBC; table["Comma"] = 0xBC;
+            table["."] = 0xBE; table["Period"] = 0xBE;
+            table["/"] = 0xBF; table["Slash"] = 0xBF;
+            table[";"] = 0xBA; table["Semicolon"] = 0xBA;
+            table["'"] = 0xDE; table["Quote"] = 0xDE;
+            table["["] = 0xDB; table["BracketLeft"] = 0xDB;
+            table["]"] = 0xDD; table["BracketRight"] = 0xDD;
+            table["\\"] = 0xDC; table["Backslash"] = 0xDC;
+            table["-"] = 0xBD; table["Minus"] = 0xBD;
+            table["="] = 0xBB; table["Equal"] = 0xBB;
+            table["`"] = 0xC0; table["Backquote"] = 0xC0;
             return table;
         }
 

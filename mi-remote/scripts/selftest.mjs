@@ -573,7 +573,15 @@ check('OK 单击=Enter', def.buttons.ok.click?.combo === 'Enter')
 check('返回 单击=停止回复（Esc 连按两下）', def.buttons.back.click?.combo === 'Esc+Esc', def.buttons.back.click?.combo)
 check('返回 双击=开关右栏', def.buttons.back.double?.combo === 'Ctrl+Shift+B')
 check('返回 长按=开关左栏', def.buttons.back.hold?.combo === 'Ctrl+Alt+B')
-check('主页 单击=在本地打开工作区', def.buttons.home.click?.combo === 'Ctrl+Alt+O', def.buttons.home.click?.combo)
+/*
+ * 主页单击 = `workspace.openLocal`。
+ *
+ * ⚠️ 断言里的组合键要跟 **DSH 源码**里的 `defaults['web:windows']` 一致：
+ *    ui-open-in-app/src/client/index.ts:70 → KeyO + primary,shift = **Ctrl+Shift+O**
+ * 原来这里写的是 `Ctrl+Alt+O`（编的，没查源码），2026-10-11 连同预设表一起改正。
+ * 改这条断言之前先去那一行看一眼 —— 凭印象写正是上一次出错的原因。
+ */
+check('主页 单击=在本地打开工作区', def.buttons.home.click?.combo === 'Ctrl+Shift+O', def.buttons.home.click?.combo)
 check('主页 双击=打开应用', def.buttons.home.double?.type === 'app' && def.buttons.home.double.combo === 'Codex')
 check('菜单 双击=打开 cmux', def.buttons.menu.double?.combo === 'cmux')
 check('方向键四向', ['up', 'down', 'left', 'right'].every((b) => def.buttons[b].click?.combo === 'Arrow' + b[0].toUpperCase() + b.slice(1)))

@@ -69,17 +69,21 @@
     },
     "requires": {
       "python": "3.11+（Frida 采集器与 Python 引擎都跑在它上面）",
-      "frida": "采集器依赖 frida 模块（pip install frida）",
-      "csc": "只有重新构建 C# 引擎时才需要（engine/build.ps1）；用 VS BuildTools 自带的 Roslyn，不需要 dotnet SDK"
+      "frida": "采集器依赖 frida 模块",
+      "csc": "只有重新构建 C# 引擎时才需要（engine/build.ps1）"
     },
     "vendor": {
       "note": "语音链路依赖三个第三方软件，本仓库【不分发】它们（授权 + 体积 + 过期三个理由）。装哪个版本、从哪下、装完怎么验，见 assets/vendor/README.md。",
-      "items": ["VB-CABLE（Driver Pack 45）", "SayAll 无线麦（Windows 0.5.0 x64）", "小米遥控器蓝牙驱动"]
+      "items": [
+        "VB-CABLE（Driver Pack 45）",
+        "SayAll 无线麦（Windows 0.5.0 x64）",
+        "小米遥控器蓝牙驱动"
+      ]
     },
     "externalCoupling": [
       {
         "what": "左侧栏那一行「遥控器」",
-        "where": "本仓 lib/client.js 的 MI_REMOTE_KIND + WORKSPACES 数组",
+        "where": "plugins/dsh-workdesktop/lib/client.js 的 MI_REMOTE_KIND + WORKSPACES 数组",
         "why": "它要排在「驾驶舱下方、坐标系上方」。那五行是 workdesktop 一个组件内部渲染的，跨插件插不进它们中间，只能写进它那份数组。workdesktop 缺席时本插件照常工作（只是少了左侧栏那一行）；反过来本插件缺席时那一行会显示但点了没反应，不会崩。"
       }
     ]

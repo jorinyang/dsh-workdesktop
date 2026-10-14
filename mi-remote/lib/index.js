@@ -77,19 +77,51 @@ export const sourceOf = (name) => {
  * 所以下面分两类，`needsBind` 标出"必须先绑"的 —— 面板会照着显示，用户绑完就能用。
  */
 export const DSH_PRESETS = [
+  /*
+   * ⚠️⚠️ 下面这些 `combo` **必须**与 DSH 源码里那个命令的 `defaults` 逐字对上。
+   *
+   * 2026-10-11 发现：这张表原来有 **6 条是编的** —— 当时没去查 DSH 源码，凭印象写了一组
+   * 看起来合理的组合键。后果是用户照着面板去 DSH 里绑键、绑到一个根本不存在的组合，
+   * 按下去毫无反应（他报"快捷键未生效"里就有这一部分）。
+   *
+   * 每一条的依据（都是 `defaults['web:windows']`）：
+   *   sidebar.left.toggle    ui-layout/src/client/index.ts:190        KeyB + primary,alt
+   *   sidebar.right.toggle   ui-sidebar-right/src/client/shortcuts.ts:34  KeyB + primary,shift
+   *   workspace.openLocal    ui-open-in-app/src/client/index.ts:70    KeyO + primary,shift
+   *   settings.open          ui-settings-general/src/client/index.ts:186  Comma + primary,alt
+   *   shortcuts.open         ui-shortcuts/src/client/index.ts:54      Slash + primary
+   *   terminal.new           ui-sidebar-terminal/src/client/index.ts:61   Backquote + control
+   * 改这张表之前，先去那几行看一眼。**凭印象写就是上一次出错的原因。**
+   */
+
   // ── 内置键位：不用绑，配了就能用 ──
   { id: 'dsh.send',          label: '发送消息（Enter）',        combo: 'Enter',            builtin: true },
   { id: 'dsh.newline',       label: '换行（Shift+Enter）',      combo: 'Shift+Enter',      builtin: true },
   { id: 'dsh.stopReply',     label: '停止回复（Esc 连按两下）', combo: 'Esc+Esc',          builtin: true },
-  // ── 需要先在 DSH 里绑键（设置 → 快捷键）──
-  { id: 'dsh.toggleLeft',    label: '开关左侧栏',               combo: 'Ctrl+Alt+B', needsBind: 'sidebar.left.toggle' },
-  { id: 'dsh.toggleRight',   label: '开关右侧栏（工作台在这）', combo: 'Ctrl+Shift+B', needsBind: 'sidebar.right.toggle' },
-  { id: 'dsh.openLocal',     label: '在本地打开工作区',         combo: 'Ctrl+Alt+O',   needsBind: 'workspace.openLocal' },
-  { id: 'dsh.openSettings',  label: '打开设置',                 combo: 'Ctrl+Alt+S',   needsBind: 'settings.open' },
-  { id: 'dsh.openShortcuts', label: '打开快捷键设置',           combo: 'Ctrl+Alt+H',   needsBind: 'shortcuts.open' },
-  { id: 'dsh.newTerminal',   label: '新建终端',                 combo: 'Ctrl+Alt+T',   needsBind: 'terminal.new' },
-  { id: 'dsh.approve',       label: '批准',                     combo: 'Ctrl+Alt+Y',   needsBind: 'approval.allow' },
-  { id: 'dsh.reject',        label: '拒绝',                     combo: 'Ctrl+Alt+X',   needsBind: 'approval.reject' },
+  /*
+   * ── 批准 / 拒绝：**由本插件注册，有默认键位、可绑可改** ──
+   *
+   * 为什么不是 DSH 自带的 `approval.allow` / `approval.reject`：
+   * 那两个用 `shortcuts.registerFixed`（ui-approval/src/client/index.ts:81/84）注册，
+   * 定义是"只读输入动作，键位**不可**被分配给可编辑命令"，在 `definitions()` 里报
+   * `defaults: {}` —— **DSH 设置页里没有它们的可绑项**，用户配不了。
+   *
+   * 本插件改为注册自己的两条普通命令（客户端半段 `remote.approval.allow` /
+   * `remote.approval.reject`），默认键位就是下面这两个组合，用户可以改。
+   * 它们**只在真有批准请求时才做事**，所以没有"按一下把消息发出去"那种副作用。
+   *
+   * 2026-10-11 用户选定此方案（B）；在那之前这两条写的是 `Ctrl+Alt+Y` / `Ctrl+Alt+X`
+   * 加 `needsBind`，属于编造 —— 那两个命令根本不可绑，照着绑必然没反应。
+   */
+  { id: 'dsh.approve',       label: '批准（允许一次）',         combo: 'Ctrl+Alt+Y',     builtin: true },
+  { id: 'dsh.reject',        label: '拒绝',                     combo: 'Ctrl+Alt+X',     builtin: true },
+  // ── 需要先在 DSH 里绑键（设置 → 快捷键）；键位必须与 DSH 源码一致，见上面的依据表 ──
+  { id: 'dsh.toggleLeft',    label: '开关左侧栏',               combo: 'Ctrl+Alt+B',     needsBind: 'sidebar.left.toggle' },
+  { id: 'dsh.toggleRight',   label: '开关右侧栏（工作台在这）', combo: 'Ctrl+Shift+B',   needsBind: 'sidebar.right.toggle' },
+  { id: 'dsh.openLocal',     label: '在本地打开工作区',         combo: 'Ctrl+Shift+O',   needsBind: 'workspace.openLocal' },
+  { id: 'dsh.openSettings',  label: '打开设置',                 combo: 'Ctrl+Alt+,',     needsBind: 'settings.open' },
+  { id: 'dsh.openShortcuts', label: '打开快捷键设置',           combo: 'Ctrl+/',         needsBind: 'shortcuts.open' },
+  { id: 'dsh.newTerminal',   label: '新建终端',                 combo: 'Ctrl+`',         needsBind: 'terminal.new' },
   /*
    * 本插件自己注册的七条快捷命令（2026-10-11 用户需求）。
    *
@@ -308,19 +340,28 @@ function killStrayEngines() {
   })
 }
 
-/** 起一次 .ps1 并解析结果。stdout 只认最后一行 RESULT_JSON=（UTF-8 字节直写，见脚本头注释）。 */
-function runScript(scriptName, args) {
+/**
+ * 起一次 .ps1 并解析结果。stdout 只认最后一行 `RESULT_JSON=`（UTF-8 字节直写，见脚本头注释）。
+ *
+ * `options.timeoutMs` 可按次覆盖 `cfg.deadlineMs`（默认 20 秒）。
+ * **蓝牙搜索必须覆盖**：枚举未配对设备要网卡做主动搜索，实测 20 秒回不来，
+ * 用默认值会被 execFile 掐断、一个结果都拿不到。详见 `audio/bt-pair.ps1`。
+ */
+function runScript(scriptName, args, options) {
   const cfg = settings()
   const script = join(cfg.scriptDir, scriptName)
   if (!existsSync(script)) {
     return Promise.resolve({ ok: false, error: 'script-missing', script })
   }
+  const timeoutMs = options !== null && options !== undefined && Number.isFinite(options.timeoutMs)
+    ? options.timeoutMs
+    : cfg.deadlineMs
   const argv = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, ...args]
   return new Promise((resolvePromise) => {
     try {
       execFile(cfg.powershell, argv, {
         windowsHide: true, // 用户 2026-09-24 裁定：一律静默，不留窗口
-        timeout: cfg.deadlineMs,
+        timeout: timeoutMs,
         maxBuffer: 8 * 1024 * 1024,
         encoding: 'buffer',
       }, (error, stdout, stderr) => {
@@ -1148,6 +1189,149 @@ let lastDiag = null
 /** 事件类诊断（渲染错误、面板挂载探测…）—— 面板白屏时这是唯一能看到原因的地方。 */
 const diagnostics = []
 
+/**
+ * 把整条按键链路拉起来（采集器 + 引擎），返回结果对象。
+ *
+ * 从 `/bridge/auto` 的那段处理里抽出来的 —— 因为现在有**两个入口**要调它：
+ *   ① 面板挂载时调的 `POST /bridge/auto`（原有的路）
+ *   ② **DSH 启动时宿主自己调一次**（2026-10-11 用户要求：「DSH启动的时候自动启动遥控器的引擎」）
+ * 两条路必须走同一份逻辑，否则两边对"采集器要不要复用""引擎算不算残留"的判断会分叉。
+ *
+ * 行为要点（每一条都是踩出来的，改动前先读）：
+ *   · **读不动映射就不写**（`readMappingSafe`）—— 否则用户配置被默认值覆盖；
+ *   · **无条件先清掉场上所有引擎**再按需起一个 —— dsh 重启后旧引擎不一定跟着退；
+ *   · **采集器在跑且模式一致就复用** —— 面板重新挂载会再调一次，两边互相残杀过一次；
+ *   · 起引擎前**先探完整性级别**，被安全软件降到 Low 就改用 python 版（否则静默失效）。
+ */
+async function ensureBridgeRunning() {
+  // ① 映射文件不存在就先补一份默认的（引擎读不到配置会直接退出）
+  if (existsSync(mappingPath()) !== true) {
+    const seeded = writeMapping(defaultMapping())
+    if (seeded.ok !== true) return { ok: false, error: 'seed-mapping-failed', detail: seeded.error }
+  }
+  /*
+   * ② 每次拉起都把"补齐后的映射"落一次盘 —— 引擎是自己读磁盘的，磁盘上那份可能
+   *    还是老版本存的、没有 voice 键。但**读失败时绝不能写**（覆盖用户配置的根因）。
+   */
+  const readBack = readMappingSafe()
+  if (readBack.ok !== true) {
+    return {
+      ok: false, error: 'mapping-unreadable-kept-untouched',
+      detail: readBack.error, message: readBack.message,
+      hint: '映射文件读不动，已跳过"写回"这一步以免覆盖你的配置。请再试一次；若反复出现，看 state/mapping.bak.json',
+    }
+  }
+  const synced = writeMapping(readBack.mapping)
+  if (synced.ok !== true) return { ok: false, error: 'sync-mapping-failed', detail: synced.error }
+
+  // ③ 无条件清掉场上所有引擎（不能只判断"我记着的那个"）
+  await killStrayEngines()
+  runChild = null
+
+  // ④ 采集器：已经在跑且模式一致就复用，不动它
+  const wantOwns = voiceOwner() === 'sayall'
+  const existing = await findRunningCollector()
+  if (enginePick === null) enginePick = await pickEngine()
+  if (existing !== null && existing.sayallOwns === wantOwns) {
+    if (runChild === null || runChild.killed === true) {
+      runChild = spawnEngine(['read', '--config', mappingPath(), '--file', keysPath(),
+        '--verbose', '--out', runLogPath()], () => { runChild = null })
+    }
+    return {
+      ok: true, mode: 'read', reused: true, python: findPython(),
+      engineImpl: enginePick.kind, engineIntegrity: enginePick.level,
+      collectorPid: existing.pid, enginePid: runChild === null ? null : runChild.pid,
+      voiceOwner: voiceOwner(),
+    }
+  }
+
+  // ⑤ 模式不一致（或压根没在跑）：清掉残留，按当前模式起一套干净的
+  await killStrayPipeline()
+  runChild = null
+  collectorChild = null
+  const python = findPython()
+  if (python === null) {
+    return { ok: false, error: 'python-not-found', hint: 'Frida 采集器要 Python，装一个或把路径写进设置' }
+  }
+  const hostPid = await findRemoteHostPid()
+  if (hostPid === null) {
+    return { ok: false, error: 'wudfhost-not-found', hint: '没找到承载遥控器的 WUDFHost.exe，先确认遥控器已连上' }
+  }
+  const keysFile = keysPath()
+  try { rmSync(keysFile, { force: true }) } catch (error) { /* 不存在就算了 */ }
+  collectorChild = spawnCollector(python, hostPid, keysFile)
+  collectorChild.on('error', () => { collectorChild = null })
+  await delay(1200)   // 等采集器把 hook 装上并写出 ready 行
+  runChild = spawnEngine(['read', '--config', mappingPath(), '--file', keysFile,
+    '--verbose', '--out', runLogPath()], () => { runChild = null })
+  runFilter = 'frida:' + String(hostPid)
+  writeBridgeState({ ...readBridgeState(), filter: runFilter, startedAt: Date.now(), mode: 'read' })
+  return {
+    ok: runChild !== null, mode: 'read', hostPid, python,
+    engineImpl: enginePick === null ? 'keybridge' : enginePick.kind,
+    engineIntegrity: enginePick === null ? null : enginePick.level,
+    collectorPid: collectorChild === null ? null : collectorChild.pid,
+    enginePid: runChild === null ? null : runChild.pid,
+  }
+}
+
+/*
+ * ── DSH 启动时自动把链路拉起来（2026-10-11 用户要求）──────────────────────
+ *
+ * 背景：原来只有**面板挂载**时才调 `/bridge/auto`。结果是"DSH 重启后遥控器就不灵了，
+ * 必须先去把那个面板点开一次"。用户的要求是「DSH启动的时候自动启动遥控器的引擎」。
+ *
+ * 为什么不能起来就立刻调：
+ *   · 蓝牙驱动宿主（WUDFHost）可能还没就绪，那时查到的是 `wudfhost-not-found`；
+ *   · 遥控器也可能还没连上（用户可能稍后才开遥控器）。
+ * 所以做成**有限次重试**：先等几秒，失败就隔一段时间再来，最多试 N 轮。
+ * 超过之后不再试 —— 那种情况下用户开面板会走 `/bridge/auto`，那条路一直都在。
+ *
+ * 关掉它：环境变量 `DSH_MIREMOTE_AUTOSTART=0`。
+ */
+const AUTO_START_FIRST_DELAY_MS = 6000
+const AUTO_START_RETRY_MS = 30000
+const AUTO_START_MAX_TRIES = 8
+/** 自动启动的最近一次结果（`/bridge` 会报给面板，便于排查"为什么没自动起来"）。 */
+let autoStartState = { enabled: false, tries: 0, ok: null, error: null, at: null }
+
+function scheduleAutoStart(ctx) {
+  const flag = String(process.env.DSH_MIREMOTE_AUTOSTART ?? '').trim().toLowerCase()
+  if (flag === '0' || flag === 'false' || flag === 'off') {
+    autoStartState = { enabled: false, tries: 0, ok: null, error: 'disabled-by-env', at: Date.now() }
+    return
+  }
+  autoStartState = { enabled: true, tries: 0, ok: null, error: null, at: null }
+  let tries = 0
+  const attempt = async () => {
+    tries += 1
+    let result
+    try {
+      result = await ensureBridgeRunning()
+    } catch (error) {
+      result = { ok: false, error: 'threw', detail: String((error && error.message) || error) }
+    }
+    autoStartState = {
+      enabled: true, tries,
+      ok: result.ok === true,
+      error: result.ok === true ? null : String(result.error || 'unknown'),
+      at: Date.now(),
+    }
+    /*
+     * 成功就收工。失败看是什么原因：
+     *   · `wudfhost-not-found` / `python-not-found` —— 环境还没就绪，值得再试；
+     *   · 其余（映射读不动等）重试也没用，但重试次数有限，不至于刷屏。
+     */
+    if (result.ok !== true && tries < AUTO_START_MAX_TRIES) {
+      const timer = setTimeout(() => { void attempt() }, AUTO_START_RETRY_MS)
+      if (timer && typeof timer.unref === 'function') timer.unref()
+    }
+  }
+  const first = setTimeout(() => { void attempt() }, AUTO_START_FIRST_DELAY_MS)
+  if (first && typeof first.unref === 'function') first.unref()
+  void ctx
+}
+
 export function apply(ctx) {
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
@@ -1161,6 +1345,49 @@ export function apply(ctx) {
       try {
         if (path === '/link' && method === 'GET') {
           sendJson(res, 200, await linkStatus(url.searchParams.get('force') === '1'))
+          return
+        }
+        /*
+         * ── 「状态卡点了就能修」那三个动作的后端（2026-10-11 用户要求）──────────
+         *
+         * 用户原话：「设备如果是未连接状态，则默认显示可连接设备，点击链接；
+         *            采集器/引擎如果是未运行状态，点击之后开始运行；
+         *            VB-CABLE 卡片中同样，如果状态是离线，则点击之后加载激活」
+         *
+         * 三件事的难度差得很远，如实记在这里：
+         *   · 采集器/引擎  → 复用 `POST /bridge/auto`，现成的，不用新路由；
+         *   · 遥控器连接    → 需要蓝牙枚举 + 配对，走 audio/bt-pair.ps1（新）；
+         *   · VB-CABLE     → 走 audio/cable-activate.ps1（新），**装驱动那一步做不了**
+         *                    （要管理员 + 安装包），脚本会如实回 `action: install` 并给出指引。
+         */
+        if (path === '/bt/scan' && method === 'POST') {
+          /*
+           * ⚠️ 超时必须覆盖：枚举**未配对**设备要网卡做主动搜索（inquiry），
+           *    实测 20 秒回不来（默认 deadlineMs 就会被掐断）。给 60 秒。
+           *    界面那边要有"搜索中…"状态 —— 这个请求本来就要等这么久。
+           */
+          sendJson(res, 200, await runScript('bt-pair.ps1', ['scan'], { timeoutMs: 60000 }))
+          return
+        }
+        if (path === '/bt/pair' && method === 'POST') {
+          const body = await readBody(req)
+          const deviceId = String((body && (body.id || body.deviceId)) || '')
+          if (deviceId === '') { sendJson(res, 400, { ok: false, error: 'need-device-id' }); return }
+          // pair = 没配对过；connect = 配对过但断了。（底层是两件事，见脚本头注释）
+          const action = body && body.alreadyPaired === true ? 'connect' : 'pair'
+          const result = await runScript('bt-pair.ps1', [action, deviceId], { timeoutMs: 45000 })
+          /*
+           * 配对/连接成功之后，链路要重拉一次 —— 遥控器刚连上时 WUDFHost 才有那个接口，
+           * 而自动启动那轮可能已经跑完并失败了。这里顺手拉一次，用户不用再点一下。
+           */
+          if (result && result.ok === true) {
+            try { await ensureBridgeRunning() } catch (error) { /* 拉不起来不影响配对结果本身 */ }
+          }
+          sendJson(res, 200, result)
+          return
+        }
+        if (path === '/cable/activate' && method === 'POST') {
+          sendJson(res, 200, await runScript('cable-activate.ps1', ['activate'], { timeoutMs: 40000 }))
           return
         }
         if (path === '/voice/status' && method === 'GET') {
@@ -1276,6 +1503,12 @@ export function apply(ctx) {
             learn: learnChild === null ? null : { pid: learnChild.pid, file: learnFilePath() },
             run: runChild === null ? null : { pid: runChild.pid, filter: runFilter },
             saved: savedBridge,
+            /*
+             * DSH 启动时那次自动拉起的结果。
+             * 报出来是为了能回答"为什么重启 DSH 之后遥控器没反应"——
+             * 光看 run=null 分不清是"没试"、"试了但没找到 WUDFHost"还是"被环境变量关了"。
+             */
+            autoStart: autoStartState,
           })
           return
         }
@@ -1361,112 +1594,13 @@ export function apply(ctx) {
          * 做法照搬 sayall-helper.exe 里内嵌的 rc003_agent.js（从那个 exe 里提取出来的）。
          */
         if (path === '/bridge/auto' && method === 'POST') {
-          if (existsSync(mappingPath()) !== true) {
-            const seeded = writeMapping(defaultMapping())
-            if (seeded.ok !== true) {
-              sendJson(res, 200, { ok: false, error: 'seed-mapping-failed', detail: seeded.error })
-              return
-            }
-          }
           /*
-           * 每次拉起都把"补齐后的映射"落一次盘。
-           *
-           * 为什么非落不可：readMapping() 会在内存里补上固定映射（语音键等），但**引擎是自己读
-           * 磁盘文件的**，磁盘上那份可能还是老版本存的、没有 voice —— 结果就是引擎 ready 时
-           * 报 buttons:12，按 mic 键采集器收到了、引擎却查不到该干什么，一声不吭（2026-10-11 实测）。
-           *
-           * ⚠️ 但**读失败时绝不能写**（2026-10-11 用户报"设置消失了"的根因）：
-           *    `readMapping()` 读不动就返回默认值，这里照着写回去 = 用户配置被默认值覆盖。
-           *    所以先走安全版：读不动就跳过这一步（引擎仍会从磁盘读它自己那份，不影响按键），
-           *    只把情况报给面板，绝不覆盖。
+           * 两条入口共用同一份逻辑：
+           *   ① 这里 —— 面板挂载时调的；
+           *   ② `apply` 里的 `scheduleAutoStart` —— DSH 启动时宿主自己调的。
+           * 具体行为与每条约束的来由，见 `ensureBridgeRunning` 的注释。
            */
-          const readBack = readMappingSafe()
-          if (readBack.ok !== true) {
-            sendJson(res, 200, {
-              ok: false, error: 'mapping-unreadable-kept-untouched',
-              detail: readBack.error, message: readBack.message,
-              hint: '映射文件读不动，已跳过"写回"这一步以免覆盖你的配置。请再试一次；若反复出现，看 state/mapping.bak.json',
-            })
-            return
-          }
-          const synced = writeMapping(readBack.mapping)
-          if (synced.ok !== true) {
-            sendJson(res, 200, { ok: false, error: 'sync-mapping-failed', detail: synced.error })
-            return
-          }
-          /*
-           * ★ 先无条件清掉**场上所有引擎**，再按需起一个。
-           *
-           * 不能只判断"我记着的那个还在不在"：dsh 每次重启、或手动杀过引擎之后，
-           * 旧引擎不一定跟着退出（Windows 上父进程死了子进程不会自动死），
-           * 而 killStrayPipeline 的名单以前漏了 python 版引擎 ——
-           * 实测攒到 4 个引擎同时读同一个 keys.jsonl、各注入一次：
-           * 音量键"一按触发两次"、返回键的 Backspace 和僵尸引擎的旧动作打架。
-           */
-          await killStrayEngines()
-          runChild = null
-          /*
-           * 采集器：**已经在跑且模式一致就复用，不动它**。
-           *
-           * 面板重新挂载时会再调一次这个接口。原来每次都是"先清残留再起新的"，于是两次调用
-           * 互相残杀 —— 后一次把前一次刚起的采集器杀掉，结果谁也活不下来，
-           * 表现是"引擎在跑、采集器永远不见、按键全无反应"（2026-10-11 卡了很久）。
-           * 只有模式真的不一致（语音独占换边了）才清掉重起。
-           */
-          const wantOwns = voiceOwner() === 'sayall'
-          const existing = await findRunningCollector()
-          /*
-           * 起引擎之前先探一次它的完整性级别（缓存）：
-           *   级别够（>= Medium）→ 用原版 C# 引擎
-           *   被 360 之类降级了  → 自动改用 python 版引擎（python 有签名，不受沙箱降级影响）
-           * 不探的话就是"日志全绿、界面毫无反应"，很难查。
-           */
-          if (enginePick === null) enginePick = await pickEngine()
-          if (existing !== null && existing.sayallOwns === wantOwns) {
-            // 采集器在对的模式上跑着，只需要保证引擎也在
-            if (runChild === null || runChild.killed === true) {
-              runChild = spawnEngine(['read', '--config', mappingPath(), '--file', keysPath(),
-                '--verbose', '--out', runLogPath()], () => { runChild = null })
-            }
-            sendJson(res, 200, {
-              ok: true, mode: 'read', reused: true, python: findPython(),
-              engineImpl: enginePick.kind, engineIntegrity: enginePick.level,
-              collectorPid: existing.pid, enginePid: runChild === null ? null : runChild.pid,
-              voiceOwner: voiceOwner(),
-            })
-            return
-          }
-          // 模式不一致（或压根没在跑）：清掉残留，按当前模式起一套干净的
-          await killStrayPipeline()
-          runChild = null
-          collectorChild = null
-          const python = findPython()
-          if (python === null) {
-            sendJson(res, 200, { ok: false, error: 'python-not-found', hint: 'Frida 采集器要 Python，装一个或把路径写进设置' })
-            return
-          }
-          const hostPid = await findRemoteHostPid()
-          if (hostPid === null) {
-            sendJson(res, 200, { ok: false, error: 'wudfhost-not-found', hint: '没找到承载遥控器的 WUDFHost.exe，先确认遥控器已连上' })
-            return
-          }
-          const keysFile = keysPath()
-          try { rmSync(keysFile, { force: true }) } catch (error) { /* 不存在就算了 */ }
-          // 语音独占交给 SayAll 时，采集器只观察不改写（它自己也在盯同一个 IOCTL，两边改会打架）
-          collectorChild = spawnCollector(python, hostPid, keysFile)
-          collectorChild.on('error', () => { collectorChild = null })
-          await delay(1200)   // 等采集器把 hook 装上并写出 ready 行
-          runChild = spawnEngine(['read', '--config', mappingPath(), '--file', keysFile,
-            '--verbose', '--out', runLogPath()], () => { runChild = null })
-          runFilter = 'frida:' + String(hostPid)
-          writeBridgeState({ ...readBridgeState(), filter: runFilter, startedAt: Date.now(), mode: 'read' })
-          sendJson(res, 200, {
-            ok: runChild !== null, mode: 'read', hostPid, python,
-            engineImpl: enginePick === null ? 'keybridge' : enginePick.kind,
-            engineIntegrity: enginePick === null ? null : enginePick.level,
-            collectorPid: collectorChild === null ? null : collectorChild.pid,
-            enginePid: runChild === null ? null : runChild.pid,
-          })
+          sendJson(res, 200, await ensureBridgeRunning())
           return
         }
         if (path === '/bridge/run' && method === 'POST') {
@@ -1631,4 +1765,16 @@ export function apply(ctx) {
       },
     }))
   }
+
+  /*
+   * DSH 启动时自动把按键链路拉起来（2026-10-11 用户要求）。
+   *
+   * 放在最后：上面那几件事（注册路由、注册工具）才是"插件能不能用"的前提，
+   * 自动启动是**锦上添花**，不该抢在它们前面 —— 万一它慢（要等 WUDFHost、要探完整性），
+   * 也不至于拖住插件的加载。
+   *
+   * 它自己带延迟与重试（见 scheduleAutoStart），所以这里调用是立即返回的。
+   * 想关掉：环境变量 DSH_MIREMOTE_AUTOSTART=0。
+   */
+  scheduleAutoStart(ctx)
 }

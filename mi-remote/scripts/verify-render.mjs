@@ -631,6 +631,64 @@ if (tabType !== undefined) {
     check('UU远程路径标签在', texts.includes('UU远程'))
     check('OK 单击显示 Enter', texts.includes('Enter'))
     check('微信输入法在链路卡上', texts.includes('微信输入法'))
+
+    /*
+     * ── 快捷键命令：注册成了什么样 ────────────────────────────────────────────
+     *
+     * 桩一直在收 `registeredShortcuts`，但**从来没有断言用过它**（2026-10-11 发现）——
+     * 收了不用等于没收：命令 id 改错了、默认键位丢了，这套自证照样全绿。
+     *
+     * 重点守两类：
+     *   ① 每条命令都得有**默认键位**。没有的话 `row.binding === null`，
+     *     shortcuts 系统根本不认它（registry.ts:119-123）—— 这正是"快捷键未生效"的根因；
+     *   ② 批准/拒绝那两条是**本插件注册的可绑命令**，不是 DSH 的固定键位。
+     *     它们的默认键位必须与宿主 `DSH_PRESETS` 里写的 combo 一致，
+     *     否则面板上写一个、实际按的是另一个。
+     */
+    const scById = new Map(registeredShortcuts.map((c) => [c.id, c]))
+    const EXPECTED_SHORTCUTS = [
+      'remote.panel.workbench', 'remote.panel.dashboard', 'remote.panel.projectGraph',
+      'remote.panel.coords', 'remote.panel.modeling',
+      'remote.focus.composer', 'remote.session.first',
+      'remote.approval.allow', 'remote.approval.reject',
+    ]
+    const missingShortcuts = EXPECTED_SHORTCUTS.filter((id) => !scById.has(id))
+    check('九条快捷命令全部注册（' + EXPECTED_SHORTCUTS.length + ' 条）', missingShortcuts.length === 0,
+      missingShortcuts.join(' ') || ('实收 ' + registeredShortcuts.length + ' 条'))
+
+    const noDefaults = EXPECTED_SHORTCUTS.filter((id) => {
+      const command = scById.get(id)
+      if (command === undefined) return true
+      const win = command.defaults && command.defaults['web:windows']
+      return win === undefined || win === null || typeof win.code !== 'string' || win.code === ''
+    })
+    check('每条命令都有 web:windows 默认键位（没有就按不了）', noDefaults.length === 0,
+      noDefaults.join(' ') || '全都有')
+
+    // 批准 / 拒绝：默认键位要跟宿主预设表里写的一致
+    const allowWin = scById.get('remote.approval.allow')?.defaults?.['web:windows']
+    const rejectWin = scById.get('remote.approval.reject')?.defaults?.['web:windows']
+    check('批准默认 Ctrl+Alt+Y（KeyY + primary,alt）',
+      allowWin?.code === 'KeyY' && Array.isArray(allowWin?.modifiers)
+      && allowWin.modifiers.includes('primary') && allowWin.modifiers.includes('alt'),
+      JSON.stringify(allowWin))
+    check('拒绝默认 Ctrl+Alt+X（KeyX + primary,alt）',
+      rejectWin?.code === 'KeyX' && Array.isArray(rejectWin?.modifiers)
+      && rejectWin.modifiers.includes('primary') && rejectWin.modifiers.includes('alt'),
+      JSON.stringify(rejectWin))
+
+    /*
+     * 没有待批准请求时，批准/拒绝要回报 `blocked` 而不是 `handled` ——
+     * 否则遥控器按下去"没反应也没提示"，分不清是键没用还是本来没东西可批。
+     * 桩里没有 uiSession，所以 findPendingApproval 必然拿不到 → 正好走这条分支。
+     */
+    for (const id of ['remote.approval.allow', 'remote.approval.reject']) {
+      const command = scById.get(id)
+      let resolved = null
+      try { resolved = command === undefined ? null : command.resolve() } catch (error) { resolved = { status: 'threw', error: String(error && error.message) } }
+      check('  ' + id + ' 无批准请求时回报 blocked', resolved?.status === 'blocked', JSON.stringify(resolved))
+    }
+
     console.log('    [诊断] 面板渲染 ' + fresh.stats.renders + ' 帧 · flush ' + fresh.stats.flushed + ' 个 effect · setState ' + fresh.stats.sets)
   }
 }
