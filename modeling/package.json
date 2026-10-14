@@ -1,0 +1,43 @@
+{
+  "name": "dsh-modeling",
+  "version": "0.1.0",
+  "private": true,
+  "description": "建模中心：把数据/服务架构建模与方法论建模抽象成同一套代数（抽象层轴 × 节点 × 连边 × 属性 facet），以 better-sidebar 独立卡片（图标+名字）呈现，支持 AI 起草、手工编辑、Markdown / Mermaid / JSON 导出。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:check": "node scripts/build.mjs --check",
+    "selftest": "node selftest.mjs",
+    "selftest:client": "node selftest-client.mjs",
+    "test": "node scripts/build.mjs --check && node selftest.mjs && node selftest-client.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  }
+}

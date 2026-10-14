@@ -2,13 +2,13 @@
 
 把一份内容（文件 / 粘贴 / 会话里的 agent 识别）落成 **2D 四象限散点**或 **3D 坐标系**，
 作为 DSH 自带**右侧栏的一个 tab**（类型 `dsh-coords:center`）挂进 WebUI：入口是左侧栏底部的四行之一
-（由 `dsh-workdesktop` 统一渲染），点一下把那一栏打开。全屏 / 双栏分屏 / 拖拽都由官方那条栏自带。
+（由 `dsh-workbench` 统一渲染），点一下把那一栏打开。全屏 / 双栏分屏 / 拖拽都由官方那条栏自带。
 官方指南页上这张入口卡的图标是**彩色**的（紫色底板 `rgb(139,118,246)` + 白色坐标轴图形，
 与官方那两张卡同一形状语法）；tab 标题条与左侧栏那几处仍是单色 `currentColor` 那枚。
 
 参考实现：
-「项目价值坐标」（2D 原型页面，未随本仓发布） ·
-「场景坐标系」（3D 原型页面，未随本仓发布）
+[项目价值坐标（2D）](https://gzzhike.cn/web-spa/zhongyi-value-map/index.html) ·
+[场景坐标系（3D）](https://gzzhike.cn/web-spa/zhongyi-coord3d/scene.html)
 —— 三轴 0–5、点云、点击看点、选中画**坐标盒**（三条阶梯 + 三条闭合棱，全红虚线）这套
 视觉语言直接沿用；3D 由自绘投影实现（不引 three.js，卡片里不带 1.3MB 依赖）。
 
@@ -86,21 +86,14 @@
 ## 安装与重启
 
 ```powershell
-# 1) profile 依赖（link 到本仓库里的 coords/ 目录）
+# 1) profile 依赖（link 到本目录）
 #    编辑 $DSH_HOME/profiles/web/package.json：
-#      dependencies."dsh-coords" = "link:<本仓库检出>/coords"
+#      dependencies."dsh-coords" = "link:C:/Users/<用户>/Desktop/DSH/plugins/dsh-coords"
 #      dsh.profile.bundles 追加 "dsh-coords"
 # 2) node_modules 建 junction（与 dsh-modeling 同款）
 New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-coords" `
-  -Target "<本仓库检出>\coords"
+  -Target "C:\Users\<用户>\Desktop\DSH\plugins\dsh-coords"
 ```
-
-> **两个包同仓**：本仓库根目录那层是 `dsh-workdesktop`（工作台），`coords/` 是**第二个包**
-> `dsh-coords`（有自己的 `package.json` / `cordis.patch.yml` / `lib/`）。
-> DSH 的 `dsh.profile.bundles` 按**包名**逐条装载，所以两个包要**各自挂一次**
-> （工作台：`dsh plugin --profile web add <本仓库>`；坐标系：`dsh plugin --profile web add <本仓库>/coords`），
-> 或按上面的 `link:` + junction 手工挂两条。根目录那份 `cordis.patch.yml` **只插工作台**
-> —— 别把 `dsh-coords` 加进去，否则没装第二个包时 profile 会去解析一个不存在的包。
 
 **改完本插件要重启 DSH**：profile 的 `patchReload: live` 只重载**组合**，不重载已被
 Node 缓存的 ESM 模块；新加的路由在运行中的实例上会一直 404（`/coords/api/meta` 试一下
@@ -169,8 +162,8 @@ lib/index.js / lib/client.js   ← scripts/build.mjs 生成
 ```powershell
 node scripts/build.mjs          # 重新生成 lib/
 node scripts/build.mjs --check  # 只校验产物与 src/ 一致
-node selftest.mjs               # host 半段 26 项
-node selftest-client.mjs        # 浏览器半段 30 项（含渲染与几何断言）
+node selftest.mjs               # host 半段 24 项
+node selftest-client.mjs        # 浏览器半段 21 项（含渲染与几何断言）
 ```
 
 `selftest.mjs` 会把 `lib/index.js` 当 ESM 载入、造一个假 cordis 上下文跑 `apply()`，
@@ -181,14 +174,6 @@ sharedStrings + sheet1），因此读表路径是真跑过的，不是 mock。
 平行于坐标轴）。
 
 ## 真机验收（隔离实例，不碰正在用的 3080）
-
-> ⚠️ **本节这几条脚本没有随本仓库发布** —— `scripts/trial-boot.mjs` · `verify-gui.mjs` ·
-> `verify-structure.mjs` · `verify-layout.mjs` · `verify-no-popup.mjs` · `live-verify.mjs` ·
-> `live-register.mjs` 都不在仓里（本仓 `coords/scripts/` 只有 `build.mjs`）。
-> 它们是**作者本机的真机验收套件**：要一份能跑的 DSH 检出（`DSH_HARNESS_ROOT`）、一个带 token
-> 的在用实例、以及从别处借来的 Playwright（本插件不装浏览器依赖），换台机器定位就得重写。
-> 下面记的是**当时量到的读数**，留作设计意图与阈值的存档。
-> **clone 下来就能跑的自证只有 `coords/` 里那两条 `node selftest*.mjs`。**
 
 ```powershell
 node scripts/trial-boot.mjs --port 3181          # 另起一个实例（自己还原 profile）
@@ -207,17 +192,13 @@ node scripts/verify-gui.mjs "<带 token 的 URL>" http://127.0.0.1:3181
 下带两栏 30% / 70%）。改成 5/75/20 之后，`verify-gui.mjs` 的期望值已同步更新，但**这条脚本尚未复跑**；
 换用现场探针在**正在用的实例**上量过一次（2026-09-24，2400×1100，卡片挂在官方右栏里）：
 **上带 53px = 5% · 中带 797px = 75% · 下带 212px = 20%**（栏高 1062px）。
-Playwright 从 `<你的插件目录>/dsh-web-ui/node_modules` 借（本插件不装浏览器依赖）。
+Playwright 从 `Desktop/DSH/plugins/dsh-web-ui/node_modules` 借（本插件不装浏览器依赖）。
 
 > ⚠️ 脚本开头的「关掉内测声明弹窗」不是可选项：新浏览器 profile 会弹这个全屏弹窗，
 > 它那层 `._mask_` 会把坐标点击全部吃掉 —— 症状是"脚本点不动卡片里任何按钮"，
 > 但直接 `element.click()` 又能生效（很容易误判成卡片的 bug）。实测踩过。
 
 ## 线上实例验证（不新建会话，零污染）
-
-> ⚠️ 这两条同样**没随本仓库发布**（`scripts/live-verify.mjs` / `live-register.mjs`）：
-> 它们要连一个**正在运行**的实例（用 URL 里的 token），并借 Playwright 去点设置里的
-> 卡片清单，依赖本机的浏览器与 profile。下面记的是当时的结果。
 
 ```powershell
 node scripts/live-verify.mjs  "<带 token 的 URL>" http://127.0.0.1:3080

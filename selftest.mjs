@@ -442,9 +442,18 @@ for (const f of ['lib/index.js', 'lib/client.js']) {
 console.log('\n[4] desensitization guard (scans this repository, with a negative control)');
 
 // Patterns are assembled from fragments so the scanner file does not match itself.
+// ★★ 2026-10-14 修（**这两条正则把"已经脱敏的占位符"报成了个人路径**）：
+//   打包坐标系那一轮，仓库里 16 处本机路径被换成占位符（`C:\Users\Aorus\` → `C:\Users\<用户>\`）。
+//   换完之后这条门禁**立刻变红**，报"仓库自身有 12 处个人路径"—— 而命中的**全是占位符本身**：
+//     `C:\Users\<用户>\Desktop\DSH\plugins\dsh-coords`
+//     `C:/Users/<用户>/.dsh-coords-verify/live-home.png`
+//   原因是正则只认"盘符 + \Users\ + 任意一段 + \"，**不认尖括号占位**。
+//   ⇒ 用户那一段加一个"不是占位符"的条件：`<` 开头的段落视为已脱敏。
+//     判据从"像不像路径"改成"**是不是真实用户名**" —— 前者会把脱敏结果一起打掉。
+const USER_SEG = '(?!<)[^/\\\\\\s"\']+';   // 用户那一段：只要不是以 `<` 开头的占位符
 const RULES = [
-  { id: 'win-personal-path', why: '个人绝对路径', re: new RegExp('[A-Za-z]:\\\\' + 'Us' + 'ers\\\\') },
-  { id: 'posix-personal-path', why: '个人绝对路径', re: /\/(?:Us|ho)[a-z]*\/[^/\s"']+\// },
+  { id: 'win-personal-path', why: '个人绝对路径', re: new RegExp('[A-Za-z]:\\\\' + 'Us' + 'ers\\\\' + USER_SEG + '\\\\') },
+  { id: 'posix-personal-path', why: '个人绝对路径', re: new RegExp('\\/(?:Us|ho)[a-z]*\\/' + USER_SEG + '\\/') },
   { id: 'email', why: '邮箱', re: /[A-Za-z0-9._%+-]+@(?!example\.(?:com|org))[A-Za-z0-9.-]+\.[A-Za-z]{2,}/ },
   { id: 'cn-mobile', why: '手机号', re: /(?<!\d)1[3-9]\d{9}(?!\d)/ },
   { id: 'credential', why: '凭据形态', re: new RegExp('(?:g' + 'hp_|github_' + 'pat_|xo' + 'xb-|s' + 'k-[A-Za-z0-9]{16,})') },

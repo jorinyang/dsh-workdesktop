@@ -6,7 +6,7 @@
  *   · `src/client.dom.js`（卡片 UI）
  * 内联进下面这个 `window.__ModuleLoader__.load({ factory })` 工厂里。
  *
- * 形状与 DSH 客户端模块加载器约定一致（与 dsh-modeling / dsh-workdesktop 同款）：
+ * 形状与 DSH 客户端模块加载器约定一致（与 dsh-modeling / dsh-workbench 同款）：
  *   factory(require) → { apply, inject, name }
  * React 从模块表 require；本插件不用 portal，所以不 require react-dom。
  */
@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
     /**
      * 客户端插件入口。
      *
-     * 图标：本插件不再自己画侧边栏图标（入口在左侧栏底部的图标行，由 dsh-workdesktop 统一
+     * 图标：本插件不再自己画侧边栏图标（入口在左侧栏底部的图标行，由 dsh-workbench 统一
      * 渲染）；`iconCoords` 保留给探针 / 自测读形状，官方指南页入口卡用的是彩色那枚
      * `guideCoords`（同一份图形 + 一块紫色底板）。
      *

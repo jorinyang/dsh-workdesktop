@@ -72,10 +72,29 @@ function resolveLabel(token) {
   const found = new RegExp(`const ${name} = '([^']*)'`).exec(src)
   return found === null ? token : found[1]
 }
+// ★ 2026-10-14 修（与 PGC-1 同一个病根：**文本里多了一条退役行**）：
+//   `WORKSPACES` 段里那条已退役的旧「工作台」（13 卡）写成
+//   `...(LEGACY_WORKBENCH_TAB_RETIRED ? [] : [{ id: SIDEBAR_TAB_ID, label: SIDEBAR_TAB_TITLE, … }])`，
+//   开关为真时运行时不列出，但 `label:` 的**源码文本还在** ⇒ 这里会数出 7 个名字，
+//   而下面期望的是 6 个 ⇒ 必然不相等、报红。
+//   ⇒ 两条路：把退役那条从序列里**剔掉**（它不是在用的一行），再比 6 个。
+//     不把 7 个名字塞进期望里 —— 那等于承认"退役行也是侧栏的一行"，与事实相反。
 const order = block === null ? [] : [...block.matchAll(/label:\s*(?:'([^']*)'|([A-Z_]+))/g)]
   .map((m) => resolveLabel(m[1] || `«${m[2]}»`))
+  // 退役那条的名字来自常量 `SIDEBAR_TAB_TITLE`，解析出来是「工作台」—— 与在用的「工作台 1.0」不是一回事，
+  // 所以**按位置**剔除：它出现在 `LEGACY_WORKBENCH_TAB_RETIRED` 那一行上。
+  .filter((_, i) => {
+    const spread = block === null ? -1 : block.indexOf('LEGACY_WORKBENCH_TAB_RETIRED ?')
+    if (spread < 0) return true
+    // 数出退役行之前有几个 label：
+    const before = block.slice(0, spread).match(/label:\s*(?:'[^']*'|[A-Z_]+)/g)
+    return i !== (before === null ? 0 : before.length)
+  })
 chk('PGC-2', '★ 顺序契约：工程图排在「坐标系」下方、「建模中心」上方（遥控器在驾驶舱与坐标系之间）',
-  JSON.stringify(order) === JSON.stringify(['工作台', '驾驶舱', '遥控器', '坐标系', '工程图', '建模中心']),
+  // ⚠️ 第二项是常量 `SIDEBAR_YISHU_TITLE` 解出来的**实际字面量**：**「工作台」**。
+  //   不是「弈枢」—— "弈枢"是工作台 1.0 的代号，侧栏那一行显示的是"工作台"。
+  //   （第一版我按代号写成「弈枢」，检查当场报红 —— 期望值必须来自解出来的真值，不能凭印象。）
+  JSON.stringify(order) === JSON.stringify(['驾驶舱', '工作台', '遥控器', '坐标系', '工程图', '建模中心']),
   order.join(' → '))
 
 const idxCoords = block === null ? -1 : block.indexOf("label: '坐标系'")
@@ -124,11 +143,29 @@ chk('PGC-5b', '图标：与「建模中心」不是同一枚图形（两处分�
 // 2026-10-03：面板改成**画布交互**之后，数据源从"上游 CLI 视角"（get_all_nodes / invoke）
 // 换成**文档层**（直接读 .prg，标识是 uuid）。所以这里断言的是**新的**那条接口面 ——
 // 不是把旧断言删掉了事：status / projects 照旧，另外必须真的接了那五条文档层路由。
-const viewStart = src.indexOf('function ProjectGraphView()')
-const viewEnd = src.indexOf('// ── 席位接线', viewStart)
-// ⚠️ 上限要**够大**：画布交互那一版比原来的查看器长一倍多，20000 字符会把函数尾巴切掉，
-//    于是"面板调了哪些东西"这类断言会假红（实测踩到）。
-const view = viewStart < 0 ? '' : src.slice(viewStart, viewEnd < 0 ? viewStart + 80000 : viewEnd)
+// ★★ 2026-10-14 修（**这一版把上一版的教训退回去了**）：取 `ProjectGraphView` 的函数体不能靠"字符上限"。
+//   原先写的是 `src.slice(viewStart, viewEnd < 0 ? viewStart + 80000 : viewEnd)`，
+//   而终止标记 `// ── 席位接线` 在这个文件里**位于该函数之前** ⇒ `indexOf(..., viewStart)` 恒为 -1
+//   ⇒ 永远走 +80000 那个兜底。当时函数刚好在这个上限内，所以看不出来；
+//   后来函数长了、`transform: … scale(…)` 那句落到 +80064 处，**差 64 个字符没被切进来** ⇒
+//   PGC-6f 报"坐标换算有两套"，而面板里其实只有一套（**假红**）。
+//   运行版当时改成了按花括号配对取整个函数体，这一版又退回旧写法 ⇒ 同一处假红复现。
+//   ⇒ 按括号配对，没有"上限该开多大"这个问题。
+function viewBlock() {
+  const start = src.indexOf('function ProjectGraphView()')
+  if (start < 0) return ''
+  const open = src.indexOf('{', start)
+  if (open < 0) return ''
+  let depth = 0
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === '{') depth += 1
+    else if (src[i] === '}') { depth -= 1; if (depth === 0) return src.slice(start, i + 1) }
+  }
+  return src.slice(start) // 括号不配对（文件被截断）时给到文件尾，宁可多不可少
+}
+const view = viewBlock()
+chk('PGC-6-0', '★ 取到的是**整个函数体**（不是被字符上限截断的一段）—— 取不到就会让下面几条假红',
+  view.length > 20000, `切出 ${view.length} 字`)
 chk('PGC-6', '★ 面板接的是 host 的 `/workdesktop/api/pg/*`：status / projects + **五条文档层路由**',
   ["'/pg/status'", "'/pg/projects'", "'/pg/document?project='", "'/pg/move'", "'/pg/insert'", "'/pg/delete'", "'/pg/text'"]
     .every((p) => view.includes(p)),

@@ -1,0 +1,15 @@
+# dsh-modeling bundle patch
+#
+# 由 profile 启动时合并（与 dsh-workbench 同款通道）：host 半段注册
+# `/modeling/api/*`，浏览器半段把「建模中心」注册成 **DSH 自带右侧栏的一个 tab**
+# （类型 `dsh-modeling:center`；入口在左侧栏底部那四行里，由 dsh-workbench 渲染）。
+#
+# 运行期选项全部读环境变量，不需要 config schema：
+#   DSH_MODELING_DIR             模型落盘根目录（默认 $DSH_HOME/.dsh-modeling）
+#   DSH_MODELING_PROVIDER        AI 生成的提供方（默认取 agent-default-model，回落 deepseek-official）
+#   DSH_MODELING_MODEL           AI 生成的模型 id（同上回落 deepseek-v4-flash）
+#   DSH_MODELING_AI_TIMEOUT_MS   生成超时（默认 120000）
+#   DSH_MODELING_AI_MAX_TOKENS   生成输出上限（默认 8000）
+- insert:
+    - id: modeling
+      name: 'dsh-modeling'

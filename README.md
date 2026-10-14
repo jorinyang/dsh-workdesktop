@@ -1,8 +1,14 @@
 # dsh-workdesktop
 
-> A local-first **workbench panel** for [DeepSeek Harness](https://github.com/) (DSH) — a Cordis plugin that renders one sidebar tab with 13 live cards: a decision surface, commitments awaiting response, matters, calendar & todos pulled from your local CLIs, recent recordings, your local knowledge base, and a **cross-source insight layer** (disposition ledger + cross-source checks).
+> A local-first **desktop panel** for [DeepSeek Harness](https://github.com/) (DSH) — a Cordis plugin bundle that
+> contributes the sidebar rows **驾驶舱**（仪表与提醒）· **工作台 1.0 / 弈枢**（采集器 / 处理器 / 存储器三引擎）·
+> **坐标系** · **工程图** · **建模中心**，with the last three kept as self-contained directories of their own.
 
-本仓库只包含**插件本体**（host 半体 + 浏览器半体）。它**不含任何数据**：所有内容都来自你本机的知识库目录，路径由环境变量指定。
+本仓库只包含**插件本体与各面板的源码**。它**不含任何数据**：所有内容都来自你本机的知识库目录，路径由环境变量指定。
+
+**2026-10-14 打包**：五个面板的源码现在都收在本仓，其中坐标系（`coords/`）、建模中心（`modeling/`）、
+工程图宿主侧（`pg-helper/`）、遥控器（`mi-remote/`）是**各自自包含的目录**。
+安装方式**没有改变** —— 它们在 profile 里仍是分开挂载的插件。见 §5.6。
 
 ---
 
@@ -12,8 +18,12 @@
 
 | 半体 | 文件 | 运行位置 | 职责 |
 |------|------|---------|------|
-| host | `lib/index.js` | DSH 的 Node 进程 | 挂载 `/workdesktop/api/*` 只读路由、注册 5 个 agent 工具、跑本机 CLI 采集 |
-| client | `lib/client.js` | 浏览器页面 | 在 DSH **自带**右侧栏注册「工作台」tab（键控席位），渲染 13 张卡片，按需轮询 host |
+| host | `lib/index.js` | DSH 的 Node 进程 | 挂载 `/workdesktop/api/*` 只读路由、注册 agent 工具、跑本机 CLI 采集 |
+| client | `lib/client.js` | 浏览器页面 | 在 DSH **自带**左侧栏注册那几行，渲染各面板，按需轮询 host |
+
+> ⚠️ **旧「工作台」那一行（13 张卡）已退役**（2026-10-12 用户裁定，见 `lib/client.js` 里的
+> `LEGACY_WORKBENCH_TAB_RETIRED`）。它那一行还留在代码里、**关在开关后面**，是有意的 ——
+> 下一个人翻到这里能立刻知道"原来是什么、为什么没了"。现在的「工作台」是 **1.0（弈枢）**，见 §5.4。
 
 设计原则（决定了它的行为）：
 
@@ -275,17 +285,24 @@ spawn 上游 CLI —— CI 上只会整片红，红了也证明不了任何事�
 
 ### 5.2 坐标系（Coords）· 2026-10-03 并入本仓
 
-本仓库现在是**一个仓、三个包**：
+本仓库现在是**一个仓、四个包**（2026-10-14 收进第四个）：
+
 | 包 | 目录 | 包里是什么 | profile 里那条 bundles 条目 |
 |---|---|---|---|
-| `dsh-workdesktop` | 仓库根 | 工作台（13 张卡）+ 工程图席位 + `pg-helper/` | `dsh-workdesktop`（根 `cordis.patch.yml`） |
+| `dsh-workdesktop` | 仓库根 | 驾驶舱 + 工作台 1.0（弈枢）席位 + 工程图席位 + `pg-helper/` | `dsh-workdesktop`（根 `cordis.patch.yml`） |
 | `dsh-coords` | `coords/` | 坐标系插件（host 路由 + 官方右栏 tab） | `dsh-coords`（`coords/cordis.patch.yml`） |
+| `dsh-modeling` | `modeling/` | 建模中心插件（`/modeling/api/*` + 官方右栏 tab + AI 起草） | `dsh-modeling`（`modeling/cordis.patch.yml`） |
 | `dsh-mi-remote` | `mi-remote/` | 遥控器插件（链路体检 + 按键映射 + 按键注入引擎 + 语音输入路径 + 七条可绑快捷键命令） | `dsh-mi-remote`（`mi-remote/cordis.patch.yml`） |
 | `dsh-workbench-v1` | `workbench-v1/` | 工作台 1.0 的引擎与页面（采集器 / 处理器 / 存储器三部分；只含引擎与页面，不含数据） | 尚未接线（以独立进程运行：`node workbench-v1/api/server.mjs 8791`） |
 
 > ⚠️ 两半的 `lib/` **来历不同**，别按同一套办法改：根目录的 `lib/index.js` · `lib/client.js` 是
-> "从插件源**复制 + 脱敏**"的产物（见 §11），改它要走发布流水线；`coords/lib/` 是 `coords/src/` 的
-> **构建产物**（`node coords/scripts/build.mjs`，`--check` 守"产物与 src/ 一致"）。
+> "从插件源**复制 + 脱敏**"的产物（见 §11），改它要走发布流水线；`coords/lib/` 与 `modeling/lib/`
+> 是各自 `src/` 的**构建产物**（`node coords/scripts/build.mjs` / `node modeling/scripts/build.mjs`，
+> `--check` 守"产物与 src/ 一致"）。
+>
+> ⚠️ **`pg-helper/` 故意没有 `package.json`**（2026-10-14 核实）：全 DSH 工作区扫下来只有
+> `lib/index.js` 用相对路径引它，它**不是**一个能单独发布的包 —— 加了 `package.json` 等于宣称它能独立安装，
+> 反而误导。它是**工程图的本体**（`lib/client.js` 里那部分 + 这里的宿主侧），不单独占一行 bundles。
 
 **「两个插件同仓」在安装/加载层面怎么落地。** DSH 的 `dsh.profile.bundles` 是**包名列表**，
 profile 启动时按顺序把每个包的 `dsh.bundle.patch`（`cordis.patch.yml`）叠成插件树
@@ -376,6 +393,37 @@ dsh plugin --profile web add <本仓库>/coords     # 装 coords/ 那个包（ds
 改名一次就让 9 条真机断言整批假红。1.0 把页面集合与顺序**收敛到 `pages.mjs` 一个文件**，
 引擎只认事件与契约。
 
+### 5.5 建模中心（Modeling）· 2026-10-14 并入本仓
+
+把**数据/服务架构建模**与**方法论建模**抽象成同一套代数（抽象层轴 × 节点 × 连边 × 属性 facet），
+在右侧栏以独立卡片呈现，支持 AI 起草。
+
+| 维度 | 内容 |
+|------|------|
+| 形态 | 自包含目录 `modeling/`，自己的 `package.json` 与 `cordis.patch.yml` |
+| 席位 | **保持独立安装**：它作为一个插件被 profile 以 link 方式挂载（与 `coords` 同一模式）。本仓只是**收录它的源码**，不改变安装方式 |
+| 落点 | 宿主：`lib/index.js`（注册 `/modeling/api/*`）· 浏览器：`lib/client.js`（由 `scripts/build.mjs` 从 `src/` 生成，**请勿手改**）· 共用模型：`src/modeling.mjs` |
+| 数据 | `~/.dsh/.dsh-modeling/`（三个档案：`methodology/` `system/` `process/`）。**本仓不含任何数据** |
+| 自带自证 | `cd modeling && node selftest.mjs` ⇒ 19 条；另有 `selftest-build.mjs` 7 条、`selftest-client.mjs` 32 条 |
+
+### 5.6 四个自包含目录一览（2026-10-14 打包）
+
+侧栏那五行各有归属，代码都以**自包含目录**的形式收在本仓：
+
+| 侧栏那一行 | 目录 | 面板 id（由谁注册） |
+|---|---|---|
+| 驾驶舱 | `lib/` | `dsh-workdesktop:dashboard`（本插件） |
+| 工作台 1.0（弈枢） | `workbench-v1/` | `dsh-workdesktop:yishu`（本插件） |
+| 坐标系 | `coords/` | `dsh-coords:center`（**dsh-coords 注册**） |
+| 工程图 | `lib/` + `pg-helper/` | `dsh-workdesktop:project-graph`（本插件自己注册） |
+| 建模中心 | `modeling/` | `dsh-modeling:center`（**dsh-modeling 注册**） |
+| 遥控器 | `mi-remote/` | `dsh-mi-remote:panel`（**dsh-mi-remote 注册**） |
+
+**⚠️ 一个跨插件的约定**：后三行里"由别的插件注册"的那两行（坐标系、建模中心），
+本插件只放**一行字符串 id**，**不检查对方在不在** —— tab 类型没注册时点击会被 `open()` 吞掉（自带短重试），
+所以那一行点了没反应，通常是因为**那个插件没装**，不是行坏了。
+在 `web` profile 里它们是分开装的（`dsh-workdesktop` + `dsh-coords` + `dsh-modeling` + `dsh-mi-remote`）。
+
 ## 6. 数据从哪来（重要）
 
 面板**不生产数据**。它读的是知识库目录里的产物（`_meta/out/*.json`：`snapshot.json`、`matters.json`、`triggers.json`、`objects.json`、`disposition.json`、`crosscheck.json`、`s-metrics.json` 等），这些产物由**你自己的库内管线**生成。
@@ -450,7 +498,48 @@ node selftest.mjs           # 自证（见 §8）
 
 ---
 
-## 10. 更新概览 · v1.1.0（当前）
+## 10. 更新概览 · v1.2.0（当前）
+
+**v1.2.0 · 五块面板的源码全部收进本仓（2026-10-14）**
+
+### 10.0 这次打包
+
+一个仓、**四个自包含目录 + 工作台 1.0**，侧栏那几行的代码现在都在本仓里：
+
+| 侧栏那一行 | 目录 | 本次动作 |
+|---|---|---|
+| 驾驶舱 · 工作台 1.0 | `lib/` · `workbench-v1/` | 本来就在 |
+| 坐标系 | `coords/` | **同步**到正在运行的版本（13 → 20 个文件，补上 7 个真机脚本） |
+| 工程图 | `lib/` + `pg-helper/` | 本来就在（`pg-helper/` 核实为**只被本插件使用**，故保持无 `package.json`） |
+| 建模中心 | `modeling/` | **新收**（15 个文件）—— 此前它的实现**一行都不在本仓** |
+| 遥控器 | `mi-remote/` | 本来就在 |
+
+**安装方式没有改变**：它们在 profile 里仍是分开挂载的插件（`dsh-workdesktop` + `dsh-coords` + `dsh-modeling` + `dsh-mi-remote`）。
+本仓只是把它们的**源码**收齐，见 §5.6。
+
+坐标系的 16 处脱敏（14 处本机路径 + 2 处真实客户名）在写入前完成；核对方式是把仓库那份按反向替换还原，
+**还原后与运行版逐字节相同** —— 差异恰好等于脱敏，没有夹带别的改动。
+
+### 10.0b 这次修的三条**假红**（都不是面板坏了，是检查盯错了地方）
+
+三条都属于同一类：**检查量的是文本/位置，而不是行为**。改的也都是检查本身。
+
+1. **脱敏门禁把"已脱敏的占位符"报成个人路径**。真实用户名那一段换成 `<用户>` 占位之后，
+   正则只认"盘符 + \Users\ + 任意一段 + \"，不认尖括号占位 ⇒ 报"仓库自身 12 处个人路径"。
+   （写这段说明时我自己也踩了一次：正文里写出真实用户名的完整路径，门禁当场报红 —— **它是对的**。）
+   判据改成"**是不是真实用户名**"（用户那段不以 `<` 开头）。**负向对照 L4-0 仍然通过** —— 门禁没被改松。
+2. **侧栏顺序契约数进了那条退役行**。`WORKSPACES` 里那条已退役的旧「工作台」（13 卡）关在开关后面，
+   运行时不列出，但 `label:` 的**源码文本还在** ⇒ 顺序表数出 7 个名字、期望 6 个 ⇒ 必红。
+   改成**把退役那条剔掉**再比，不把 7 个名字塞进期望（那等于承认退役行也是侧栏的一行）。
+   ⚠️ 顺带纠正一个我自己的错记：第二项的名字是常量解出来的 **「工作台」**，不是代号「弈枢」。
+3. **工程图面板的检查被"字符上限"截断，报"坐标换算有两套"**（其实只有一套）。
+   取函数体原用 `slice(start, start + 80000)`，而要找的 `transform: … scale(…)` 落在 **+80064** 处 ——
+   差 64 个字符没切进来。**运行版那边早为此改成按花括号配对，这一版又退回了旧写法** ⇒ 假红复现。
+   改回括号配对，并**新增一条 PGC-6-0 专门守"取到的是整个函数体"**：取不到就让下面几条一起假红，
+   所以先守这一条，下次再退回去会立刻显形。
+
+### 10.1 上一版（v1.1.0）做的事
+
 
 **v1.1.0 · 工作台第一次清理，并收进这一轮的会话改造（2026-10-14）**
 

@@ -13,7 +13,7 @@
  *   · `src/client.dom.js`（卡片 UI）
  * 内联进下面这个 `window.__ModuleLoader__.load({ factory })` 工厂里。
  *
- * 形状与 DSH 客户端模块加载器约定一致（与 dsh-modeling / dsh-workdesktop 同款）：
+ * 形状与 DSH 客户端模块加载器约定一致（与 dsh-modeling / dsh-workbench 同款）：
  *   factory(require) → { apply, inject, name }
  * React 从模块表 require；本插件不用 portal，所以不 require react-dom。
  */
@@ -63,15 +63,18 @@ const AXIS_LABELS = { x: 'X 轴', y: 'Y 轴', z: 'Z 轴' }
 
 /** 轴颜色：与参考实现（coord3d / 价值坐标）保持同一套语义色。 */
 const AXIS_COLORS = {
-  x: { light: '#1f6feb', dark: '#58a6ff' },
-  y: { light: '#1a7f37', dark: '#38d878' },
-  z: { light: '#bf8700', dark: '#fcb424' },
+  // 2026-10-10 用户裁定：压到规范色（蓝 / 绿 / 黄语义色）；规范无独立暗色板 ⇒ 两态同值。
+  x: { light: '#3b89ff', dark: '#3b89ff' },
+  y: { light: '#00d722', dark: '#00d722' },
+  z: { light: '#ffae13', dark: '#ffae13' },
 }
 
 /** 分组调色板（按注册顺序取色；超出后循环）。 */
 const PALETTE = [
-  '#4d6bfe', '#d97706', '#1a7f37', '#c2185b', '#7b61ff',
-  '#0e7490', '#b45309', '#4d7c0f', '#9f1239', '#475569',
+  // 2026-10-10 用户裁定：**规范五色**（purple → pink → blue → orange → green）。
+  // 分组 > 5 个时按原逻辑循环 ⇒ 第 6 组起与前五组同色 —— 这是"压到五色"的必然代价，已获裁定。
+  '#7a3dff', '#ed52cb', '#3b89ff',
+  '#ff6b00', '#00d722',
 ]
 
 /** 默认取值范围（用户没给时用）。 */
@@ -982,12 +985,154 @@ function readSplitL() {
 }
 
 /** 折线/虚线的统一视觉。 */
-const GUIDE_COLOR = '#d32f2f'
+const GUIDE_COLOR = '#ee1d36'
 const DASH = '5 3'
 
 /* ── 样式 ──────────────────────────────────────────────────────────────── */
 
 const CSS = `
+/* ── 规范令牌（由 _meta/workbench/design-tokens.mjs 生成；令牌源改了要重跑 patch-coords-tokens.mjs）── */
+:root{
+  --wb2-display:"WF Visual Sans Variable",Inter,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --wb2-serif:"WF Visual Sans Variable",Inter,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --wb2-sans:"WF Visual Sans Variable",Inter,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --wb2-mono:"WFVisualSans-Mono",Inconsolata,ui-monospace,SFMono-Regular,Consolas,monospace;
+  --wb2-ease:cubic-bezier(.22,1,.36,1);
+  --wb2-dur:520ms;
+  --wb2-dur-fast:240ms;
+  --wb2-sh1:none;
+  --wb2-sh2:0 84px 24px rgba(0,0,0,0), 0 54px 22px rgba(0,0,0,0.01), 0 30px 18px rgba(0,0,0,0.04), 0 13px 13px rgba(0,0,0,0.08), 0 3px 7px rgba(0,0,0,0.09);
+  --wb2-sh3:0 84px 24px rgba(0,0,0,0), 0 54px 22px rgba(0,0,0,0.01), 0 30px 18px rgba(0,0,0,0.05), 0 13px 13px rgba(0,0,0,0.10), 0 3px 7px rgba(0,0,0,0.12);
+  --wb2-sh4:0 24px 24px rgba(0,0,0,0.26), 0 6px 13px rgba(0,0,0,0.29);
+  --wb2-fs-display-xxl:80px;
+  --wb2-fw-display-xxl:600;
+  --wb2-lh-display-xxl:83.2px;
+  --wb2-ls-display-xxl:-0.8px;
+  --wb2-fs-display-xl:56px;
+  --wb2-fw-display-xl:600;
+  --wb2-lh-display-xl:58.24px;
+  --wb2-ls-display-xl:0;
+  --wb2-fs-display-lg:44.8px;
+  --wb2-fw-display-lg:600;
+  --wb2-lh-display-lg:46.6px;
+  --wb2-ls-display-lg:0;
+  --wb2-fs-display-md:32px;
+  --wb2-fw-display-md:500;
+  --wb2-lh-display-md:41.6px;
+  --wb2-ls-display-md:0;
+  --wb2-fs-display-sm:24px;
+  --wb2-fw-display-sm:500;
+  --wb2-lh-display-sm:31.2px;
+  --wb2-ls-display-sm:0;
+  --wb2-fs-display-xs:20px;
+  --wb2-fw-display-xs:500;
+  --wb2-lh-display-xs:28px;
+  --wb2-ls-display-xs:0;
+  --wb2-fs-eyebrow-uppercase:15px;
+  --wb2-fw-eyebrow-uppercase:500;
+  --wb2-lh-eyebrow-uppercase:19.5px;
+  --wb2-ls-eyebrow-uppercase:1.5px;
+  --wb2-fs-eyebrow-uppercase-sm:12px;
+  --wb2-fw-eyebrow-uppercase-sm:500;
+  --wb2-lh-eyebrow-uppercase-sm:12px;
+  --wb2-ls-eyebrow-uppercase-sm:0.6px;
+  --wb2-fs-body-lg:28.8px;
+  --wb2-fw-body-lg:400;
+  --wb2-lh-body-lg:46.08px;
+  --wb2-ls-body-lg:-0.288px;
+  --wb2-fs-body-md:16px;
+  --wb2-fw-body-md:400;
+  --wb2-lh-body-md:25.6px;
+  --wb2-ls-body-md:-0.16px;
+  --wb2-fs-body-md-strong:16px;
+  --wb2-fw-body-md-strong:500;
+  --wb2-lh-body-md-strong:25.6px;
+  --wb2-ls-body-md-strong:-0.16px;
+  --wb2-fs-body-sm:14px;
+  --wb2-fw-body-sm:400;
+  --wb2-lh-body-sm:22.4px;
+  --wb2-ls-body-sm:0;
+  --wb2-fs-body-sm-strong:14px;
+  --wb2-fw-body-sm-strong:500;
+  --wb2-lh-body-sm-strong:22.4px;
+  --wb2-ls-body-sm-strong:0;
+  --wb2-fs-caption:12.8px;
+  --wb2-fw-caption:550;
+  --wb2-lh-caption:15.36px;
+  --wb2-ls-caption:0;
+  --wb2-fs-caption-mono:12px;
+  --wb2-fw-caption-mono:400;
+  --wb2-lh-caption-mono:18px;
+  --wb2-ls-caption-mono:0;
+  --wb2-fs-button-md:16px;
+  --wb2-fw-button-md:500;
+  --wb2-lh-button-md:25.6px;
+  --wb2-ls-button-md:-0.16px;
+  --wb2-s-xxs:2px;
+  --wb2-s-xs:4px;
+  --wb2-s-sm:8px;
+  --wb2-s-md:12px;
+  --wb2-s-lg:16px;
+  --wb2-s-xl:20px;
+  --wb2-s-2xl:24px;
+  --wb2-s-3xl:32px;
+  --wb2-r-none:0px;
+  --wb2-r-xs:2px;
+  --wb2-r-sm:4px;
+  --wb2-r-md:8px;
+  --wb2-r-full:9999px;
+  --wb2-r-lg:8px;
+  --wb2-bg-body:#ffffff;
+  --wb2-bg-page:#ffffff;
+  --wb2-bg-subtle:rgba(8,8,8,0.03);
+  --wb2-bg-raise:#ffffff;
+  --wb2-fill:rgba(8,8,8,0.05);
+  --wb2-fill-2:rgba(8,8,8,0.04);
+  --wb2-line:#d8d8d8;
+  --wb2-line-hair:rgba(8,8,8,0.08);
+  --wb2-line-strong:rgba(8,8,8,0.2);
+  --wb2-line-hover:rgba(8,8,8,0.34);
+  --wb2-t1:#080808;
+  --wb2-t2:#363636;
+  --wb2-t3:#5a5a5a;
+  --wb2-t4:#898989;
+  --wb2-t5:#ababab;
+  --wb2-press:rgba(8,8,8,0.09);
+  --wb2-brand:#080808;
+  --wb2-brand-hover:#222222;
+  --wb2-brand-press:#080808;
+  --wb2-brand-soft:rgba(8,8,8,0.06);
+  --wb2-brand-soft-2:rgba(8,8,8,0.12);
+  --wb2-brand-haze:rgba(8,8,8,0.04);
+  --wb2-on-brand:#ffffff;
+  --wb2-ok:#00d722;
+  --wb2-ok-soft:rgba(0,215,34,0.12);
+  --wb2-ok-line:rgba(0,215,34,0.24);
+  --wb2-warn:#ffae13;
+  --wb2-warn-soft:rgba(255,174,19,0.14);
+  --wb2-bad:#ee1d36;
+  --wb2-bad-soft:rgba(238,29,54,0.1);
+  --wb2-bad-line:rgba(238,29,54,0.2);
+  --wb2-bad-line-2:rgba(238,29,54,0.34);
+  --wb2-info:#146ef5;
+  --wb2-info-soft:rgba(20,110,245,0.1);
+  --wb2-link:#006acc;
+  --wb2-cat-purple:#7a3dff;
+  --wb2-cat-pink:#ed52cb;
+  --wb2-cat-blue:#3b89ff;
+  --wb2-cat-orange:#ff6b00;
+  --wb2-cat-green:#00d722;
+  --wb2-cat-green-ink:#080808;
+  --wb2-hit:rgba(8,8,8,0.34);
+  --wb2-hit-0:rgba(8,8,8,0);
+  --wb2-sel-fg:#ffffff;
+  --wb2-mask:rgba(8,8,8,0.4);
+  --wb2-mask-2:rgba(8,8,8,0.32);
+  --wb2-mask-3:rgba(8,8,8,0.5);
+  --wb2-tex:none;
+  --wb2-accent:#080808;
+  --wb2-accent-hover:#222222;
+}
 /* 根容器：**留在文档流里**，不要 absolute + inset:0。
    better-sidebar 的面板结构是 .panel（position:absolute，flex column）：
        .panel ├── .tabBar(34px) └── .panelBody(flex:1，自身没有 position)
@@ -1002,7 +1147,9 @@ const CSS = `
    整棵客户端插件树报 SyntaxError 加载失败（本轮真机实测踩到过）。*/
 .dshco-root{position:relative;flex:1 1 auto;height:100%;display:flex;flex-direction:column;min-height:0;min-width:0;
   background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);
-  font:var(--dsw-font-xxs-12,12px/1.5 system-ui,sans-serif);overflow:hidden}
+  font:var(--dsw-font-xxs-12,12px/1.5 system-ui,sans-serif);overflow:hidden
+  /* 以下别名把宿主那批 --dsw-alias-* / --dsw-shadow-* 指到规范令牌：**作用域仅 .dshco-root**，不动宿主全局 */
+  --dsw-alias-bg-base:var(--wb2-bg-body);--dsw-alias-bg-layer-1:var(--wb2-bg-raise);--dsw-alias-bg-layer-2:var(--wb2-bg-subtle);--dsw-alias-bg-mask-1:var(--wb2-mask);--dsw-alias-border-l1:var(--wb2-line);--dsw-alias-border-l2:var(--wb2-line-strong);--dsw-alias-brand-primary:var(--wb2-brand);--dsw-alias-interactive-bg-hover:var(--wb2-fill);--dsw-alias-interactive-bg-hover-accent:var(--wb2-brand-soft);--dsw-alias-label-primary:var(--wb2-t1);--dsw-alias-label-secondary:var(--wb2-t2);--dsw-alias-label-tertiary:var(--wb2-t3);--dsw-alias-state-error-primary:var(--wb2-bad);--dsw-alias-state-warn-primary:var(--wb2-warn);--dsw-shadow-lv2:var(--wb2-sh2);--dsw-shadow-lv3:var(--wb2-sh3);;color:var(--wb2-t1);font-family:var(--wb2-sans)}
 .dshco-root *{box-sizing:border-box}
 /* ── 分隔条（2026-09-25 用户裁定：三段高度 + 下带左右都能拖）────────────────
    走**绝对定位覆盖**在边界上：不占布局，所以三段百分比仍然精确（不会因为多出几条 7px 的条而溢出）。
@@ -2417,7 +2564,7 @@ function guideCoords(props) {
     /**
      * 客户端插件入口。
      *
-     * 图标：本插件不再自己画侧边栏图标（入口在左侧栏底部的图标行，由 dsh-workdesktop 统一
+     * 图标：本插件不再自己画侧边栏图标（入口在左侧栏底部的图标行，由 dsh-workbench 统一
      * 渲染）；`iconCoords` 保留给探针 / 自测读形状，官方指南页入口卡用的是彩色那枚
      * `guideCoords`（同一份图形 + 一块紫色底板）。
      *
