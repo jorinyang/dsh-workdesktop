@@ -9,6 +9,8 @@ import sys
 import urllib.parse
 import urllib.request
 
+from _suite_util import purge_project_backups
+
 BASE = "http://127.0.0.1:3080"
 PROJECT = "层级自测临时工程"
 passed = 0
@@ -90,6 +92,8 @@ try:
     chk("ZO-7", "★ 调层级也能撤销（走的是同一套快照）", u.get("ok") is True, str(u)[:140])
 finally:
     removed = api("/workdesktop/api/pg/project", {"action": "delete", "name": PROJECT})
+    # 备份目录一起收干净：delete 只删 .prg，snapshots/versions 里的备份要另外收（见 _suite_util.py）
+    purged = purge_project_backups(PROJECT)
     print(f"\n清理：{'临时工程已删除' if removed.get('ok') else str(removed)[:140]}")
 
 print(f"\nPASS={passed} FAIL={failed}")

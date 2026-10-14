@@ -18,6 +18,8 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
+from _suite_util import purge_project_backups
+
 BASE = "http://127.0.0.1:3080"
 PROJECT = "删除与标红自测临时工程"
 SHOT = os.path.join(os.path.expanduser("~"), "Desktop", "DSH")
@@ -70,9 +72,23 @@ try:
     # ★ 一次建**两条**说明文字，位置都确定：
     #   一条用来验标红（它会被真的剪掉），另一条用来验删除确认 ——
     #   第一版只建一条，剪完就没了，后面的删除确认找不到对象（测试自己的问题）。
+    #
+    # ★★ 2026-10-10 补一条**躺着穿过 y=0 的连线**，**是为了让画线有地方起手**：
+    #   用户 2026-10-09 定的规则是「右键在**空白处**拖动＝剪断；右键在**框体上**拖动＝连线」。
+    #   而下面 ASK-3 原本是**从说明文字自己身上**起手往左划的 —— 按那条规则那走的是**连线**，
+    #   根本不会剪断（实测：拖出一条 draft 虚线、松手还在那儿新建了个框体，
+    #   说明文字当然不会变红）。所以旧写法**测的不是产品行为**。
+    #   现在改成：从那条**连线自己身上**起手**往上划**，划出的直线竖着穿过「被剪的说明」的框。
+    #   ⚠️ 斜着划不行 —— 起点在连线、终点在说明文字左侧，那条斜线**不一定**穿得过它
+    #      （实测：斜划时 data-cut 还是 0）。竖着划、起点正下方，穿过是必然的。
     api("/workdesktop/api/pg/insert", {"project": PROJECT, "nodes": [
         {"text": "被剪的说明", "x": 0, "y": -150, "borderStyle": "none"},
-        {"text": "待删说明", "x": 0, "y": 150, "borderStyle": "none"}]})
+        {"text": "待删说明", "x": 0, "y": 150, "borderStyle": "none"},
+        {"text": "连线左端", "x": -300, "y": 0},
+        {"text": "连线右端", "x": 300, "y": 0}]})
+    _all = api("/workdesktop/api/pg/document?project=" + urllib.parse.quote(PROJECT))["objects"]
+    _lr = {o.get("text"): o.get("uuid") for o in _all if o.get("text") in ("连线左端", "连线右端")}
+    api("/workdesktop/api/pg/connect", {"project": PROJECT, "source": _lr["连线左端"], "target": _lr["连线右端"]})
     notes = [o for o in ents() if o.get("borderStyle") == "none"]
     note_uuid = next((o["uuid"] for o in notes if o.get("text") == "被剪的说明"), None)
     del_uuid = next((o["uuid"] for o in notes if o.get("text") == "待删说明"), None)
@@ -116,31 +132,47 @@ try:
         rb = rect_of(u8)
         chk("ASK-2", "在画布上找到了这条说明文字", rb is not None, f"{rb}")
 
-        # ── ① 右键拖一条线穿过它：说明文字也要变红 ────────────────────
+        # ── ① 右键从**连线**上起手往上划，让竖线穿过说明文字 ─────────────
+        #    ⚠️ 起手点必须在**实体**上：从空白起手才是剪断，从实体起手是连线（用户 2026-10-09 规则）。
+        #    所以取那条连线的中点起手。连线的中点**就是说明文字正下方**（两者都建在 x=0 一线），
+        #    竖着往上划必然穿过它的框。
         if rb is not None:
             ny = rb["y"] + rb["height"] / 2
             nx = rb["x"] + rb["width"] / 2
-            page.mouse.move(nx, ny)                 # 从它自己身上起手，一定命中
-            page.mouse.down(button="right")
-            for k in range(1, 13):
-                page.mouse.move(nx - 10 * k, ny)
-                page.wait_for_timeout(35)
-            # ★ 查**这一条**算出来的描边，不是查"有没有谁是红的"
-            stroke = None
-            cut_flag = None
-            wraps = page.locator("svg .dshw-pg-nodewrap")
-            for i in range(wraps.count()):
-                t = wraps.nth(i).locator("title").first.text_content() or ""
-                if u8 in t:
-                    rr = wraps.nth(i).locator("rect").first
-                    cut_flag = rr.get_attribute("data-cut")
-                    stroke = rr.evaluate("el => getComputedStyle(el).stroke")
-                    break
-            chk("ASK-3", "★★ 拖动中：说明文字被打上『将要被剪』的记号", cut_flag == "1", f"data-cut={cut_flag}")
-            chk("ASK-3b", "★★ 而且它**算出来的描边是红的**（不是被 none 盖掉）",
-                stroke == RED, f"computed stroke = {stroke}（期望 {RED}）")
-            page.mouse.up(button="right")
-            page.wait_for_timeout(4500)
+            # 起手点：连线那一行（y=0）上、与说明文字同一个 x —— 竖着划必然穿过
+            lx, ly = None, None
+            line_bb = page.locator("svg line.dshw-pg-edge").first.bounding_box()
+            if line_bb is not None:
+                lx = nx                                # 与说明文字同一个 x
+                ly = line_bb["y"] + line_bb["height"] / 2
+            chk("ASK-2b", "拿到那条连线的中点（画线的起手点）", lx is not None and ly is not None,
+                f"起手点 ({None if lx is None else round(lx)}, {None if ly is None else round(ly)})，"
+                f"说明文字中心 ({round(nx)}, {round(ny)})")
+            if lx is not None:
+                # 从连线中点起手，**往上**划到说明文字上方的空白（竖线必然穿过它的框）
+                page.mouse.move(lx, ly)
+                page.mouse.down(button="right")
+                steps = 14
+                end_y = rb["y"] - 30
+                for k in range(1, steps + 1):
+                    page.mouse.move(lx, ly + (end_y - ly) * k / steps)
+                    page.wait_for_timeout(35)
+                # ★ 查**这一条**算出来的描边，不是查"有没有谁是红的"
+                stroke = None
+                cut_flag = None
+                wraps = page.locator("svg .dshw-pg-nodewrap")
+                for i in range(wraps.count()):
+                    t = wraps.nth(i).locator("title").first.text_content() or ""
+                    if u8 in t:
+                        rr = wraps.nth(i).locator("rect").first
+                        cut_flag = rr.get_attribute("data-cut")
+                        stroke = rr.evaluate("el => getComputedStyle(el).stroke")
+                        break
+                chk("ASK-3", "★★ 拖动中：说明文字被打上『将要被剪』的记号", cut_flag == "1", f"data-cut={cut_flag}")
+                chk("ASK-3b", "★★ 而且它**算出来的描边是红的**（不是被 none 盖掉）",
+                    stroke == RED, f"computed stroke = {stroke}（期望 {RED}）")
+                page.mouse.up(button="right")
+                page.wait_for_timeout(4500)
 
         # ── ② 删除：浮层跟着鼠标、回车确定 ─────────────────────────────
         # 用的是**另一条**（待删说明），所以上一步的剪断不会把它带走
@@ -192,6 +224,8 @@ try:
         b.close()
 finally:
     removed = api("/workdesktop/api/pg/project", {"action": "delete", "name": PROJECT})
+    # 备份目录一起收干净：delete 只删 .prg，snapshots/versions 里的备份要另外收（见 _suite_util.py）
+    purged = purge_project_backups(PROJECT)
     print(f"\n清理：{'临时工程已删除' if removed.get('ok') else str(removed)[:130]}")
 
 print(f"\nPASS={passed} FAIL={failed}")

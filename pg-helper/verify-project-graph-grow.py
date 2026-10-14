@@ -17,6 +17,8 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
+from _suite_util import purge_project_backups
+
 BASE = "http://127.0.0.1:3080"
 PROJECT = "长出子树自测临时工程"
 SHOT = os.path.join(os.path.expanduser("~"), "Desktop", "DSH")
@@ -159,7 +161,10 @@ try:
                 if ta.count() >= 1:
                     n1 = len(ents())
                     ta.first.fill("甲\n  乙")
-                    page.get_by_role("button", name="确定（Ctrl+回车）").first.click()
+                    # ⚠️ 2026-10-10 更正：按钮文案是「确定（回车）」，**不是**「确定（Ctrl+回车）」。
+                    #    产品里 "Ctrl+回车" 这个串一次都不存在（见 client.js 的 openAskText 确认框：
+                    #    文案是「回车＝确定」）；旧断言按不存在的名字找 ⇒ 必然等不到 ⇒ 超时假红。
+                    page.get_by_role("button", name="确定（回车）").first.click()
                     page.wait_for_timeout(3000)
                     chk("GR-12", "★★ 从界面点完，**立刻**就长出来了（2 个节点 + 2 条连线）",
                         len(ents()) == n1 + 2 and len(edges()) >= 2,
@@ -169,6 +174,8 @@ try:
         b.close()
 finally:
     removed = api("/workdesktop/api/pg/project", {"action": "delete", "name": PROJECT})
+    # 备份目录一起收干净：delete 只删 .prg，snapshots/versions 里的备份要另外收（见 _suite_util.py）
+    purged = purge_project_backups(PROJECT)
     print(f"\n清理：{'临时工程已删除' if removed.get('ok') else str(removed)[:130]}")
 
 print(f"\nPASS={passed} FAIL={failed}")

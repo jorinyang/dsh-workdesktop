@@ -11,6 +11,8 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
+from _suite_util import purge_project_backups
+
 BASE = "http://127.0.0.1:3080"
 PROJECT = "剪贴板自测临时工程"
 SHOT = os.path.join(os.path.expanduser("~"), "Desktop", "DSH")
@@ -175,6 +177,8 @@ try:
         b.close()
 finally:
     removed = api("/workdesktop/api/pg/project", {"action": "delete", "name": PROJECT})
+    # 备份目录一起收干净：delete 只删 .prg，snapshots/versions 里的备份要另外收（见 _suite_util.py）
+    purged = purge_project_backups(PROJECT)
     print(f"\n清理：{'临时工程已删除' if removed.get('ok') else str(removed)[:130]}")
 
 print(f"\nPASS={passed} FAIL={failed}")

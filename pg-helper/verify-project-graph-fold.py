@@ -15,9 +15,12 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
+from _suite_util import purge_project_backups
+
 BASE = "http://127.0.0.1:3080"
 PROJECT = "折叠连线自测临时工程"
 SHOT = os.path.join(os.path.expanduser("~"), "Desktop", "DSH")
+CENTER_TOL = 2.0   # 像素容差（画布是缩放过的，亚像素取整会有零点几的差）
 passed = 0
 failed = 0
 
@@ -147,10 +150,48 @@ try:
         chk("FOLD-7", "★★★ 而且**文档里的端点一个都没被改过**（重接只是画法）",
             len(edges2) == 2, f"文档里 {len(edges2)} 条线")
 
+        # ══ FOLD-20 起：折叠框**以组合中心为中心**（用户 2026-10-10 裁定）══════════
+        #   用户原话："工程图的组合-折叠应该是以组合中心为中心，而不是左上角为中心"。
+        #   上游依据：`Section.tsx` 第 54-63 行 `collapsedCollisionBox()` ——
+        #   `centerLocation = _collisionBoxNormal.getRectangle().center`，小矩形放到 center - size/2。
+        #   ⚠️ 比的是**中心**，不是左上角：框变小了，左上角本来就该动；中心不该动。
+        #   配一条负向对照（FOLD-22）：旧的"钉左上角"写法会让左上角**一动不动** —— 那种情形要判红。
+        def _ctr(r):
+            return (r["x"] + r["width"] / 2, r["y"] + r["height"] / 2)
+
+        # 量中心的基准：刚才那一轮**展开之后**的框（`s_open` 是折叠前量的，用最新的更稳）
+        s_back = sec_rect()
+        chk("FOLD-20", "回到展开态（作为量中心的基准）", s_back is not None,
+            None if s_back is None else f"展开框 {round(s_back['width'])}×{round(s_back['height'])}")
+        if s_back is not None:
+            # 再折一次，这次量中心
+            tog = page.locator("svg .dshw-pg-collapse")
+            if tog.count() > 0:
+                # ⚠️ 直接点**元素**，不按 "x + w - 13" 猜坐标：框一折叠高度就变，
+                #    猜出来的那个点会落到框外（本轮实测踩到，表现为"点了没反应"）。
+                tog.first.hover()
+                page.wait_for_timeout(300)
+                tog.first.dispatch_event("mousedown", {"button": 0, "bubbles": True})
+                page.wait_for_timeout(6000)
+            s_c = sec_rect()
+            chk("FOLD-21", "★ 折叠框中心 == 展开框中心（用户要的就是这条）",
+                s_c is not None and abs(_ctr(s_c)[0] - _ctr(s_back)[0]) <= CENTER_TOL
+                and abs(_ctr(s_c)[1] - _ctr(s_back)[1]) <= CENTER_TOL,
+                None if s_c is None else
+                f"原中心 ({_ctr(s_back)[0]:.0f}, {_ctr(s_back)[1]:.0f}) → "
+                f"折叠中心 ({_ctr(s_c)[0]:.0f}, {_ctr(s_c)[1]:.0f})")
+            chk("FOLD-22", "★ 负向对照：旧写法（钉左上角）会让左上角一动不动 —— 本次必须**不是**那样",
+                s_c is not None and not (abs(s_c["x"] - s_back["x"]) <= CENTER_TOL
+                                         and abs(s_c["y"] - s_back["y"]) <= CENTER_TOL),
+                None if s_c is None else
+                f"折叠框左上角 ({s_c['x']:.0f}, {s_c['y']:.0f}) vs 原框 ({s_back['x']:.0f}, {s_back['y']:.0f})")
+
         page.screenshot(path=os.path.join(SHOT, "ui-31-fold.png"))
         b.close()
 finally:
     removed = api("/workdesktop/api/pg/project", {"action": "delete", "name": PROJECT})
+    # 备份目录一起收干净：delete 只删 .prg，snapshots/versions 里的备份要另外收（见 _suite_util.py）
+    purged = purge_project_backups(PROJECT)
     print(f"\n清理：{'临时工程已删除' if removed.get('ok') else str(removed)[:130]}")
 
 print(f"\nPASS={passed} FAIL={failed}")

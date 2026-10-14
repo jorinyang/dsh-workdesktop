@@ -16,6 +16,8 @@ import {
   readDocument, writeDocument, summarize, moveBatch, insertObjects, removeObjects,
   removeObjectsAndDanglingEdges, edgeEndpoints, collectRefPaths, assertNoDanglingRefs,
   locateBridge, isEdge, locationOf, makeTextNode, makeEdge,
+  // 组合的成员整理 / 防环（2026-10-10，照搬上游 SectionMethods / StageSectionPackManager）
+  makeSection, shallowerChildIndexes, assertNoSectionCycle, sectionContainsIndex,
 } from './project-graph-doc.mjs'
 
 const require = createRequire(import.meta.url)
@@ -332,6 +334,113 @@ chk('DOC-9', '★ 删中间的 u-B：两条边都该被连带删掉，只剩 A�
       deleteOk && !remainingTexts.includes('乙') && edgesOf(afterDelete).length === 0,
       deleteOk ? JSON.stringify(remainingTexts) + ' edges=' + JSON.stringify(edgesOf(afterDelete)) : 'CLI 报错')
   }
+}
+
+// ══ DOC-30 起：组合的**成员整理**与**防环**（2026-10-10，照搬上游）═══════════
+// 上游依据（两处，都在 `project-graph/app/src` 里）：
+//   · `SectionMethods.shallowerNotSectionEntities()`（basicMethods/SectionMethods.tsx 第 314-337 行）
+//     —— 选中的分区整体保留、分区**里面**的成员剔掉（由那个分区代表）；
+//   · `StageSectionPackManager.packEntityToSection()`（concreteMethods/StageSectionPackManager.tsx 第 323-364 行）
+//     第一行就调它；末尾还有"选中的实体必须在同一层级"（第 330-344 行，跨层直接报错不建）。
+// 为什么非要有：实测在真工程里写出过 **一个分区把自己列成自己的孩子** 的文件
+//（「采集器」的 children 里有 `$:'/0'`，而 #0 就是它自己）——
+// 后果正是"折不了 + 成员和分区分家"。上游靠 `goInSection` 那层保护；
+// 我们是直接改 `.prg`，没有那层，所以必须自己挡。
+{
+  // 造一个小舞台：A（装 a1、a2） ⊂ B（装 A、b1）；另有一个自由节点 free
+  const stage = []
+  const add = (node) => { stage.push(node); return stage.length - 1 }
+  const mk = (text) => {
+    const r = makeTextNode(stage, { text, x: 0, y: 0 })
+    return add(r.node)
+  }
+  const iA1 = mk('a1'); const iA2 = mk('a2'); const iB1 = mk('b1'); const iFree = mk('free')
+  const secA = makeSection(stage, { text: 'A', children: [stage[iA1].uuid, stage[iA2].uuid] })
+  const iA = add(secA.section)
+  const secB = makeSection(stage, { text: 'B', children: [stage[iA].uuid, stage[iB1].uuid] })
+  const iB = add(secB.section)
+
+  chk('DOC-30', '测试舞台：A（a1、a2） ⊂ B（A、b1），外加一个自由节点',
+    sectionContainsIndex(stage, iB, iA) && sectionContainsIndex(stage, iB, iA1)
+    && sectionContainsIndex(stage, iA, iA1) && !sectionContainsIndex(stage, iA, iB),
+    `B⊃A=${sectionContainsIndex(stage, iB, iA)} B⊃a1=${sectionContainsIndex(stage, iB, iA1)} A⊃B=${sectionContainsIndex(stage, iA, iB)}`)
+
+  // ① 成员整理：把「B 分区 + A 里面的 a1」一起选中 ⇒ a1 该被剔掉（B 已经代表它了）
+  const shrunk = shallowerChildIndexes(stage, [iB, iA1])
+  chk('DOC-31', '★ 成员整理：选中「B + a1」⇒ a1 被剔掉（B 已经装着它）',
+    shrunk.keep.includes(iB) && !shrunk.keep.includes(iA1) && shrunk.dropped.includes(iA1),
+    `keep=${JSON.stringify(shrunk.keep)} dropped=${JSON.stringify(shrunk.dropped)} 期望 keep=[B] dropped=[a1]`)
+
+  // ② 分区整体保留：把「A + a2」一起选中 ⇒ a2 剔掉、A 留下
+  const shrunk2 = shallowerChildIndexes(stage, [iA, iA2])
+  chk('DOC-31b', '★ 分区整体保留：选中「A + a2」⇒ A 留下、a2 被剔掉',
+    shrunk2.keep.includes(iA) && shrunk2.dropped.includes(iA2), `keep=${JSON.stringify(shrunk2.keep)}`)
+
+  // ③ 不相干的不动：自由节点和它一起选，谁都不该少
+  const shrunk3 = shallowerChildIndexes(stage, [iA, iFree])
+  chk('DOC-31c', '★ 不相干的自由节点不受影响（两个都留）',
+    shrunk3.keep.length === 2 && shrunk3.dropped.length === 0, `keep=${JSON.stringify(shrunk3.keep)}`)
+
+  // ④ 防环：自己装自己 —— 不许
+  const c1 = assertNoSectionCycle(stage, iA, iA)
+  chk('DOC-32', '★ 防环①：分区不能装自己', c1.ok === false, String(c1.error || ''))
+
+  // ⑤ 防环：把 B 装进**自己的后代** A 里 —— 不许（这条才是真会成环的那种）
+  const c2 = assertNoSectionCycle(stage, iB, iA)
+  chk('DOC-32b', '★ 防环②：不能把分区装进**自己的后代**里（那会成环）', c2.ok === false, String(c2.error || ''))
+
+  // ⑥ 防环的负向对照：正常的嵌套必须放行（B 装 A 是合法的）
+  const c3 = assertNoSectionCycle(stage, iB, iFree)
+  chk('DOC-32c', '★ 防环的负向对照：正常能装的（自由节点）必须放行', c3.ok === true, String(c3.error || ''))
+
+  // ⑦ 先纠正一个**容易想错的地方**：把「B + 它里面的 a1」拿去建组合 **不该报错** ——
+  //    成员整理会先把 a1 剔掉（B 已经代表它了）⇒ 新组合 C 只装 B，这是**正常的再套一层**。
+  //    第一版这里我按"应该拒绝"写，红了 —— 红的是断言，不是产品。
+  const okShrink = makeSection(stage, { text: 'C', children: [stage[iB].uuid, stage[iA1].uuid] })
+  chk('DOC-33', '★ 建组合时：「B + 它里面的 a1」⇒ a1 被剔掉，只把 B 收进新组合（正常再套一层）',
+    okShrink.ok === true && okShrink.childIndexes.length === 1 && okShrink.childIndexes[0] === iB
+    && okShrink.droppedUuids.length === 1,
+    `ok=${okShrink.ok} childIndexes=${JSON.stringify(okShrink.childIndexes)} dropped=${(okShrink.droppedUuids || []).length}`)
+
+  // ⑦b 真正该拒绝的是这一种：**直接**把「B 和 B 的后代 A」一起递进去 ——
+  //     成员整理剔不掉 A（A 是分区、本身要保留）⇒ 两个都留下 ⇒ 新组合装着 B，B 里又装着 A，
+  //     而 A 同时是新组合的直接成员 ⇒ 结构里出现 A 的双重归属。这种要挡。
+  const cyc = makeSection(stage, { text: 'C2', children: [stage[iB].uuid, stage[iA].uuid] })
+  chk('DOC-33b', '★ 建组合时：「装着 A 的 B」+「A 本身」一起递 ⇒ **拒绝**（双重归属 / 成环）',
+    cyc.ok === false && String(cyc.error || '').includes('成环'), JSON.stringify(cyc).slice(0, 200))
+
+  // ⑧ makeSection 正常路：把「自由节点 + B」建成 C ⇒ 成功，且成员就是这两个
+  const good = makeSection(stage, { text: 'C3', children: [stage[iFree].uuid, stage[iB].uuid] })
+  chk('DOC-33c', '★ 正常建组合：自由节点 + 一个已有分区 ⇒ 成功，成员是那两个',
+    good.ok === true && good.childIndexes.length === 2, JSON.stringify(good.childIndexes))
+
+  // ⑨ 被拒绝时不产出半成品（调用方拿不到一个"半个 section"去写盘）
+  chk('DOC-33d', '★ 被拒绝时不产出半成品（没有 section 字段漏出去）',
+    cyc.ok === false && cyc.section === undefined, JSON.stringify(Object.keys(cyc)))
+
+  // ⑩ ★ 用户报的那条，落到数据层就是这一对：
+  //     **一个组合可以同时装好几个组合**（A 里装 B 和 C）—— 这是允许的，别误拦；
+  //     **不可以装它自己**（含"装进自己的后代"）。
+  //     2026-10-10 现场：真工程里「资产」已经装着「工具组合」，用户想建的新组合
+  //     同时把「资产」和「工具组合」选了进去 —— 那属于**后者**，被拒是对的，
+  //     但界面当时没把话说清楚，看着就像"点了没反应"。
+  //
+  // ⚠️ 这里必须用**并列**的两个分区（谁都不装谁）。第一版我拿"装着 A 的 B"和"A"去测，
+  //    那正好又是成环那一种，于是把"合法"的期望撞在"非法"的输入上 ⇒ 假红。
+  const iC1 = mk('c1x'); const iC2 = mk('c2x')
+  const secC = makeSection(stage, { text: 'C', children: [stage[iC1].uuid, stage[iC2].uuid] })
+  const iC = add(secC.section)
+  chk('DOC-34', '前提：C 与 A 是**并列**的两个分区（谁都不装谁）',
+    sectionContainsIndex(stage, iA, iC) === false && sectionContainsIndex(stage, iC, iA) === false,
+    `A⊃C=${sectionContainsIndex(stage, iA, iC)} C⊃A=${sectionContainsIndex(stage, iC, iA)}`)
+  const twoSections = makeSection(stage, { text: 'E', children: [stage[iA].uuid, stage[iC].uuid] })
+  chk('DOC-34b', '★ 一个组合可以同时装**两个并列的组合**（多子组合合法，不许误拦）',
+    twoSections.ok === true && twoSections.childIndexes.length === 2,
+    `ok=${twoSections.ok} childIndexes=${JSON.stringify(twoSections.childIndexes)} err=${String(twoSections.error || '')}`)
+  const selfContain = makeSection(stage, { text: 'F', children: [stage[iB].uuid, stage[iA].uuid] })
+  chk('DOC-34c', '★ 但「装着 A 的 B」+「A」同时入组要被拒 —— 那才是会成环的那一种',
+    selfContain.ok === false && String(selfContain.error || '').includes('成环'),
+    JSON.stringify(selfContain).slice(0, 180))
 }
 
 rmSync(work, { recursive: true, force: true })

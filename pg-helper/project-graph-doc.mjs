@@ -20,7 +20,8 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import { readPrg, writePrg } from './project-graph-prg.mjs'
 
 /* ── 读 / 写 ───────────────────────────────────────────────────────────── */
@@ -30,7 +31,146 @@ export function readDocument(file) {
   return { doc, stage: doc.stage === null ? [] : doc.stage }
 }
 
+/* ── 版本管理（用户 2026-10-10 要求）────────────────────────────────────────
+ *
+ * 口径是**按"打开"记，不是按"每次写入"记**：
+ *   · 每次打开工程 ⇒ 记一个快照（记的是**打开那一刻**磁盘上的状态，也就是上次离开时的样子）
+ *   · 打开之后这一轮的所有编辑，都算**同一个**会话
+ *   · 下次重新打开 ⇒ 记为新的快照
+ *   · 只留**最近 5 个**
+ *   · 随时能把工程**恢复到最近一个快照**（= 撤销这一轮的编辑）
+ *
+ * 为什么记"打开那一刻"而不是"编辑完"：这样"恢复"的语义才干脆 ——
+ * **回到我这轮动手之前**。记"编辑完"的话，恢复只是回到上次离开时，救不了当前这轮的手误。
+ */
+
+/** 保留最近几个快照。 */
+const KEEP_SNAPSHOTS = 5
+
+/** 快照目录：`<工程目录>/snapshots/<工程名>/` */
+function snapshotDir(file) {
+  const name = file.split(/[\\/]/).pop().replace(/\.prg$/i, '')
+  return { name, dir: join(file, '..', 'snapshots', name) }
+}
+
+/**
+ * 记一个快照（**关闭工程图时**调 —— 用户 2026-10-10 定的口径）。
+ * 同一秒内不会重复记。返回快照路径；读不动或写不了就返回 null（**不能挡住关闭**）。
+ */
+export function snapshotOnClose(file) {
+  try {
+    if (!existsSync(file)) return null
+    const { name, dir } = snapshotDir(file)
+    mkdirSync(dir, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    const dest = join(dir, `${name}-${stamp}.prg`)
+    if (existsSync(dest)) return dest // 同一秒重复关闭，不重复记
+    copyFileSync(file, dest)
+    const all = listSnapshots(file)
+    // 只留最近 KEEP_SNAPSHOTS 个（文件名按时间升序，删最旧的）
+    for (const old of all.slice(0, Math.max(0, all.length - KEEP_SNAPSHOTS))) {
+      try { rmSync(old.path) } catch { /* 删不掉就算了 */ }
+    }
+    return dest
+  } catch {
+    return null
+  }
+}
+
+/** 兼容旧名字（打开时记）—— 现在口径是"关闭时记"，留着免得别处调用断掉。 */
+export const snapshotOnOpen = snapshotOnClose
+
+/** 列出这份工程的快照，**最新在前**。 */
+export function listSnapshots(file) {
+  try {
+    const { dir } = snapshotDir(file)
+    if (!existsSync(dir)) return []
+    return readdirSync(dir)
+      .filter((n) => n.endsWith('.prg'))
+      .sort()
+      .reverse()
+      .map((n) => {
+        const path = join(dir, n)
+        let size = 0
+        let at = ''
+        try { size = statSync(path).size } catch { /* 读不到就算了 */ }
+        const m = /-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})\.prg$/.exec(n)
+        if (m !== null) at = `${m[1]} ${m[2]}:${m[3]}:${m[4]}`
+        return { name: n, path, size, at }
+      })
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 恢复到**指定的那一版**快照（用户 2026-10-10：版本要能选，不是只能回最近一版）。
+ * 恢复之前先把当前这一版也记一个快照 —— 免得"恢复"本身变成不可逆的操作。
+ */
+export function restoreSnapshot(file, name) {
+  const all = listSnapshots(file)
+  if (all.length === 0) return { ok: false, error: '这份工程还没有快照' }
+  const want = all.find((s) => s.name === name) || all[0]
+  try {
+    snapshotOnClose(file) // 先把当前版本留一版，恢复也能反悔
+    copyFileSync(want.path, file)
+    return { ok: true, restoredFrom: want.name, at: want.at, kept: listSnapshots(file).length }
+  } catch (error) {
+    return { ok: false, error: String((error && error.message) || error) }
+  }
+}
+
+/** 恢复到**最近一个**快照。 */
+export function restoreLatestSnapshot(file) {
+  return restoreSnapshot(file, null)
+}
+
+/** 每份工程保留多少个历史版本（超了就删最旧的）。 */
+const KEEP_VERSIONS = 30
+
+/**
+ * 写入之前，把**磁盘上现有的那一版**存一份到 `versions/<工程名>/`。
+ *
+ * 为什么必须有：写入是**原地覆盖**的。一旦写进去的东西是坏的（比如某次 bug 把 stage
+ * 换成了别的对象），**原内容当场被盖掉，没有任何退路** ——
+ * 2026-10-10 就是这么丢了一张图：一次拖拽把工程覆盖成 90 字节，之后翻遍备份、卷影，
+ * 连原始磁盘都扫过，全部无果。有了这个，最坏也只是回退一版的事。
+ *
+ * 留底失败**不挡写入**（磁盘满、权限之类不该让正常编辑保存不了）。
+ */
+export function backupBeforeWrite(file) {
+  try {
+    if (!existsSync(file)) return null
+    const name = file.split(/[\\/]/).pop().replace(/\.prg$/i, '')
+    const dir = join(file, '..', 'versions', name)
+    mkdirSync(dir, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    const dest = join(dir, `${name}-${stamp}.prg`)
+    copyFileSync(file, dest)
+    const all = readdirSync(dir).filter((n) => n.endsWith('.prg')).sort()
+    for (const old of all.slice(0, Math.max(0, all.length - KEEP_VERSIONS))) {
+      try { rmSync(join(dir, old)) } catch { /* 删不掉就算了 */ }
+    }
+    return dest
+  } catch {
+    return null
+  }
+}
+
 export function writeDocument(file, doc, stage) {
+  // ⚠️ **写之前先量一下 stage 是不是数组**。这是最后一道防线：
+  //    一旦把"非数组"写进去，整个工程就打不开了（报"stage.msgpack 解出来不是数组"），
+  //    而且**覆盖掉了原内容**。
+  //    2026-10-10 实际发生过一次：`/pg/move` 的**返回摘要**（{applied, missing, moved}）
+  //    被当成 stage 传进来，工作台.prg 被写成 90 字节，整张图打不开。
+  //    宁可在这一步炸掉、也不能写坏文件。
+  if (!Array.isArray(stage)) {
+    const what = stage === null ? 'null' : Array.isArray(stage) ? '数组' : typeof stage
+    const keys = stage !== null && typeof stage === 'object' ? Object.keys(stage).slice(0, 6).join(',') : ''
+    throw new Error(`拒绝写入：stage 不是数组（实际是 ${what}${keys === '' ? '' : '，键：' + keys}）。`
+      + '传进来的多半是某个路由的"返回摘要"，不是舞台对象数组 —— 写下去整个工程就打不开了。')
+  }
+  backupBeforeWrite(file)
   const out = writePrg(doc, { stage })
   writeFileSync(file, out)
   return out.length
@@ -120,8 +260,43 @@ export function summarize(object, index, stage = null) {
     collapsed: typeof object.isCollapsed === 'boolean' ? object.isCollapsed : undefined,
     locked: typeof object.locked === 'boolean' ? object.locked : undefined,
     borderStyle: typeof object.borderStyle === 'string' ? object.borderStyle : undefined,
+    // ★ 这个对象**现在属于哪个分区**（见 `parentUuidOf`）。
+    //   为什么必须有这一项（2026-10-10）："拖动两个组合交叉时成员被挪去另一个组合"
+    //   这类归属 bug 在界面上表现为"成员和框分家了"，但**归属本身在文档层看不见** ——
+    //   只看 childUuids 要自己反推，套件写起来又绕又容易写错。
+    //   列出来之后 `/pg/document` 直接就能回答"甲现在归谁"，断言只比一个 uuid。
+    parentUuid: parentUuidOf(stage, object),
     fields: Object.keys(object),
   }
+}
+
+/**
+ * 某个对象**现在归哪个分区**（`stage` 里把它列进 children 的那个 Section 的 uuid）。
+ *
+ * 三种返回值，语义分开：
+ *   · `null`      —— 不属于任何分区（正常情形，绝大多数对象是自由的）；
+ *   · `'<uuid>'`  —— 恰好属于这一个分区；
+ *   · `undefined` —— **说不清**（stage 没给 / 对象没 uuid / 同时被两个分区列着）。
+ * 说不清时给 `undefined` 而不是 `null`：`null` 是"确定没有归属"，把它和"查不出来"混成
+ * 一个值，断言就会把"文档坏了"读成"这对象是自由的"。宁可让调用方看见"不知道"。
+ *
+ * children 里既可能是**内联对象**（带 uuid），也可能是**引用**（`{ $: '/5' }`）——
+ * 上游两种都写过，所以两种都要认，不能只认引用。
+ */
+export function parentUuidOf(stage, object) {
+  if (stage === null || !Array.isArray(stage)) return undefined
+  const me = object && typeof object.uuid === 'string' ? object.uuid : null
+  if (me === null) return undefined
+  const holds = (section) => Array.isArray(section.children) && section.children.some((child) => {
+    if (child && typeof child.uuid === 'string') return child.uuid === me
+    const parsed = child && typeof child.$ === 'string' ? parseRefPath(child.$) : null
+    if (parsed === null) return false
+    const target = stage[parsed.index]
+    return Boolean(target && target.uuid === me)
+  })
+  const holders = stage.filter((s) => s && String(s._) === 'Section' && holds(s))
+  if (holders.length === 0) return null
+  return holders.length === 1 ? holders[0].uuid : undefined
 }
 
 /* ── `$` 路径 ──────────────────────────────────────────────────────────── */
@@ -342,6 +517,198 @@ export function removeObjectsAndDanglingEdges(stage, indexes) {
 function entityUuid(stage, index) {
   const object = stage[index]
   return object && typeof object.uuid === 'string' ? object.uuid : `#index:${index}`
+}
+
+/**
+ * 某个分区**直接**列了哪些对象（返回舞台下标）。
+ * children 里既可能是 `{$:'/N'}` 引用、也可能是内联对象（带 uuid），两种都认。
+ */
+function childIndexesOf(stage, sectionIndex) {
+  const section = stage[sectionIndex]
+  if (!section || !Array.isArray(section.children)) return []
+  const out = []
+  for (const child of section.children) {
+    if (child && typeof child.$ === 'string') {
+      const parsed = parseRefPath(child.$)
+      if (parsed !== null && parsed.index >= 0 && parsed.index < stage.length) out.push(parsed.index)
+      continue
+    }
+    if (child && typeof child.uuid === 'string') {
+      const at = stage.findIndex((o) => o && o.uuid === child.uuid)
+      if (at >= 0) out.push(at)
+    }
+  }
+  return out
+}
+
+/**
+ * 某个下标**属于**哪些分区（直接或隔着几层都算）—— 返回祖宗链（近的在前），**不含自己**。
+ * 这就是上游 `parentSection` 链的等价物（`StageSectionPackManager` / `SectionMethods` 一路用它）。
+ */
+function ancestorSectionIndexes(stage, index) {
+  const chain = []
+  const seen = new Set([index])          // 从自己开始就防环：文档已经坏了的时候不能死循环
+  let cursor = index
+  for (let hop = 0; hop < 32; hop++) {
+    let parent = -1
+    for (let i = 0; i < stage.length; i++) {
+      if (seen.has(i)) continue
+      if (childIndexesOf(stage, i).includes(cursor)) { parent = i; break }
+    }
+    if (parent < 0) break
+    chain.push(parent)
+    seen.add(parent)
+    cursor = parent
+  }
+  return chain
+}
+
+/**
+ * 建分区之前的**成员整理** —— 照搬上游 `SectionMethods.shallowerNotSectionEntities()`
+ * （`app/src/core/stage/stageManager/basicMethods/SectionMethods.tsx` 第 314-337 行）。
+ *
+ * 上游的规则：**选中的分区整体保留；分区**里面**的成员被剔掉**（由它的分区代表）。
+ * 目的就是别让"成员"和"装着它的分区"被同时收进同一个新分区 —— 那等于把同一个东西算两遍，
+ * 而且会造出"分区直接/间接装自己"的环。
+ *
+ * ⚠️ 为什么必须有它（2026-10-10 实测的现场）：
+ *   工程的「采集器」分区 children 里**有它自己**（`$: '/0'`，而 #0 就是它）。
+ *   后果正是用户报的那两条：
+ *     · 折叠不走 —— `markHidden` 从自己开始递归，`hidden[自己]=true` 直接在渲染里被滤掉，
+ *       于是"这一折，它自己连同成员一起消失了"，看着像"折不了"；
+ *     · 成员和分区"分家" —— 环上算出来的包围盒没有意义。
+ *   环一旦写进文件，后面每次读都带着它。
+ *
+ * @returns {{ keep: number[], dropped: number[] }} 保留 / 被剔掉的舞台下标
+ */
+export function shallowerChildIndexes(stage, indexes) {
+  const picked = []
+  for (const raw of (Array.isArray(indexes) ? indexes : [indexes])) {
+    const index = Number(raw)
+    if (Number.isInteger(index) && index >= 0 && index < stage.length && picked.indexOf(index) < 0) picked.push(index)
+  }
+  const sectionSet = new Set(picked.filter((i) => stage[i] && String(stage[i]._) === 'Section'))
+  const keep = []
+  const dropped = []
+  for (const index of picked) {
+    const isSection = stage[index] && String(stage[index]._) === 'Section'
+    if (isSection) { keep.push(index); continue }     // 分区整体保留
+    // 非分区：只要它的**任何祖先**也是这次选中的分区，就剔掉（由那个分区代表）
+    const inside = ancestorSectionIndexes(stage, index).some((a) => sectionSet.has(a))
+    if (inside) dropped.push(index)
+    else keep.push(index)
+  }
+  return { keep: keep.sort((a, b) => a - b), dropped }
+}
+
+/**
+ * 这个分区**直接或间接**装了哪些对象（含子分区，逐层展开）。
+ * 判断"能不能放进去"要用它 —— 只看直接 children 会漏掉隔层的情况。
+ */
+export function sectionContainsIndex(stage, sectionIndex, targetIndex) {
+  const seen = new Set()
+  const walk = (index, depth) => {
+    if (depth > 32 || seen.has(index)) return false
+    seen.add(index)
+    for (const child of childIndexesOf(stage, index)) {
+      if (child === targetIndex) return true
+      if (walk(child, depth + 1)) return true
+    }
+    return false
+  }
+  return walk(sectionIndex, 0)
+}
+
+/**
+ * 把一个分区放进另一个分区**之前**的防环闸（2026-10-10，对应上游 `goInSection` 的语义）。
+ *
+ * 两条都不许过：
+ *   · 自己装自己（`section === target`）；
+ *   · 装进**自己的后代**里（A 装 B、B 里已经（间接）装着 A ⇒ 成环）。
+ * 上游的 `StageSectionInOutManager.goInSection` 在正常操作下走不到这一步；
+ * 我们是直接改 `.prg` 的，**没有那层保护**，所以必须自己挡。
+ *
+ * @returns {{ok: true} | {ok: false, error: string}}
+ */
+export function assertNoSectionCycle(stage, sectionIndex, targetIndex) {
+  if (targetIndex === null || targetIndex === undefined || targetIndex === '') return { ok: true }
+  const target = Number(targetIndex)
+  if (target === sectionIndex) return { ok: false, error: '分区不能把自己当子对象' }
+  if (sectionContainsIndex(stage, sectionIndex, target)) {
+    const name = String((stage[sectionIndex] && stage[sectionIndex].text) || '') || `#${sectionIndex}`
+    return { ok: false, error: `「${name}」里已经（直接或间接）装着它 ⇒ 不能再把它装进自己的成员里（会成环）` }
+  }
+  return { ok: true }
+}
+
+/**
+ * 扫描分区结构里的**环**（分区直接或间接装着自己）。
+ *
+ * 上游不会产生这种情况（`goInSection` 那层挡着），但我们直接改 `.prg`，
+ * 历史上已经写出来过 —— 真工程「工作台.prg」的「采集器」分区里就有一条 `$: '/0'`，
+ * 而 #0 正是它自己。后果是"折不了 + 成员和分区分家"。
+ *
+ * @returns {Array<{section: number, name: string, path: number[]}>} 每条环的**起点与路径**
+ */
+export function findSectionCycles(stage) {
+  const found = []
+  // ⚠️ 这里必须用 `for` + `continue`，**不能**写成 `forEach` + `return` ——
+  //    forEach 回调里的 return 只是结束**这一次**回调……但把判断写在回调第一行时，
+  //    一个非 Section 的对象会让"这个起点"被跳过，看着没错；真正的问题是
+  //    我第一版把 `stage.forEach` 与 `return` 混着用时漏掉了 #0 这个起点
+  //    （真工程里恰恰是 #0 那个 Section 带自环）⇒ 环报了 0 条，差点得出"文件没问题"的结论。
+  for (let start = 0; start < stage.length; start++) {
+    const object = stage[start]
+    if (!object || String(object._) !== 'Section') continue
+    // 从 start 出发，沿着"自己被谁装着"往上走；走回 start 就是环
+    const seen = new Set([start])
+    let cursor = start
+    const path = [start]
+    for (let hop = 0; hop < 32; hop++) {
+      let parent = -1
+      for (let i = 0; i < stage.length; i++) {
+        if (childIndexesOf(stage, i).includes(cursor)) { parent = i; break }
+      }
+      if (parent < 0) break
+      path.push(parent)
+      if (parent === start) {
+        found.push({ section: start, name: String(object.text || '') || `#${start}`, path: path.slice() })
+        break
+      }
+      if (seen.has(parent)) break        // 撞上别的环，交给那个起点去报
+      seen.add(parent)
+      cursor = parent
+    }
+  }
+  return found
+}
+
+/**
+ * 把分区结构里的**自环**摘掉（只摘"自己列自己"那一条）。
+ *
+ * 为什么只摘自环、不动间接环：自环是纯粹的脏数据（一个对象不可能是自己的孩子），
+ * 摘掉它没有任何语义损失；而间接环（A 装 B、B 装 A）要怎么断才符合用户本意**是有歧义的** ——
+ * 那种情况应当报出来让人决定，不该由程序猜。
+ *
+ * @returns {{stage: Array, fixed: Array<{section:number,name:string}>}}
+ */
+export function repairSectionSelfLoops(stage) {
+  const next = structuredClone(stage)
+  const fixed = []
+  next.forEach((object, index) => {
+    if (!object || String(object._) !== 'Section' || !Array.isArray(object.children)) return
+    const before = object.children.length
+    object.children = object.children.filter((child) => {
+      const parsed = child && typeof child.$ === 'string' ? parseRefPath(child.$) : null
+      if (parsed !== null && parsed.index === index) return false      // 自己列自己 ⇒ 摘掉
+      if (child && typeof child.uuid === 'string' && object.uuid === child.uuid) return false
+      return true
+    })
+    if (object.children.length !== before) {
+      fixed.push({ section: index, name: String(object.text || '') || `#${index}`, removed: before - object.children.length })
+    }
+  })
+  return { stage: next, fixed }
 }
 
 /** 任何 `$` 路径指向的下标都必须还在范围内 —— 越界就是"接错对象"的前兆，直接抛。 */
@@ -633,6 +1000,12 @@ export function setParent(stage, childUuid, sectionUuid) {
     if (String(stage[sectionIndex]._) !== 'Section') {
       return { ok: false, error: `${sectionUuid} 不是分区（是 ${stage[sectionIndex]._}）` }
     }
+    // ★ 防环（2026-10-10，对应上游 `goInSection` 的语义）：
+    //   只挡"自己装自己"不够 —— 把 A 放进**自己的后代** B 里，一样成环
+    //   （A 装 B、B 装 A），折叠遍历会在这条环上打转或整支消失。
+    //   上游靠 `SectionInOutManager.goInSection` 那层保护；我们是直接改 `.prg`，得自己挡。
+    const cyc = assertNoSectionCycle(stage, sectionIndex, childIndex)
+    if (cyc.ok !== true) return cyc
   }
   const next = structuredClone(stage)
   const removedFrom = []
@@ -685,10 +1058,32 @@ export function makeSection(stage, spec = {}) {
     if (index < 0) return { ok: false, error: `没有这个对象：${uuid}` }
     indexes.push(index)
   }
+  // ★ 成员整理 + 防环（照搬上游的做法，见 `shallowerChildIndexes` 的注释）。
+  //   ① 选中的分区里**已经在装着**的成员剔掉（由分区代表它们）——
+  //      上游 `packEntityToSection` 第一行就是这个（`shallowerNotSectionEntities`）；
+  //   ② 新分区还没进舞台，先按"它若进来会不会成环"挡一道：
+  //      任何候选成员**自己就（间接）装着**这批里的东西 ⇒ 不能收，收了就成环。
+  //   这两条在正常 UI 操作下都碰不到，而我们是直接改 `.prg` 的，
+  //   没有上游 `goInSection` 那层保护 —— 实测已经因此写出过一个"自己装自己"的分区。
+  const shrunk = shallowerChildIndexes(stage, indexes)
+  const kept = shrunk.keep
+  const droppedUuids = shrunk.dropped.map((i) => entityUuid(stage, i))
+  // ② 防环：任何一个候选项**已经（间接）装着**另一个候选项 ⇒ 它们不能同时进新分区。
+  for (const index of kept) {
+    for (const other of kept) {
+      if (other === index) continue
+      if (sectionContainsIndex(stage, index, other)) {
+        const name = String((stage[index] && stage[index].text) || '') || `#${index}`
+        return { ok: false, error: `「${name}」里已经装着这批里的别的对象 ⇒ 不能把它们同时收进一个新组合（会成环）` }
+      }
+    }
+  }
   const pad = 24
   const titleBar = spec.text === undefined || String(spec.text) === '' ? 0 : 44
   let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity
-  for (const index of indexes) {
+  // ⚠️ 包围盒按**整理后的** `kept` 算，不是原始的 `indexes` —— 被剔掉的那些
+  //    （已经在某个选中分区里、由那个分区代表）本来就不该参与，否则框会比实际内容大一圈。
+  for (const index of kept) {
     const location = locationOf(stage[index]); const size = sizeOf(stage[index])
     if (location === null || size === null) continue
     x0 = Math.min(x0, location.x); y0 = Math.min(y0, location.y)
@@ -722,14 +1117,17 @@ export function makeSection(stage, spec = {}) {
       },
       color: { _: 'Color', r: 0, g: 0, b: 0, a: 0 },
       text: String(spec.text === undefined ? '分区' : spec.text),
-      children: indexes.map((index) => ({ $: `/${index}` })),
+      children: kept.map((index) => ({ $: `/${index}` })),
       isCollapsed: false,
       locked: false,
       details: [],
       borderStyle: ['solid', 'dashed', 'none'].includes(String(spec.borderStyle))
         ? String(spec.borderStyle) : 'solid',
     },
-    childIndexes: indexes,
+    childIndexes: kept,
+    // 被"成员整理"剔掉的那些（它们已经在某个选中分区里，由那个分区代表）——
+    // 报出来是为了让调用方能如实告诉用户"有 N 个对象因为已经在某个组合里、没有重复收进来"。
+    droppedUuids,
     box: { x: left, y: top, width, height },
   }
 }

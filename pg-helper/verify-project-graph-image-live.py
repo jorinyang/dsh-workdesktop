@@ -15,6 +15,8 @@ import sys
 import urllib.parse
 import urllib.request
 
+from _suite_util import purge_project_backups
+
 BASE = "http://127.0.0.1:3080"
 PROJECTS = os.path.join(os.path.expanduser("~"), ".dsh\\.dsh-project-graph\\projects")
 PROJECT = "图片自测临时工程"
@@ -159,6 +161,10 @@ finally:
         print("\n清理：临时工程已删除")
     except OSError as e:
         print(f"\n清理失败：{e}")
+    # 备份目录一起收干净：delete 只删 .prg，snapshots/versions 里的备份要另外收（见 _suite_util.py）
+    purged = purge_project_backups(PROJECT)
+    if purged:
+        print(f"       （另外收掉 {purged} 个备份目录）")
 
 print(f"\nPASS={passed} FAIL={failed}")
 sys.exit(0 if failed == 0 else 1)

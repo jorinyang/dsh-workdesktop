@@ -39,9 +39,28 @@ const block = workpacesBlock()
 // ── PGC-1 左侧栏底部的行数与顺序 ──────────────────────────────────────────
 // 2026-10-08：用户裁定把「遥控器」插在「驾驶舱」下方、「坐标系」上方 ⇒ 从 5 行变 6 行。
 // 位置要求本身没变（工程图仍在坐标系下方、建模中心上方），这里把行数与顺序表一起跟上。
-chk('PGC-1', '★ 左侧栏底部图标行是 6 行（工作台 · 驾驶舱 · 遥控器 · 坐标系 · 工程图 · 建模中心）',
-  block !== null && (block.match(/\{ id:/g) || []).length === 6,
-  block === null ? '没找到 WORKSPACES 段' : `行数=${(block.match(/\{ id:/g) || []).length}`)
+//
+// ★ 2026-10-14 修（**这条检查一直在量源码文本，而文本里多了一条"故意留着的退役行"**）：
+//   `[1] host half` 那套自证从"当场语法错"修好之后，这条立刻报红 ——
+//   报的是"行数=7"，而左侧栏**实际只出 6 行**。
+//   差在哪：`WORKSPACES` 段里有一条**已退役**的旧「工作台」（13 卡）行，
+//   写成 `...(LEGACY_WORKBENCH_TAB_RETIRED ? [] : [{ id: … }])` ——
+//   开关为真时**运行时不出这一行**，但那段 `{ id:` 的**源码文本还在**（而且留着是有意的：
+//   下一个人翻到这里能知道"这一行原来是什么、为什么没了"）。
+//   ⇒ 判据改成**把两条都写清**：6 条在用的（逐条比出 id）+ 1 条退役的（必须挂在开关上）。
+//     原来那种"数 `{ id:` 出现几次"的写法，量的是文本、不是行为 —— 加一行注释就可能变红。
+{
+  const allIds = (block === null ? [] : [...block.matchAll(/\{ id:\s*([A-Z_]+)/g)].map((m) => m[1]))
+  const retiredOnSwitch = block !== null && /LEGACY_WORKBENCH_TAB_RETIRED\s*\?\s*\[\]\s*:\s*\[\{\s*id:/.test(block)
+  // 用到的 id 名与早先那版不一样（实测：`PANEL_YISHU_ID` / `MI_REMOTE_KIND` /
+  // `PANEL_COORDS` / `PANEL_PROJECT_GRAPH` / `PANEL_MODELING`），所以**不写死名字**，
+  // 只数"在用几条 + 退役几条"，再把实际名字打在说明里 —— 免得下次改个常量名又红一次。
+  const live = allIds.filter((x) => x !== 'SIDEBAR_TAB_ID')
+  chk('PGC-1', '★★ 左侧栏底部 **6 行在用**（驾驶舱 · 弈枢 · 遥控器 · 坐标系 · 工程图 · 建模中心）+ 退役「工作台」1 行挂在开关上',
+    block !== null && retiredOnSwitch && live.length === 6 && allIds.length === 7,
+    block === null ? '没找到 WORKSPACES 段'
+      : `在用 ${live.length} 条：${live.join(' , ')}｜退役：SIDEBAR_TAB_ID（挂 LEGACY_WORKBENCH_TAB_RETIRED=${retiredOnSwitch}）`)
+}
 
 /**
  * 顺序表：`label:` 后面既可能是字面量（`'坐标系'`）也可能是常量（`PG_TITLE`）。
