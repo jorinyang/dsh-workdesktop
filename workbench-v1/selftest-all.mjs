@@ -134,6 +134,13 @@ await run('P2b', 'P2 链接队列', async () => (await import(base + 'processor/
 await run('P2c', 'P2 筛选主链', async () => (await import(base + 'processor/filter.mjs')).selfTest());
 await run('P2d', 'P3 召回层', async () => (await import(base + 'processor/recall.mjs')).selfTest());
 await run('P3', 'P3 分析引擎', async () => (await import(base + 'processor/analyze.mjs')).selfTest());
+// ★★ 2026-10-14 补登记（**五个模块自带自检，却一直没进总回归 —— 合计 60 条等于白守**）：
+//   盘点工作台时发现的：这些模块各自 `selfTest()` 都能跑、也都过，但**没有任何入口把它们汇总进来**。
+//   后果：改坏它们，总回归照样全绿 —— 那是**假绿**，比没有检查更坏（会让人以为守住了）。
+//   判据很简单：**凡是有 `selfTest()` 的模块，就必须有一条 `run(...)` 把它挂上**；这条以后按此办。
+await run('P3x', 'P3 会话级上下文', async () => (await import(base + 'processor/conv-context.mjs')).selfTest());
+await run('P3y', 'P3 字段提取器', async () => (await import(base + 'processor/extract.mjs')).selfTest());
+await run('P3z', 'P3 会话聚合', async () => (await import(base + 'processor/conversations.mjs')).selfTest());
 // P1 可视化构建器（需求 3.2.2 后半句）：真调工具建模型，**成功才置 built**；失败留痕
 await run('P3v', 'P3 可视化构建器', async () => (await import(base + 'processor/visual.mjs')).selfTest());
 await run('P5b', 'P5 审计与归档', async () => (await import(base + 'processor/archive.mjs')).selfTest());
@@ -143,6 +150,10 @@ await run('P4a', 'P4 设计 token', async () => (await import(base + 'ui/tokens.
 await run('P4b', 'P4 渲染外壳', async () => (await import(base + 'ui/shell.mjs')).selfTest());
 await run('P4c', 'P4 客户端脚本', async () => (await import(base + 'ui/client.mjs')).selfTest());
 await run('P4d', 'P4 页面数据接口', async () => (await import(base + 'api/pages.mjs')).selfTest());
+// ★ 同上：这两条也是"自带自检却没登记"的（真机点击 15 条 · 状态栏探针 7 条）。
+//   注意"真机点击"那条是**源码级**的检查（不启浏览器），所以进总回归不会拖慢套件。
+await run('P4e', 'P4 真机点击检查', async () => (await import(base + 'ui/interactions.mjs')).selfTest());
+await run('P4f', 'P4 状态栏探针', async () => (await import(base + 'ui/probes.mjs')).selfTest());
 await run('P7a', 'P7 驾驶舱数据', async () => (await import(base + 'api/cockpit.mjs')).selfTest());
 await run('P7b', 'P7 驾驶舱页面', async () => (await import(base + 'ui/cockpit-page.mjs')).selfTest());
 // ★ 2026-10-14 加：**驾驶舱每日生成**（用户第 8 节：「驾驶舱每天幂等执行…所有内容不断积累，无上限」）。

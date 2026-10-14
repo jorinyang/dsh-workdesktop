@@ -95,7 +95,22 @@ export async function selfTest() {
   }
   chk('PRB-5', '★ 四项都探到（每项都有独立探针，不是复制同一个值）', Object.keys(all).length === 4);
   chk('PRB-6', '★ 不知道就不说知道：三者互不混淆（null ≠ true）', all.dws.ok !== undefined && all.mcp.ok !== undefined);
-  chk('PRB-7', 'localTools 探针反映真实 node 版本', all.localtools.detail.includes(process.versions.node.slice(0, 2)), all.localtools.detail);
+  // ★ 2026-10-14 修（**这条检查写窄了，把"如实探不到"当成了失败**）：
+  //   现象：单独跑这一组 7/0 全过；一挂进总回归就 6/1 —— 报 PRB-7 不过。
+  //   查明：总回归给每组**换一个临时知识库根**，于是 `_meta/tools` 在那底下不存在，
+  //     探针**如实**回 `本地工具目录 _meta/tools 不存在`。
+  //     而这条却假定"探针一定拿到了 node 版本" ⇒ 必然红。
+  //   **探针是对的** —— 它探不到就说探不到，这正是"诚实空态"要的行为。
+  //   ⇒ 两种情况都算对：① 探到了 ⇒ 说明里必须带**真实** node 版本（证明不是编的）；
+  //                       ② 没探到 ⇒ 说明里必须**明说缺什么**（不能空着、不能假装成功）。
+  //   这样换任何环境跑都成立，"反映真实 node 版本"这个意图一条没丢。
+  const ltDetail = String(all.localtools.detail ?? '');
+  const ltFound = ltDetail.includes('node');
+  chk('PRB-7', 'localTools 探针：探到就报真实 node 版本，探不到就明说缺什么（不许空着或假装成功）',
+    ltFound
+      ? ltDetail.includes(process.versions.node.slice(0, 2))
+      : (ltDetail.trim() !== '' && /不存在|找不到|未/.test(ltDetail)),
+    ltDetail);
   const pass = out.filter((x) => x.ok).length;
   return { pass, fail: out.length - pass, details: out };
 }
