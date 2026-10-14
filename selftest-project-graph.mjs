@@ -176,12 +176,31 @@ chk('PG-6d', '★ delete_node 之后读回里没有它',
   (deleted.json.objects || []).every((o) => o.ref !== two.ref), '')
 
 // ── PG-7 上游边界要原样透传（不许把"要打开态"说成"我们也行"）──────────────
+//
+// ★★ 2026-10-15 改（**原来这条只在"桌面端关着"时成立，关着开着都只认一种**）。
+//
+//   原文：`boundary.json.ok === false && boundary.json.code === 'PROJECT_MUST_BE_OPEN'`
+//   —— 它假定此时此刻桌面端**一定是关着的**。而实测（2026-10-15 01:21）：
+//   本机 `project-graph` 进程开着（PID 95976）⇒ `create_text_node` **真的建出了节点**
+//   （`{"ok":true,"value":{"success":true,"ref":"n5",…}}`）⇒ 这条当场判否。
+//
+//   **上游没有错，是这条检查错了**：它把"我这台机器此刻的状态"写成了判据。
+//   这种检查的坏处是**它会随环境随机变红**，而红了之后没人分得清"是环境还是真坏了" ——
+//   于是被当成噪声忽略（这条从写下来到现在一直红着、也从没记进待办，就是这么来的）。
+//
+//   ⇒ 改成**两态都认，而且不许谎报状态**：
+//     · 关闭态 ⇒ 必须 `ok:false` + `PROJECT_MUST_BE_OPEN`（原样透传，不改写成"我们也行"）；
+//     · 打开态 ⇒ `ok:true`（上游真能干活），此时**要如实把"当前是打开态"打出来**；
+//     · 其它任何形态（既不是这两种、或打开态里没拿到 ref）⇒ 判否。
+//   判据是"**两种合法形态之一**"，不是"等于我上次跑时的那个形态"。
 const boundary = await call('POST', `${ROUTE}/pg/invoke`, {
-  tool: 'create_text_node', project: '自测工程.prg', input: { text: '不该成功' },
+  tool: 'create_text_node', project: '自测工程.prg', input: { text: '边界探针' },
 })
-chk('PG-7', '★ 关闭态调 create_text_node ⇒ 原样透传上游 PROJECT_MUST_BE_OPEN',
-  boundary.json && boundary.json.ok === false && boundary.json.code === 'PROJECT_MUST_BE_OPEN',
-  JSON.stringify(boundary.json).slice(0, 200))
+const closedForm = boundary.json && boundary.json.ok === false && boundary.json.code === 'PROJECT_MUST_BE_OPEN'
+const openForm = boundary.json && boundary.json.ok === true && boundary.json.value && typeof boundary.json.value.ref === 'string'
+chk('PG-7', '★★ 上游边界两态之一：关闭态原样透传 PROJECT_MUST_BE_OPEN · 打开态如实返回成功（不许谎报在哪个态）',
+  Boolean(closedForm || openForm),
+  `${closedForm ? '当前：关闭态' : (openForm ? `当前：打开态（真建出 ${boundary.json.value.ref}）` : '★ 哪种都不是')} · ${JSON.stringify(boundary.json).slice(0, 160)}`)
 const badTool = await call('POST', `${ROUTE}/pg/invoke`, { tool: 'no_such_tool', project: '自测工程.prg', input: {} })
 chk('PG-7b', '不存在的工具名 ⇒ 上游 UNKNOWN_TOOL 原样回传', badTool.json && badTool.json.code === 'UNKNOWN_TOOL',
   JSON.stringify(badTool.json).slice(0, 160))
