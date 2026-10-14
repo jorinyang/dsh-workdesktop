@@ -190,7 +190,14 @@ export function clientScript(apiBase) {
   L.push('  function deliverForm(todoId) {');
   L.push('    var wrap = el("div", "dv-form");');
   L.push('    wrap.appendChild(el("div", "dv-title", "提交结果 / 交付物"));');
-  L.push('    var F = [["text", "文字说明", "写清楚做了什么、结论是什么"], ["link", "链接", "https://…"], ["file", "附件（本机文件路径）", "例如 C:\\\\Users\\\\…\\\\方案.docx"]];');
+  // ★★ 2026-10-14 改（用户裁定：「直接粘贴文件上传交付物请做掉，**填写本机文件路径即可**」）：
+  //   三段输入的**措辞改清楚** —— 原来写「附件（本机文件路径）」，容易被读成"要上传一个文件"。
+  //   实测的机制：浏览器里**粘贴一个文件**，拿到的是**文件内容**、拿不到路径（安全模型如此）；
+  //   而这条写路径收的正是**路径**（服务端与你在同一台机器上，拿到路径就能把文件复制进知识库的归档目录）。
+  //   ⇒ 所以第二段明确写成「附件路径（粘贴本机路径）」，并在标题下**加一行说明**讲清怎么用。
+  //     这样界面说的和实际做的对得上 —— 比留一个让人猜的标签强。
+  L.push('    wrap.appendChild(el("div", "dv-hint", "三段都可选，至少填一段：文字说明 / 链接 / 附件路径。附件请**粘贴本机完整路径**（浏览器拿不到你复制的文件本身，服务端按路径去取）。"));');
+  L.push('    var F = [["text", "文字说明", "写清楚做了什么、结论是什么"], ["link", "链接", "https://…"], ["file", "附件路径（粘贴本机路径）", "例如 C:\\\\Users\\\\…\\\\方案.docx"]];');
   L.push('    var inputs = {};');
   L.push('    F.forEach(function (f) {');
   L.push('      var row = el("div", "dv-row");');
@@ -838,6 +845,9 @@ export function clientStyle() {
   // 待办的"结果交付物"表单（2026-10-13 加，用户第 9 条）：与新增表单同一套输入框样式，视觉一致。
   s.push('.dv-form { margin-top: var(--s-md); padding-top: var(--s-sm); border-top: 1px solid var(--c-hairline); }');
   s.push('.dv-form .dv-title { font-size: 13px; color: var(--c-body-mid); font-weight: var(--w-medium); margin-bottom: var(--s-xs); }');
+  // 表单说明那一行（2026-10-14 加）：讲清"附件要粘路径、不是粘文件"——
+  // 界面说的和实际做的对得上，比留一个让人猜的标签强。
+  s.push('.dv-form .dv-hint { font-size: 12px; color: var(--c-mute); line-height: 1.5; margin-bottom: var(--s-xs); }');
   s.push('.dv-form .dv-row { display: flex; align-items: center; gap: var(--s-sm); padding: 3px 0; }');
   s.push('.dv-form .dv-row .ov-k { flex: none; }');
   s.push('.dv-form .dv-row .ov-input { flex: 1; }');
