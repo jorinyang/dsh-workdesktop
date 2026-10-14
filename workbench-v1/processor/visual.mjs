@@ -304,17 +304,24 @@ export async function selfTest() {
   };
   const failDeps = { ...okDeps, coordsFn: async () => ({ ok: false, reason: '磁盘只读（桩）' }) };
 
+  // ★★ 2026-10-14 修（**VIS-9 只在套件里红、单跑是过的**）：
+  //   原来这里用 `store.list({ type: 'note' })[0]` 取"刚建的那条" ——
+  //   那是**列表里的第一条，不是刚建的那条**。单跑时库里只有它，恰好对；
+  //   套件里别的检查先建过笔记 ⇒ 取到的是**别人那条** ⇒ 给别人的笔记打建议、
+  //   拿回来的也是别人那条 ⇒ VIS-9（"没有建议的笔记 ⇒ 什么都不做"）判在了对不上的对象上。
+  //   ⇒ 改成**按 id 精确取回刚建的那条**。这类"取第一条"的写法在本项目已栽过多次
+  //     （列表点不动那次也是同一个病：`querySelector(".list")` 取到的是第一个 .list）。
   const mkNote = (id, text, visualTool) => {
-    store.upsert(makeEvent({
+    const made = store.upsert(makeEvent({
       type: 'note',
       payload: { topic: '采集器设计的几个维度', date: '2026-10-12', content_md: text, tags: ['设计'] },
       origin: { channel: 'manual', sender: '我', messageId: id },
       _at: Date.now(),
     }).event);
-    const e = store.list({ type: 'note' })[0];
+    const e = store.getById('note', made.event?._id) ?? store.list({ type: 'note' })[0];
     // 模拟 analyze.mjs 已经给过建议
     store.patch('note', e._id, { analysis: { by: 'model', text: '判断：…', visual: visualTool ? { suggested: visualTool, why: '桩' } : null } });
-    return store.list({ type: 'note' })[0];
+    return store.getById('note', e._id);
   };
 
   try {

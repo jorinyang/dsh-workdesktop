@@ -158,14 +158,22 @@ export function todos({ bucket = 'all', now = Date.now() } = {}) {
 }
 
 /** 日程页：今日 / 未来7天 / 前30日内已完成 */
-export function schedules({ bucket = 'today', now = Date.now() } = {}) {
+// ★★ 2026-10-14 改：默认桶 `today` → **`all`**（用户这一轮要求日程页多一档「全部」）。
+//   理由与待办页那次**一模一样**：默认桶太窄 ⇒ 打开页面只看到今天那几条，
+//   库里另外 9 条像不存在。用户要的是"列表 + 页签"，那默认就该给全量。
+//   ⚠️ 调用方核对过：总览只用 `counts`（不受默认桶影响）、自检用 `counts`、页面列表用默认桶（就该是 all）。
+export function schedules({ bucket = 'all', now = Date.now() } = {}) {
   const rows = store.list({ type: 'schedule' });
   const at = (e) => Date.parse(e.payload.start ?? '');
   const isDone = (e) => (e.ops ?? []).some((o) => o.op === 'done');
   const today = rows.filter((e) => Number.isFinite(at(e)) && dayStart(at(e)) === dayStart(now));
   const next7 = rows.filter((e) => Number.isFinite(at(e)) && at(e) >= dayStart(now) && at(e) <= dayStart(now) + 7 * DAY);
   const done30 = rows.filter((e) => isDone(e) && Number.isFinite(at(e)) && at(e) >= dayStart(now) - 30 * DAY && at(e) < dayStart(now));
-  const buckets = { today, next7, done30 };
+  // ★★ 2026-10-14 加：**all 桶**（用户这一轮要求日程页有「今日 / 未来7天 / **全部**」三个页签）。
+  //   原来只有 today / next7 / done30 ⇒ 传 `all` 时 `buckets['all']` 是 undefined、列表空；
+  //   真机验证抓到的"全部 1 条"其实是**默认桶 today 的那 1 条**（默认桶也是 today）。
+  //   这与待办页那次是同一个病：**页签点了没反应，根子在聚合层没有那个桶**。
+  const buckets = { today, next7, done30, all: rows };
   const list = (buckets[bucket] ?? []).map((e) => ({
     id: e._id, topic: e.payload.topic, start: e.payload.start, end: e.payload.end ?? null,
     // ★ 字段名以 schema 的登记为准：日程地点是 **place**（不是 location）

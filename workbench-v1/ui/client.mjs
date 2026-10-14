@@ -266,11 +266,11 @@ export function clientScript(apiBase) {
   L.push('      var seen = det.structured || {}; var orig = det.original || {};');
   L.push('      var rec = (det.context && det.context.recalled) || [];');
   L.push('      var recallError = det.context && det.context.recallError;');
-  // ★ 相关上下文要**列出材料本身**（路径 + 相似度），并区分两种"空"：
-  //   真的没召回到 vs 召回不可用 —— 后者必须写明原因，不能显示成"暂无相关材料"
-  L.push('      var ctxText = rec.length');
-  L.push('        ? rec.slice(0, 3).map(function (h) { return h.path + "（" + (h.similarity === null || h.similarity === undefined ? "-" : h.similarity) + "）"; }).join("\\n")');
-  L.push('        : (recallError ? ("召回不可用：" + recallError) : "暂无相关材料");');
+  // ⚠️ 2026-10-14 **删掉了原来那两行**：它们把召回材料列成「路径（相似度）」——
+  //   而用户这一轮在四个页面的详情里**都点名**：「**不得显示相关上下文的文件路径**」。
+  //   ⇒ 现在只展示服务端概括好的那段话（见下面 `ctxSummary` 那一段）；
+  //     原文片段与路径**一律不展示**，哪怕概括失败也不退回去列路径（那是用户明确禁止的）。
+  //   （`rec` / `recallError` 仍取着 —— 概括那一路要用到它们。）
   // ★★ 2026-10-13 改（用户第二次提到图片显示）：
   //   「显示图片在详情页中这个能力，**在红色框中应该直接显示图片消息几个字即可，不需要有这么长的链接**。」
   //   原来「原始消息」这一行把 `[图片消息](mediaId=@lQLPKck4…AA)…` **整串**打出来了 ——
@@ -284,24 +284,95 @@ export function clientScript(apiBase) {
   L.push('      var seenShown = String(seen.topic || seen.raw || seen.summary || "")');
   L.push('        .replace(/\\[(图片|视频|语音|文件)消息\\]\\(mediaId=[^)\\s]*\\)?/g, "［$1消息］")');
   L.push('        .replace(/mediaId=[^)\\s]*/g, "").replace(/\\s{2,}/g, " ").trim();');
-  L.push('      var rows = [["结构化内容", seenShown], ["原始消息", ((orig.sender || "") + " · " + rawShown)], ["相关上下文", ctxText]];');
+  // ★★ 2026-10-14 改（用户第 4/5/6/7 条**逐条点名**）：详情里的结构化内容要**拆成独立字段**，
+  //   不得合并成一个「结构化内容」。
+  //     消息 = 来信渠道 / 发信人 / 信息原文
+  //     待办 = 待办主题 / 截止时间 / 发布人 / 执行人 / 待办详情
+  //     日程 = 主题 / 起止时间 / 地点 / 参与人 / 日程详情
+  //     笔记 = 主题 / 时间 / 内容
+  //   原来是**所有类型共用**三行（结构化内容 / 原始消息 / 相关上下文）—— 字段名与内容都对不上。
+  //   ⇒ 按类型各给一组行；公共的「相关上下文」等后面统一追加。
+  L.push('      var rows = [];');
+  L.push('      var CH = { dingtalk: "钉钉", feishu: "飞书", weixin: "微信", imessage: "iMessage", manual: "工作台", mail: "邮件", minutes: "听记" };');
+  L.push('      var chan = CH[String(orig.channel || seen.channel || "")] || String(orig.channel || seen.channel || "—");');
+  L.push('      var JOIN = function (v) { return Array.isArray(v) ? (v.join("、") || "—") : (v || "—"); };');
+  L.push('      if (type === "messages") {');
+  L.push('        rows.push(["来信渠道", chan]);');
+  L.push('        rows.push(["发信人", orig.sender || seen.sender || "—"]);');
+  //          ★ 图片消息：正文只显示「［图片消息］+ 文字」，**链接不进来**（用户第 7 条）；图在下面单独嵌。
+  L.push('        rows.push(["信息原文", rawShown || "—"]);');
+  L.push('      } else if (type === "todos") {');
+  L.push('        rows.push(["待办主题", seen.topic || "—"]);');
+  L.push('        rows.push(["截止时间", seen.due || "—"]);');
+  L.push('        rows.push(["发布人", seen.publisher || "—"]);');
+  L.push('        rows.push(["执行人", seen.executor || "—"]);');
+  L.push('        rows.push(["待办详情", seen.detail || "—"]);');
+  L.push('      } else if (type === "schedules") {');
+  L.push('        rows.push(["主题", seen.topic || "—"]);');
+  L.push('        rows.push(["起止时间", (seen.start || "—") + " ~ " + (seen.end || "—")]);');
+  L.push('        rows.push(["地点", seen.place || "—"]);');
+  L.push('        rows.push(["参与人", JOIN(seen.participants)]);');
+  L.push('        rows.push(["日程详情", seen.detail || "—"]);');
+  L.push('      } else if (type === "notes") {');
+  L.push('        rows.push(["主题", seen.topic || "—"]);');
+  L.push('        rows.push(["时间", seen.date || "—"]);');
+  L.push('        rows.push(["内容", seen.content_md || seenShown || "—"]);');
+  L.push('      } else {');
+  //         兜底：认不出的类型仍给一行原文，**不要什么都不显示**
+  L.push('        rows.push(["结构化内容", seenShown || "—"]);');
+  L.push('      }');
+  // ★★ 2026-10-14 改（用户第 4/5/6/7 条都点名这条）：
+  //   「相关上下文：应检索 RAG 知识库和本身知识库；**将相关内容通过 LLM 概括后展示**；
+  //     **不得显示相关上下文的文件路径**。」
+  //   ⇒ 原来列的是"路径（相似度）" —— 正是用户点名不许出现的东西。
+  //     现在只显示**服务端概括好的那段话**；还在算就显示"正在概括…"；算不出来就如实说原因。
+  //   ⚠️ 原文片段与路径**一律不展示**（哪怕概括失败也不退回去列路径 —— 那是用户明确禁止的）。
+  L.push('      var ctxSummary = det.contextSummary;');
+  L.push('      var ctxText;');
+  L.push('      if (ctxSummary) ctxText = ctxSummary;');
+  L.push('      else if (det.contextSummaryPending) ctxText = "正在概括（后台算，重新打开这条就能看到）";');
+  L.push('      else ctxText = det.contextSummaryError ? ("暂无：" + det.contextSummaryError) : "暂无相关资料";');
+  L.push('      rows.push(["相关上下文", ctxText]);');
   // ★★ 2026-10-13 加（用户第 7 条）：「点击消息列表中的对应图片消息进入详情后，**需要能够显示出该图片**。」
   //   实测：图片消息的 `payload.fileRef` 指向 `Other/Inflow/文件/<月>/<mediaId>.<ext>`，文件都在（35/35）。
   //   而浏览器取不到 —— 所以新开了一条只读取图通道 `GET /v1/file?p=<相对路径>`
   //   （**只允许 Other/Inflow 之下、拒路径穿越、限扩展名**，见 server.mjs 里那段安全注释）。
   //   这一行把图**直接嵌进浮层**：用 `<img>`，不用新窗口，处置动作还在同一屏。
   //   取不到时**如实说**（文件被清掉 / 通道 403），不留一个破图占位。
+  // ★ 2026-10-14（用户第 4 条）：「点击图片消息进入详情后，**信息内容中显示对应图片，不单开字段**」。
+  //   ⇒ 图**不再单占一行**，而是**接在「信息原文」那一格下面**（同一格内换行），字段数不变。
   L.push('      var imgRef = (type === "messages") ? (orig.fileRef || (det.structured && det.structured.fileRef) || null) : null;');
-  L.push('      var imgRow = null;');
+  L.push('      var imgWrap = null;');
   L.push('      if (imgRef) {');
-  L.push('        imgRow = document.createElement("div"); imgRow.className = "ov-row";');
-  L.push('        var k = el("span", "ov-k", "图片"); imgRow.appendChild(k);');
-  L.push('        var box2 = el("span", "ov-v", "载入中…"); imgRow.appendChild(box2);');
+  L.push('        imgWrap = document.createElement("div"); imgWrap.className = "ov-imgwrap";');
   L.push('        var img = document.createElement("img");');
   L.push('        img.alt = "消息图片"; img.className = "ov-img";');
-  L.push('        img.onload = function () { box2.textContent = ""; box2.appendChild(img) };');
-  L.push('        img.onerror = function () { box2.textContent = "取不到图片（" + imgRef + "）—— 文件可能已被清理，或取图通道拒绝了这一条" };');
+  L.push('        var note = document.createElement("div"); note.className = "ov-imgnote"; note.textContent = "载入中…";');
+  L.push('        img.onload = function () { note.textContent = ""; };');
+  L.push('        img.onerror = function () { note.textContent = "取不到图片（文件可能已被清理，或取图通道拒绝了这一条）"; };');
   L.push('        img.src = API + "/file?p=" + encodeURIComponent(imgRef);');
+  L.push('        imgWrap.appendChild(img); imgWrap.appendChild(note);');
+  L.push('      }');
+  // ★★ 2026-10-13 加（用户第 7 条）：「点击消息列表中的对应图片消息进入详情后，**需要能够显示出该图片**。」
+  //   实测：图片消息的 `payload.fileRef` 指向 `Other/Inflow/文件/<月>/<mediaId>.<ext>`，文件都在（35/35）。
+  //   而浏览器取不到 —— 所以新开了一条只读取图通道 `GET /v1/file?p=<相对路径>`
+  //   （**只允许 Other/Inflow 之下、拒路径穿越、限扩展名**，见 server.mjs 里那段安全注释）。
+  //   这一行把图**直接嵌进浮层**：用 `<img>`，不用新窗口，处置动作还在同一屏。
+  //   取不到时**如实说**（文件被清掉 / 通道 403），不留一个破图占位。
+  // ★ 2026-10-14 改（用户第 4 条）：「点击图片消息进入详情后，**信息内容中显示对应图片，不单开字段**。」
+  //   ⇒ 把图**接进「信息原文」那一格**（同一格内换行），**不再单占一行** —— 字段数不变。
+  //     上一版是另起一行叫「图片」，那正是用户说的"单开字段"。
+  L.push('      if (imgWrap) {');
+  L.push('        for (var ri = 0; ri < rows.length; ri++) {');
+  L.push('          if (rows[ri][0] === "信息原文") { rows[ri] = ["__NODE__", (function (rv, iw) {');
+  L.push('            var line = document.createElement("div"); line.className = "ov-row";');
+  L.push('            line.appendChild(el("span", "ov-k", "信息原文"));');
+  L.push('            var cell = document.createElement("span", "ov-v");');
+  L.push('            cell.appendChild(document.createTextNode(String(rv || "—")));');
+  L.push('            cell.appendChild(iw);');
+  L.push('            line.appendChild(cell); return line;');
+  L.push('          })(rows[ri][1], imgWrap)]; break }');
+  L.push('        }');
   L.push('      }');
   // ══════════════════════════════════════════════════════════════════════════
   // ★★ 2026-10-13 改（用户第 11 条）：笔记详情要有**分析与建议**和**可视化构建**两项，
@@ -365,10 +436,9 @@ export function clientScript(apiBase) {
   L.push('      if (det.detect && det.detect.created && det.detect.created.length) {');
   L.push('        rows.push(["已自动创建", det.detect.created.map(function (c) { return KIND[c.kind] + "（" + c.action + "）"; }).join("\\n")]);');
   L.push('      }');
-  // ★ 待办额外挂"结果交付物"表单（用户第 9 条）；消息额外挂图片行（第 7 条）。
-  //   两块都用数组传给 overlay，顺序：图片在前（紧跟原文），交付物表单在后（动作区上方）。
+  // ★ 待办额外挂"结果交付物"表单（用户第 5 条）。
+  //   （图片**不再走这里** —— 2026-10-14 起它嵌在「信息原文」那一格里，见上面那段。）
   L.push('      var extras = [];');
-  L.push('      if (imgRow) extras.push(imgRow);');
   L.push('      if (type === "todos") extras.push(deliverForm(id));');
   // ★ 浮层**标题**也要用剥过的文字：实测标题取的是 `seen.raw`（结构化原文），同一串链接会从
   //   第三处漏出来（真机验证连抓两次：先修「原始消息」、再修「结构化内容」，最后才轮到标题）。
@@ -542,6 +612,13 @@ export function clientScript(apiBase) {
   L.push('    if (sel) { sel.value = String(st.size); sel.addEventListener("change", function () { st.size = parseInt(sel.value, 10) || 10; st.page = 1; try { localStorage.setItem("jl.pageSize", String(st.size)) } catch (e) {} render(st, box) }) }');
   L.push('    var prev = box.querySelector("[data-pg-prev]"); if (prev) prev.addEventListener("click", function () { if (st.page > 1) { st.page--; render(st, box) } });');
   L.push('    var next = box.querySelector("[data-pg-next]"); if (next) next.addEventListener("click", function () { if (st.page < st.pages) { st.page++; render(st, box) } });');
+  // ★★ 2026-10-14 修：**首页 / 末页两个按钮加了却没绑事件** —— 真机验证抓到的
+  //   （"点末页跳到最后一页 —— 1/21 → 1/21"，原地不动）。
+  //   我在 `shell.mjs#pager` 里补了 `data-pg-first` / `data-pg-last`，但绑定这一侧漏了 ⇒
+  //   表现是"按钮在那儿、点了没反应"。这正是本项目反复出现的那类错：
+  //   **加了控件却忘了接上它**（页签、按钮、表单都栽过同一个跟头）。
+  L.push('    var first = box.querySelector("[data-pg-first]"); if (first) first.addEventListener("click", function () { if (st.page > 1) { st.page = 1; render(st, box) } });');
+  L.push('    var last = box.querySelector("[data-pg-last]"); if (last) last.addEventListener("click", function () { if (st.page < st.pages) { st.page = st.pages; render(st, box) } });');
   L.push('    var jump = box.querySelector("[data-pg-jump]");');
   L.push('    var go = box.querySelector("[data-pg-go]");');
   L.push('    if (go) go.addEventListener("click", function () { var n = parseInt(jump && jump.value, 10); if (n >= 1 && n <= st.pages) { st.page = n; render(st, box) } });');
@@ -594,6 +671,9 @@ export function clientScript(apiBase) {
   L.push('    }');
   L.push('    var pv = box.querySelector("[data-pg-prev]"); if (pv) pv.disabled = st.page <= 1;');
   L.push('    var nx = box.querySelector("[data-pg-next]"); if (nx) nx.disabled = st.page >= st.pages;');
+  // ★ 首页/末页到两头时也要禁用（与上一页/下一页同一个规矩：到头了就该点不动）
+  L.push('    var pf = box.querySelector("[data-pg-first]"); if (pf) pf.disabled = st.page <= 1;');
+  L.push('    var pl = box.querySelector("[data-pg-last]"); if (pl) pl.disabled = st.page >= st.pages;');
   L.push('  }');
   L.push('  var pboxes = document.querySelectorAll("[data-pager]");');
   L.push('  for (var pb = 0; pb < pboxes.length; pb++) initPager(pboxes[pb]);');
@@ -650,6 +730,28 @@ export function clientScript(apiBase) {
   L.push('        var v = String(inputs[i].value || "").trim();');
   L.push('        if (v === "") continue;');
   L.push('        payload[k] = (k === "tags") ? v.split(/[,，]/).map(function (x) { return x.trim() }).filter(Boolean) : v;');
+  L.push('      }');
+  L.push('      // ★★ 2026-10-14 加（用户第 2 条）：「缺少必填项时，提示应更直观，并**明确指向具体缺失字段**；' + "示例：『XX项内容不能为空』」。");
+  //   原来**没有端上校验** —— 缺字段要等提交打到服务端、拿回一串校验错误（还混着别的字段名），
+  //   用户看到的是"校验未通过"而不是"哪一项没填"。
+  //   ⇒ 端上先自己判一遍：**逐项点名**，并把焦点移到缺的那一项上（照着填就行）。
+  //   ⚠️ 端上校验只是**提前告知**，服务端那道**照旧保留**（端上绕过不难，不能只靠它）。
+  L.push('      var REQ = { messages: ["raw"], todos: ["topic"], schedules: ["topic", "start", "end"], notes: ["topic", "content_md"] };');
+  L.push('      var need = REQ[pageType] || [];');
+  L.push('      var missing = [];');
+  L.push('      for (var mi = 0; mi < need.length; mi++) {');
+  L.push('        var mk = need[mi];');
+  L.push('        if (String(payload[mk] === undefined ? "" : payload[mk]).trim() === "") {');
+  L.push('          var lab = form.querySelector(\'[data-if="\' + mk + \'"]\');');
+  L.push('          var labTxt = lab ? String((lab.closest(".if-cell") || {}).textContent || "").replace(/必填/g, "").trim() : mk;');
+  L.push('          missing.push({ k: mk, name: labTxt || mk, el: lab });');
+  L.push('        }');
+  L.push('      }');
+  L.push('      if (missing.length) {');
+  L.push('        var names = missing.map(function (x) { return x.name.replace(/（[^）]*）|\([^)]*\)/g, "").trim() || x.k; });');
+  L.push('        say("「" + names.join("」「") + "」项内容不能为空 —— 请填写后再提交", true);');
+  L.push('        if (missing[0].el) { try { missing[0].el.focus() } catch (e) {} }');
+  L.push('        return;');
   L.push('      }');
   L.push('      // 与契约对齐的补字段（schema.mjs#PAYLOAD_SPEC 的必填项）');
   // ★★ 2026-10-13 修（**我上一轮改错了，这一条是真机验证抓出来的**）：
@@ -933,9 +1035,16 @@ export function selfTest() {
   chk('CLI-10', '浮层样式含 token 变量（--c-/--shadow-）', css.includes('var(--c-canvas)') && css.includes('var(--shadow-lifted)'));
   chk('CLI-11', '★ 负向对照：按钮样式不是胶囊（圆角 8px 卡片 / 默认按钮 4px）', !/border-radius:\s*9999px/.test(css));
 
-  // 相关上下文的两种"空"必须分开显示（真没召回 vs 召回不可用）
-  chk('CLI-12', '★ 浮层列出召回材料（路径 + 相似度），不是只给条数', js.includes('h.path') && js.includes('h.similarity'));
-  chk('CLI-13', '★ 召回不可用另写一行（不与"暂无相关材料"混同）', js.includes('召回不可用：') && js.includes('暂无相关材料'));
+  // 相关上下文：**展示的是 LLM 概括，不是材料清单**（用户 2026-10-14 四页详情都点名）
+  // ★★ 2026-10-14 改：这条原来是「浮层列出召回材料（**路径 + 相似度**）」，
+  //   而用户这一轮明确要求「将相关内容通过 LLM 概括后展示；**不得显示相关上下文的文件路径**」。
+  //   ⇒ 它当场变红 —— **红得对，它守的是旧行为**（那份行为现在是被明文禁止的）。
+  //   ⇒ 改成守新行为：**展示概括**，且**脚本里不许再出现 `h.path`**（出现就是把路径又列回去了）。
+  chk('CLI-12', '★★ 相关上下文展示的是**概括**，且**脚本里不再有列出路径的代码**（用户明文禁止显示路径）',
+    js.includes('contextSummary') && !js.includes('h.path'),
+    js.includes('h.path') ? '★ 仍在列路径' : '已改为概括');
+  chk('CLI-13', '★ 概括还没算完 / 算不出来时**如实说**（不退回去列路径、也不假装有内容）',
+    js.includes('正在概括') && js.includes('contextSummaryError'));
   chk('CLI-14', '笔记的分析与建议 / 可视化（建议态与已建态）/ 分析未完成 都渲染', js.includes('分析与建议') && js.includes('可视化') && js.includes('v.built === true') && js.includes('分析未完成'));
 
   const pass = out.filter((x) => x.ok).length;

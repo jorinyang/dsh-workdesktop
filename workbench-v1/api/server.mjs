@@ -24,6 +24,10 @@ import { makeEvent } from '../schema.mjs';
 import * as store from '../store.mjs';
 import * as pages from './pages.mjs';
 import { NARRATIVE_SPECS } from './cockpit.mjs';   // 驾驶舱四块的落点（允许值从它取，**一处定义**）
+// ★ 2026-10-14 加：**相关上下文的 LLM 概括**（用户第 4/5/6/7 条都点名同一条：
+//   "检索 RAG 与本身知识库 → 经 LLM 概括后展示 → 不得显示文件路径"）。
+//   放在 api 层是因为它只服务详情接口，不参与采集/分析那两条流水。
+import { summarizeContext, ctxSummaryCached } from './context-summary.mjs';
 import { KB_ROOT as ROOT, PKG_ROOT } from '../paths.mjs';   // 路径收口（见 paths.mjs 顶部说明：原先按本文件深度往上数，包一挪就错）
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -231,11 +235,30 @@ export function handler(req, res) {
       const det = evt._detect ?? null;
       const createdKinds = new Set((det?.created ?? []).map((c) => c.kind));
       const pending = (det?.pending ?? []).filter((c) => !createdKinds.has(c.kind));
+      // ★★ 2026-10-14 加（用户这一轮第 4/5/6/7 条都点名同一条）：
+      //   「相关上下文：应检索 RAG 知识库和本身知识库；将相关内容通过 **LLM 概括后展示**；
+      //     **不得显示相关上下文的文件路径**。」
+      //   ⇒ 在服务端**按需**概括一次，**按（命中集合 + 事件更新时间）缓存** ——
+      //     同一个详情反复打开不该反复烧 token；材料变了（`context.at` 变）才重算。
+      //   ⚠️ 概括失败**不吞**：回 `summaryError`，界面如实说"概括不可用"，而不是拿一堆片段冒充概括。
+      //   ⚠️ 这一段所在的 handler **不是 async**（详情路由是同步函数）—— 第一版直接写 `await`，
+      //      `node --check` 当场报 `Unexpected reserved word`。
+      //      ⇒ 用**同步返回 + 内部消化**的写法：概括是异步的，就先回一个占位、
+      //        概要在后台算完再让界面刷新（见客户端 `contextSummaryPending`）。
+      //        这样详情**立刻打开**（不等模型几十秒），概括随后补上。
+      const ctx = ctxSummaryCached(evt);
+      const ctxSummary = ctx.text ?? null;               // ★ 给**文本**，不是整个对象
+      const ctxSummaryError = ctx.error ?? null;
+      const ctxSummaryPending = ctx.pending === true;
       return json(res, 200, {
         id: evt._id, type: evt.type, lifecycle: evt.lifecycle, at: evt._at,
         structured: evt.payload,                       // 结构化内容
         original: evt.origin,                          // 原始消息（来源/发信人/原文）
         context: evt.context ?? { recalled: [] },      // 相关上下文（分析引擎召回后写入）
+        // ★ 给界面用的**概括**（不含任何文件路径，见 `summarizeContext`）
+        contextSummary: ctxSummary,
+        contextSummaryError: ctxSummaryError,
+        contextSummaryPending: ctxSummaryPending,      // ★ 还在算 ⇒ 界面显示"正在概括"，别显示成"暂无"
         analysis: evt.analysis ?? null,                // 分析与建议 / 可视化（笔记用）
         deliverables: evt.deliverables ?? [],
         ops: evt.ops ?? [],

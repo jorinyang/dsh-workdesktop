@@ -85,6 +85,15 @@ await run('P1q', 'P1 钉钉·消息范围闸（白名单群全量 / 其余只收
 //   收与提醒分开各开一组 —— 两条规矩的产地不同（scope-gate / notice-gate），
 //   将来各自会改；合在一组里改一条会连带动到另一条。
 await run('P1r', 'P1 提醒闸（群里非@我 ⇒ 只收不提醒）', async () => (await import(base + 'processor/notice-gate.mjs')).selfTest());
+// ★ 2026-10-14 加：**相关上下文的 LLM 概括**（用户这一轮四个页面的详情都点名同一条：
+//   "检索 RAG 与本身知识库 → 经 LLM 概括后展示 → **不得显示文件路径**"）。
+//   单开一组的原因：它有一条**明文禁止**（不许出现路径），而"路径露出来"这种事
+//   只有靠"输出端兜一道 + 检查钉住"才拦得住 —— 光靠提示词管不住模型。
+await run('P1s', 'P1 相关上下文概括（LLM 概括 · 不带路径）', async () => (await import(base + 'api/context-summary.mjs')).selfTest());
+// ★ 2026-10-14 加：**底部状态栏「实时回复」四态**（用户第 1 条：黄=仅监听 / 绿=响应中 / 灰=关闭 / 红=离线）。
+//   单开一组：这三个灯是**用户眼睛直接看的东西**，而它们是"文案 + 颜色"两处拼出来的，
+//   任何一处被改歪都表现为"灯的颜色和字对不上" —— 那种错不盯着屏幕看不出来，所以要写成可判的。
+await run('P1t', 'P1 实时回复四态（颜色与文案对得上）', async () => (await import('../system-switches.mjs')).selfTest());
 await run('P2', 'P2 意图判定', async () => (await import(base + 'processor/intent.mjs')).selfTest());
 // P2 消息判定与自动创建（用户 Q2：高置信自动建 / 低置信标待处置；幂等）
 await run('P2det', 'P2 消息判定与自动创建', async () => (await import(base + 'processor/detect.mjs')).selfTest());

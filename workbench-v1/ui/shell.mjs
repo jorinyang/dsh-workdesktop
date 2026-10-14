@@ -85,6 +85,19 @@ export function stylesheet() {
   s.push('.list .overdue { color: var(--c-accent-red); font-weight: var(--w-medium); }');
   // 来源格（2026-10-13 加）：小一号、右对齐、不抢主信息的注意力
   s.push('.list .src { color: var(--c-mute); font-size: 12px; min-width: 44px; text-align: right; flex: none; }');
+  // ★★ 2026-10-14 加：**列表表头**（用户逐字点名了四个页面的字段名）。
+  //   用 `li.jl-head` 与数据行同一套 flex 规则 ⇒ 列宽自动对齐，不必各写一套宽度。
+  //   样式上：小一号、字色淡、**没有下边框拖尾**（它是标题不是数据），
+  //   并且 `user-select: none`（列名不该被当内容选中、也避免被复制走）。
+  s.push('.list .jl-head { color: var(--c-mute); font-size: 12px; padding-bottom: var(--s-xs); border-bottom: 1px solid var(--c-hairline); user-select: none; }');
+  s.push('.list .jl-head span { flex: none; }');
+  // 表头前两格与数据行的 `.when` / `.who` 同宽（`li` 是 flex，靠 min-width 对齐）
+  s.push('.list .jl-head span:nth-child(1) { min-width: 92px; }');
+  s.push('.list .jl-head span:nth-child(2) { min-width: 120px; }');
+  // ★★ 2026-10-14 加：**第五列**（消息页要五列：日期/时间/来源/发信人/信息内容）。
+  //   前四格沿用既有类（when / who / 主列 / src），第五格给一个自有类；
+  //   消息页的信息内容要能占满剩余宽度并**截断**（详情里才展开全文）。
+  s.push('.list .col5 { color: var(--c-body-mid); min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }');
   // ══ 页内平铺的新增表单（2026-10-13 加，用户第 4 条）══════════════════════════
   //   参考模板里表单与列表同一层级、不藏在弹层后面 ⇒ 这里也摊平。
   //   网格自适应：窄栏自动折行，不出现横向滚动。
@@ -321,11 +334,17 @@ export const PAGE_SIZE_DEFAULT = 10;
 export function pager(pageKey) {
   let opts = '';
   for (const n of PAGE_SIZES) opts += '<option value="' + n + '"' + (n === PAGE_SIZE_DEFAULT ? ' selected' : '') + '>' + n + '</option>';
+  // ★★ 2026-10-14 加：**首页 / 末页**按钮（用户这一轮点名：「前几页、后几页、**首页**、**末页**等页码选择按钮」）。
+  //   原来只有「‹ 上一页 / 下一页 ›」，中间那串页码是动态算的（含省略号），
+  //   但**首页与末页没有一个固定的直达按钮** —— 几百条时"跳到最后一页"只能靠输入框，不好用。
+  //   `«` / `»` 与既有的 `‹` / `›` 区分开（两个字符一组，一眼看得出是"到两头"）。
   return '<nav class="pager" data-pager="' + esc(pageKey) + '">'
     + '<span class="pg-total" data-pg-total="1">总计: 0</span>'
+    + '<button type="button" data-pg-first="1" title="首页">«</button>'
     + '<button type="button" data-pg-prev="1" title="上一页">‹</button>'
     + '<span data-pg-nums="1"></span>'
     + '<button type="button" data-pg-next="1" title="下一页">›</button>'
+    + '<button type="button" data-pg-last="1" title="末页">»</button>'
     + '<span data-pg-pos="1">1/1</span>'
     + '<span>到第</span><input class="pg-jump" data-pg-jump="1" type="text" inputmode="numeric">'
     + '<span>页</span><button type="button" data-pg-go="1">前往</button>'
@@ -368,7 +387,10 @@ function listBlock(title, rows, cls, o) {
     // ★ 2026-10-13 加：第四列 = **来源**（用户第 9/10/11 条都点名要这个字段）。
     //   待办/日程/笔记三页用它；消息页与总览页没有第四列 ⇒ 不渲染这一格（不留空壳）。
     const srcAttr = r.col4 ? '<span class="src">' + esc(r.col4) + '</span>' : '';
-    items += '<li' + idAttr + goAttr + stAttr + '><span class="when">' + esc(r.col1 || '') + '</span><span class="who">' + esc(r.col2 || '') + '</span><span class="' + cls + '">' + esc(r.col3 || '') + '</span>' + srcAttr + '</li>';
+    // ★★ 2026-10-14 加：**第五列**。消息页这一轮要五列（日期/时间/来源/发信人/信息内容），
+    //   而原来最多四列（第四列固定是"来源"）⇒ 第五列单独给一个类，样式在 CSS 里配。
+    const col5Attr = r.col5 ? '<span class="col5">' + esc(r.col5) + '</span>' : '';
+    items += '<li' + idAttr + goAttr + stAttr + '><span class="when">' + esc(r.col1 || '') + '</span><span class="who">' + esc(r.col2 || '') + '</span><span class="' + cls + '">' + esc(r.col3 || '') + '</span>' + srcAttr + col5Attr + '</li>';
   }
   // ★★ 2026-10-12 修（**用户报"列表点不动"的最终根因**）：
   //   原来这里给**所有**列表都写 `class="list"`，包括热力图下面那段「动态分析」——
@@ -380,8 +402,24 @@ function listBlock(title, rows, cls, o) {
   //
   // ★ 2026-10-13 加：`o.scroll`（只让这一块出滚动条）· `o.pageKey`（给这一块配分页条）。
   const ulCls = 'list jl-list' + (o.scroll ? ' list-scroll' : '');
+  // ★★ 2026-10-14 加：**列表表头（列名）** —— 用户在这一轮把四个页面的字段名逐条点名了：
+  //   消息＝日期/时间/来源/发信人/信息内容；待办＝截止时间/来源/执行人/待办标题；
+  //   日程＝日期/开始/结束/来源/日程主题；笔记＝日期/来源/笔记概括。
+  //   原来**一个表头都没有**，用户只能靠位置猜哪一列是什么 ⇒ 补上 `o.head`（列名数组）。
+  //   用 `<li class="jl-head">` 而不是 `<thead>`：列表本体是 `<ul>`，混用表格标签会长出怪样式。
+  //   ⚠️ 表头行**不带 `data-id`** ⇒ 客户端的"可点行"计数与点击绑定都天然跳过它。
+  const head = Array.isArray(o.head) && o.head.length
+    ? '<li class="jl-head">' + o.head.map((x) => '<span>' + esc(x) + '</span>').join('') + '</li>'
+    : '';
+  // ★★ 2026-10-14 加：**页签**（用户：「Tab 位置应位于"消息列表"标题下方」）。
+  //   放在**标题与列表之间** —— 原来消息页的页签在标题**之前**，位置不对。
+  //   传进来的是 `[[key,label],…]`；客户端按 `data-tab` 筛行（服务端筛不生效，见 pageMessages 注释）。
+  const tabs = Array.isArray(o.tabs) && o.tabs.length
+    ? '<ul class="tabs">' + o.tabs.map((t) => '<li><a href="?tab=' + esc(t[0]) + '" data-tab="' + esc(t[0]) + '">' + esc(t[1]) + '</a></li>').join('') + '</ul>'
+    : '';
   return '<div class="section"' + (o.pageKey ? ' data-pagekey="' + esc(o.pageKey) + '"' : '') + '><h2>' + esc(title) + '</h2>'
-    + '<ul class="' + ulCls + '">' + items + '</ul>'
+    + tabs
+    + '<ul class="' + ulCls + '">' + head + items + '</ul>'
     + (o.pageKey ? pager(o.pageKey) : '')
     + '</div>';
 }
@@ -421,35 +459,93 @@ export function pageMessages(snap) {
     //   ⚠️ 为什么不靠服务端按 `?tab=` 重渲染：面板那条路由是**读静态文件**返回的
     //      （`lib/index.js` 的 `/yishu/<页>`），它根本不跑渲染 ⇒ 服务端筛不生效；
     //      而本地直开是静态文件、同样不跑渲染。**两条路都不跑渲染** ⇒ 只能放客户端做。
-    tabs.push('<a href="./messages.html?tab=' + t + '" data-tab="' + t + '"' + (t === m.tab ? ' aria-current="page"' : '') + '>' + TAB_LABEL[t] + '</a>');
+    tabs.push([t, TAB_LABEL[t]]);
   }
-  // ★★ 2026-10-12 修（**消息页五个 Tab 点不了的真根因**）：
-  //   原来把这一串 `<a>` 塞进 `listBlock(tabs.join(' · '), rows)` —— 而 `listBlock` 的第三列
-  //   会走 `esc()`（防注入），于是页面上显示的是**字面文本** `<a href="./messages.html?tab=all">全部</a>`，
-  //   **根本不是链接**。实测：源码里 5 个 `data-tab`，DOM 里 0 个。
-  //   ⇒ 自建一小段导航区块（`<ul class="tabs">`），别再借数据列表那条会转义的通道。
-  const navTabs = '<ul class="tabs">' + tabs.join('') + '</ul>';
-  const rows = m.list.map(function (r) { return { id: r.id, col1: fmtTime(r.at), col2: r.source, col3: r.summary, state: r.state }; });
-  return '<div class="stats">' + cards + '</div>' + navTabs + inlineForm('messages') + listBlock('消息列表', rows, '', { pageKey: 'messages' });
+  // ★★ 2026-10-14 改（用户裁定）：
+  //   ① **Tab 移到"消息列表"标题下方**（原来在标题**之前**，位置不对）⇒ 交给 `listBlock` 的 `o.tabs` 渲染。
+  //   ② **列表拆成五列**：日期 / 时间 / 来源 / 发信人 / 信息内容（用户逐字点名的字段名）。
+  //      原来只有三列（时间 · 来源 · 概括）—— 日期与时间挤在一格，发信人在"来源"里，字段名也没有。
+  const rows = m.list.map(function (r) {
+    const d = r.at ? new Date(r.at) : null;
+    const pad = function (n) { return String(n).padStart(2, '0'); };
+    const dateStr = d ? (d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())) : '';
+    const timeStr = d ? (pad(d.getHours()) + ':' + pad(d.getMinutes())) : '';
+    return { id: r.id, col1: dateStr, col2: timeStr, col3: r.source, col4: r.sender, col5: r.summary, state: r.state };
+  });
+  return '<div class="stats">' + cards + '</div>' + inlineForm('messages')
+    + listBlock('消息列表', rows, '', {
+      pageKey: 'messages',
+      tabs: tabs,
+      head: ['日期', '时间', '来源', '发信人', '信息内容'],
+    });
 }
 
 export function pageTodos(snap) {
   const t = (snap && snap.todos) || todos();
   const c = t.counts;
   const cards = statCards([['今日', c.today], ['本周', c.week], ['待定', c.undecided], ['已完成', c.done]]);
-  const rows = t.list.map(function (r) { return { id: r.id, col1: r.dueLabel, col2: r.executor || '—', col3: r.topic + ' ' + (r.detail || ''), overdue: r.overdue, col4: r.source && r.source.label }; });
-  return '<div class="stats">' + cards + '</div>' + inlineForm('todos') + listBlock('待办列表', rows, '', { pageKey: 'todos' });
+  // ★★ 2026-10-14 改列序（用户逐字点名）：「列表字段名称需明确展示：**截止时间、来源、执行人、待办标题**」。
+  //   原来是（截止 / 执行人 / 标题+详情 / 来源）—— 与用户点名的顺序对不上。
+  //   ⇒ 现在**严格照用户给的顺序**：col1=截止 · col3=来源 · col2=执行人 · col4=待办标题。
+  //     （`listBlock` 的第四格以前固定当"来源"用；这里让位给标题，来源放第三格 ——
+  //      列序以**用户点名的**为准，不迁就实现上的旧约定。）
+  const rows = t.list.map(function (r) {
+    return {
+      id: r.id,
+      col1: r.dueLabel,
+      col2: r.executor || '—',
+      col3: r.source && r.source.label,
+      col4: r.topic + (r.detail ? ' ' + r.detail : ''),
+      overdue: r.overdue,
+    };
+  });
+  return '<div class="stats">' + cards + '</div>' + inlineForm('todos')
+    + listBlock('待办列表', rows, '', { pageKey: 'todos', head: ['截止时间', '来源', '执行人', '待办标题'] });
 }
 
 export function pageSchedules(snap) {
   const sc = (snap && snap.schedules) || schedules();
   const c = sc.counts;
   const cards = statCards([['今日', c.today], ['未来 7 天', c.next7], ['前 30 日已完成', c.done30]]);
-  const rows = sc.list.map(function (r) { return { id: r.id, col1: String(r.start || '').slice(5, 16), col2: (r.participants || []).join('、') || '—', col3: r.topic + ' ' + (r.place || ''), col4: r.source && r.source.label }; });
+  // ★★ 2026-10-14 改（用户逐字点名）：
+  //   ① 列名＝**日期 / 开始时间 / 截止时间 / 来源 / 日程主题**（原来把起止挤在一格、没有列名）。
+  //   ② **日程列表下方新增页签：今日 / 未来7天 / 全部**（原来一个页签都没有）。
+  //      与消息页同一套做法：链接带 `?tab=`，由**客户端**筛行（服务端读静态文件、不跑渲染）。
+  // ★★ 2026-10-14 加 `state`（**页签能不能筛就靠它**）。
+  //   客户端的筛选按行的 `data-state` 判：`hide = !(t === "all" || 行的 data-state === t)`。
+  //   日程行原来**没带这个属性** ⇒ 页签点了"一条也筛不掉" ⇒
+  //   真机验证抓到的"点今日 —— 全部 9 → 今日 9"（纹丝不动）。
+  //   ⇒ 每行标出它属于哪一档（今日 / 未来7天 / 其它），与页签的 key 对齐。
+  //   当天零点就地算（`shell.mjs` 里没有 `dayStart`；这是渲染模板，不引 `pages.mjs` 的内部函数）。
+  const _n = new Date(); _n.setHours(0, 0, 0, 0);
+  const d0 = _n.getTime();
+  const rows = sc.list.map(function (r) {
+    const s = String(r.start || ''); const e = String(r.end || '');
+    const t0 = Date.parse(s);
+    const d1 = new Date(t0); d1.setHours(0, 0, 0, 0);
+    const st = (Number.isFinite(t0) && d1.getTime() === d0) ? 'today'
+      : ((Number.isFinite(t0) && t0 >= d0 && t0 <= d0 + 7 * 86400000) ? 'next7' : 'all');
+    return {
+      id: r.id,
+      col1: s.slice(0, 10),                                  // 日期
+      col2: s.slice(11, 16),                                 // 开始时间
+      col3: e.slice(11, 16) || '—',                          // 截止时间
+      col4: r.source && r.source.label,                      // 来源
+      col5: r.topic + (r.place ? ' · ' + r.place : ''),      // 日程主题（地点跟在后面，便于一眼看全）
+      state: st,
+    };
+  });
   // ★ 日程密度热力图（需求 3.3.5）：左=当月每天热力，右=动态分析。
   //   数据来自 `api/pages.mjs#scheduleHeatmap`（**纯规则**，不调模型 —— 这页不该偷偷烧 token）。
   const hm = (snap && snap.heatmap) || scheduleHeatmap({});
-  return '<div class="stats">' + cards + '</div>' + heatBlock(hm) + inlineForm('schedules') + listBlock('日程列表', rows, '', { pageKey: 'schedules' });
+  // 页签三档：今日 / 未来7天 / 全部（用户点名）。`bucket` 与 `schedules()` 的桶名对齐。
+  const schedTabs = [['today', '今日'], ['next7', '未来7天'], ['all', '全部']];
+  return '<div class="stats">' + cards + '</div>' + heatBlock(hm) + inlineForm('schedules')
+    + listBlock('日程列表', rows, '', {
+      pageKey: 'schedules',
+      tabs: schedTabs,
+      head: ['日期', '开始时间', '截止时间', '来源', '日程主题'],
+    });
 }
 
 /** 热力图分块（左：月历热力；右：动态分析） */
@@ -478,10 +574,22 @@ export function pageNotes(snap) {
   const n = (snap && snap.notes) || notes();
   const c = n.counts;
   const cards = statCards([['笔记总数', c.total], ['本月新增', c.thisMonth], ['标签数', c.tags]]);
-  const rows = n.list.map(function (r) { return { id: r.id, col1: r.date, col2: (r.tags || []).join('、') || '—', col3: r.topic, col4: r.source && r.source.label }; });
+  // ★★ 2026-10-14 改列（用户逐字点名）：「列表字段名称需明确展示：**日期、来源、笔记概括**」。
+  //   原来四列是（日期 / 标签 / 主题 / 来源）—— 标签占了"来源"该在的位置，而且**没有列名**。
+  //   ⇒ 现在 col1=日期 · col4=来源（`listBlock` 固定那一格）· col3=笔记概括（主题 + 标签，便于一眼看全）。
+  const rows = n.list.map(function (r) {
+    const tags = (r.tags || []).join('、');
+    return {
+      id: r.id,
+      col1: r.date,
+      col3: r.topic + (tags ? ' · ' + tags : ''),
+      col4: r.source && r.source.label,
+    };
+  });
   // ★ 笔记列表：分页 + **单独滚动**（用户第 5 条后半句："如果笔记列表高度超过页面高度不够，
   //   仅在笔记列表位置出现滚动条，而不是在整体页面出现垂直滚动条"）
-  return '<div class="stats">' + cards + '</div>' + inlineForm('notes') + listBlock('笔记列表', rows, '', { pageKey: 'notes', scroll: true });
+  return '<div class="stats">' + cards + '</div>' + inlineForm('notes')
+    + listBlock('笔记列表', rows, '', { pageKey: 'notes', scroll: true, head: ['日期', '笔记概括', '来源'] });
 }
 
 export const PAGES = Object.freeze({ overview: pageOverview, messages: pageMessages, todos: pageTodos, schedules: pageSchedules, notes: pageNotes });
