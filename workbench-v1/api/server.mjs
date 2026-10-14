@@ -1440,6 +1440,50 @@ export async function selfTest() {
       const r = await post('/cockpit/advice', { from: '1970-01-01', to: '1970-01-02' });
       return r.code === 409 && r.body.refused === true;
     })(), JSON.stringify((await post('/cockpit/advice', { from: '1970-01-01', to: '1970-01-02' })).body));
+
+    // ★★ 2026-10-14 加：**登记表里不许有假的写路径**。
+    //   为什么单独立一条：`write-routes.json` 的用途就是"写路径必须先登记"，
+    //   而它**自己曾经留着两条没实现的**（`GET /state` 与 `POST /system-switch`）——
+    //   两条都是**实测打到 404 之后**才被人工摘掉的。登记表里有一条不存在的路径，
+    //   等于告诉后来的人"这条路能用" —— **比没有登记更坏**。
+    //   判据：每条登记的路径取**最后一段关键词**，要求它在 `server.mjs` 里作为路径片段出现。
+    //   ⚠️ 用"最后一段"而非整条：路径参数（`:type` `:id` `:kind`）与 `API_PREFIX` 不该进比对；
+    //     而且要求"带引号或斜杠"地出现，免得 `/file` 撞上 `fileRef` 这类词（本项目吃过正则写太死的亏）。
+    {
+      // ★★ 判据：每个登记的路径段，**要在分发的判断里出现**。
+      //
+      //   ⚠️ 这一条我写错过四次，**每一次都看起来是通过的** —— 全记下来，因为它是个典型陷阱：
+      //     ① 自己拼 `px.join(PKG_ROOT, …)` 读表 ⇒ 路径错、**读到 0 条** ⇒ 0 条当然 0 条找不到（恒真）；
+      //     ② 改用 `writeRoutes()` 但读 `r.route` —— 字段名其实是 **`r.path`**
+      //        ⇒ 每条 key 都空、全被 `continue` 跳过 ⇒ **又恒真**（还报"17 条都找得到"）；
+      //     ③ 读对后"取最后一段当关键词" ⇒ **误报两条真路由**（`cockpit/:kind`、`detail/:type/:id`），
+      //        因为它们的最后一段是**参数**，对参数化路径"取最后一段"从根上不成立；
+      //     ④ 换成 `isRegistered(method, path)` ⇒ **恒真**：它回答的是"在不在登记表里"，
+      //        而被检的正是登记表 —— **拿表去验表，必然自我印证**（我把假路径塞进表，它照样说"认得"）。
+      //
+      //   ⇒ 真正要问的是"**分发有没有这条分支**"。而分发的判据全在 `server.mjs` 自己身上：
+      //     要么字面量比较（`p === '/file'`），要么落进某条正则（`^…/([a-z]+)/([^/]+)/([a-z-]+)$` 之类）。
+      //     所以逐段要求：**该段在源码里以"路径段"的形态出现过**（前面紧邻 `/` 或 `'`）。
+      //   ⚠️ 仍要报"比了几段"：只报"没找到坏的"分不清"都是好的"和"一个都没看"。
+      let rows = [];
+      try { rows = writeRoutes() } catch { rows = [] }
+      const selfSrc = fsx.readFileSync(fileURLToPath(import.meta.url), 'utf8');
+      const ghosts = [];
+      let compared = 0;
+      for (const r of rows) {
+        const segs = String(r.path ?? '').split('/').filter((x) => x && !x.startsWith(':'));
+        if (!segs.length) continue;
+        compared += 1;
+        // 该路径的**每一段**都要在源码里以路径段形态出现（`/seg` 或 `'/seg'`）
+        const miss = segs.filter((s) => !selfSrc.includes(`/${s}`) && !selfSrc.includes(`'${s}'`));
+        if (miss.length) ghosts.push(`${r.method} ${r.path}（源码里找不到：${miss.join(', ')}）`);
+      }
+      chk('API-34', '★★ 登记表里每一条的路径段都**在分发的判断里出现**（防"幽灵写路径"——它比不登记更坏）',
+        rows.length > 0 && compared === rows.length && ghosts.length === 0,
+        rows.length === 0 ? '★ 登记表读到 0 条 ⇒ 读错了（这条会因此变成摆设，故判失败）'
+          : compared !== rows.length ? `★ 只比了 ${compared}/${rows.length} 条 ⇒ 有路由被跳过，检查不完整`
+            : (ghosts.length ? `源码里没有对应分发的：${ghosts.join(' | ')}` : `${compared} 条的路径段都在源码里`));
+    }
   } finally {
     server.close();
     if (prevOut === undefined) delete process.env.WB_V1_OUT; else process.env.WB_V1_OUT = prevOut;

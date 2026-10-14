@@ -3,6 +3,7 @@
  "updatedAt": "2026-10-12",
  "why": "v1.0 写路径登记表：所有会改变状态的路由/入口必须先在这里登记（route + ≥12 字理由 + 归属引擎），否则守卫判红。依据：旧世界 T16-88「写控件预算 = 登记表求和」的纪律，v1.0 沿用但改为显式登记表。",
  "//2026-10-14": "**摘掉了 `GET /state` 那条登记** —— 它在表里，但**服务端从来没实现过**（请求返回 404「未知读路径」）。实测确认之后摘的。登记表里留着一条不存在的路径，等于告诉后来的人「这条路能用」，而它会 404 —— 这比没有登记更坏。",
+ "//2026-10-14b": "**又摘掉了 `POST /v1/system-switch`** —— 同一个毛病，另一条漏网的。它是全表 18 条里唯一一条在 `api/server.mjs` 里**零处提到**的（87 条接口自检也没覆盖），打到引擎就是 404。**但要说清它为什么容易被误认为活的**：面板上那个开关**确实好用** —— 只是它走的是**面板宿主**那条 `POST /workdesktop/api/system-switch`（客户端里 `api()` 的 BASE 不含 `/v1`；宿主在 `plugins/dsh-workdesktop/lib/index.js` 自己实现了并转调库内 `system-switches.mjs`）。`_meta/artifacts-registry.json` 里那条登记的 consumer 也写的是宿主机行号。⇒ **v1 的引擎 HTTP 面不管这个开关，别再加回来**；要改开关行为，改宿主那一侧或库内的 `system-switches.mjs`。",
  "routes": [
   {
    "route": "POST /workdesktop/api/v1/messages",
@@ -73,11 +74,6 @@
    "route": "POST /workdesktop/api/v1/cockpit/:kind",
    "engine": "dashboard",
    "reason": "生成驾驶舱的一块分析（insight 业务洞察 / state 状态分析 / advice 发展建议）：按真实数据切片调模型，没数据则拒绝生成"
-  },
-  {
-   "route": "POST /workdesktop/api/v1/system-switch",
-   "engine": "process",
-   "reason": "底部状态栏三个能力开关（实时回复 / 响应功能 / 向量检索）的状态置位"
   },
   {
    "route": "GET /workdesktop/api/v1/file",
