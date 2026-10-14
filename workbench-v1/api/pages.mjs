@@ -71,16 +71,26 @@ export function dueLabel(dueMs, now = Date.now()) {
   return d > 0 ? `还有 ${d} 天` : `已逾期 ${-d} 天`;
 }
 
-/** 消息的"处理状态"（需求 3.3.3：转待办/转日程/已回复 都算已处理） */
+/**
+ * 消息的"处理状态"。
+ *
+ * 需求 3.3.3：转待办/转日程/已回复 都算已处理。
+ * ★★ 2026-10-14 加 `to-note`（用户这一轮原话）：「消息详情页面的"转笔记"…
+ *   创建笔记并将对应的内容填写到其中，**将消息移动到已转笔记本内**」。
+ *   原来没有这一档 ⇒ 转过笔记的消息在**任何** Tab 里都找不到归属：
+ *   它不在"已转待办/已转日程"里（那两档查的是别的 op），也不在"已回复"里，
+ *   只剩"待处理"——**转过了却还显示"待处理"**，那是在说谎。
+ */
 export function messageState(evt) {
   const ops = evt.ops ?? [];
   const has = (n) => ops.some((o) => String(o.op ?? '') === n);
   if (has('to-todo') || evt.payload?.linkedTodoId) return 'to-todo';
   if (has('to-schedule') || evt.payload?.linkedScheduleId) return 'to-schedule';
+  if (has('to-note') || evt.payload?.linkedNoteId) return 'to-note';
   if (has('replied') || evt.payload?.replied === true) return 'replied';
   return 'pending';
 }
-export const MESSAGE_TABS = Object.freeze(['all', 'pending', 'to-todo', 'to-schedule', 'replied']);
+export const MESSAGE_TABS = Object.freeze(['all', 'pending', 'to-todo', 'to-schedule', 'to-note', 'replied']);
 
 const senderLine = (evt) => {
   const ch = { dingtalk: '钉钉', feishu: '飞书', weixin: '微信', imessage: 'iMessage', manual: '手工' }[evt.payload.channel] ?? evt.payload.channel;
@@ -90,12 +100,13 @@ const senderLine = (evt) => {
 /** 消息页：四个数字 + 列表（列表字段：日期时间/来源/发信人/一句话概括） */
 export function messages({ tab = 'all', limit = 200, now = Date.now() } = {}) {
   const rows = store.list({ type: 'message' }).sort((a, b) => b._at - a._at);
-  const counts = { pending: 0, toTodo: 0, toSchedule: 0, replied: 0, total: rows.length };
+  const counts = { pending: 0, toTodo: 0, toSchedule: 0, toNote: 0, replied: 0, total: rows.length };
   const decorated = rows.map((e) => {
     const st = messageState(e);
     if (st === 'pending') counts.pending += 1;
     else if (st === 'to-todo') counts.toTodo += 1;
     else if (st === 'to-schedule') counts.toSchedule += 1;
+    else if (st === 'to-note') counts.toNote += 1;
     else if (st === 'replied') counts.replied += 1;
     return {
       id: e._id, at: e._at, state: st,
@@ -140,6 +151,19 @@ export function todos({ bucket = 'all', now = Date.now() } = {}) {
     today: [...overdue, ...dueToday].sort((a, b) => dueMs(a) - dueMs(b)),   // 今天要处理的 = 逾期 + 今天到期
     week: in7,
     undecided,
+    // ★★ 2026-10-14 加（用户这一轮原话）：「待办列表下需要增加 tab，将
+    //   **全部 / 今日 / 本周 / 待定 / 转日程 / 已完成** 做分类」。
+    //   `转日程` 那一档 = **已经转成日程的待办**（`ops` 里有 `to-schedule`）。
+    //   ⚠️ 它与"待定/已完成"**可以重叠**（转过日程的仍然可能已完成）——
+    //     这里**刻意不做互斥**：Tab 是"看哪一类"，不是"每个条目只能属于一个桶"。
+    //     被它排除的只有 `all`（`all` 是并集，见下）。
+    // ⚠️ **桶的键必须与页签的值一模一样**（`'to-schedule'`，连字符小写）。
+    //   我第一版写成驼峰 `toSchedule` ⇒ `buckets['to-schedule']` 查不到 ⇒ 列表空
+    //   而 `counts.toSchedule` 有 2 条 —— **数字说有、列表说没有**，页面自相矛盾。
+    //   这与前面几次"取第一个 .list 取错对象""查表用单数、传进来是复数"是同一类病：
+    //   **同一个东西有两个名字**。计数与列表必须走同一个条件、同一个键。
+    //   自检 API-53 就是这么抓出来的（ops 里明明写着 to-schedule，档里却是 0 条）。
+    'to-schedule': rows.filter((e) => (e.ops ?? []).some((o) => o.op === 'to-schedule')),
     done,
     all: [...open, ...done],
   };
@@ -152,11 +176,19 @@ export function todos({ bucket = 'all', now = Date.now() } = {}) {
     dueLabel: e.payload.due ? dueLabel(Date.parse(e.payload.due), now) : '无期限',
     overdue: e.payload.due ? Date.parse(e.payload.due) < dayStart(now) : false,
     closeConditions: e.payload.closeConditions ?? null,   // P5 自动关闭用（需求 3.3.4）
+    // ★ 2026-10-14 加：把 `ops` 与 `_at` 一并给出 —— 页面要据此算"这条属于哪几档"
+    //   （转日程 / 已完成 / 待定 …）。不给的话渲染层只能**再查一次库**，
+    //   那就是第二份"这条属于哪一档"的判法（两份必然漂）。
+    ops: e.ops ?? [], _at: e._at,
     // ★ 2026-10-13 加：**来源标注**（用户第 9 条点名要的字段）
     source: sourceOf(e),
   })).sort((a, b) => String(a.due ?? '9999').localeCompare(String(b.due ?? '9999')));
   return {
-    counts: { today: buckets.today.length, week: in7.length, undecided: undecided.length, done: done.length, overdue: overdue.length, total: rows.length },
+    counts: {
+      today: buckets.today.length, week: in7.length, undecided: undecided.length,
+      toSchedule: buckets['to-schedule'].length, done: done.length,
+      overdue: overdue.length, total: rows.length,
+    },
     bucket, list,
   };
 }
@@ -177,17 +209,33 @@ export function schedules({ bucket = 'all', now = Date.now() } = {}) {
   //   原来只有 today / next7 / done30 ⇒ 传 `all` 时 `buckets['all']` 是 undefined、列表空；
   //   真机验证抓到的"全部 1 条"其实是**默认桶 today 的那 1 条**（默认桶也是 today）。
   //   这与待办页那次是同一个病：**页签点了没反应，根子在聚合层没有那个桶**。
-  const buckets = { today, next7, done30, all: rows };
+  // ★★ 2026-10-14 加（用户这一轮原话）：「日程列表下方 tab 新增"**转待办**"、"**已完成**"tab」。
+  //   · `toTodo` = 已经转成待办的日程（`ops` 里有 `to-todo`）
+  //   · `doneE` = 已完成；原来的 `done30` 是"前 30 日内已完成"（热力图那边在用，语义更窄），
+  //     两者**都留着**：`done30` 给热力图/统计卡，`done` 给这个 Tab（用户要的是"已完成"，不是"近 30 天"）。
+  //     ⚠️ 一个 Tab 名对应一个桶，别拿 `done30` 冒充"已完成" —— 那会让 31 天前完成的日程从 Tab 里消失。
+  const toTodo = rows.filter((e) => (e.ops ?? []).some((o) => o.op === 'to-todo'));
+  const doneAll = rows.filter(isDone);
+  // ⚠️ 键同样要与页签值**一字不差**（`'to-todo'`，连字符小写）—— 待办页那个坑不踩第二次。
+  const buckets = { today, next7, done30, 'to-todo': toTodo, done: doneAll, all: rows };
   const list = (buckets[bucket] ?? []).map((e) => ({
     id: e._id, topic: e.payload.topic, start: e.payload.start, end: e.payload.end ?? null,
     // ★ 字段名以 schema 的登记为准：日程地点是 **place**（不是 location）
     //   —— 早先这里读 location，校验器当场判"未登记字段"，否则地点会永远显示为空
     place: e.payload.place ?? null, participants: e.payload.participants ?? [],
     type: e.payload.type ?? null, done: isDone(e),
+    // ★ 2026-10-14 加：与待办页同理 —— 渲染层要据此算"这条属于哪几档"
+    //   （今日 / 未来7天 / 转待办 / 已完成）。不给就要再查一次库，那就是第二份判法。
+    ops: e.ops ?? [],
     // ★ 2026-10-13 加：**来源标注**（用户第 10 条点名要的字段）
     source: sourceOf(e),
   })).sort((a, b) => String(a.start).localeCompare(String(b.start)));
-  return { counts: { today: today.length, next7: next7.length, done30: done30.length, total: rows.length }, bucket, list };
+  return {
+    counts: {
+      today: today.length, next7: next7.length, done30: done30.length,
+      toTodo: buckets['to-todo'].length, done: doneAll.length, total: rows.length,
+    }, bucket, list,
+  };
 }
 
 /**

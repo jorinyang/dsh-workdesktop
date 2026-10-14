@@ -23,6 +23,10 @@ import { fileURLToPath } from 'node:url';
 import { makeEvent } from '../schema.mjs';
 import * as store from '../store.mjs';
 import * as pages from './pages.mjs';
+// ★ 2026-10-14 加：自检里要直接问"这条现在落在哪一档"（todos/schedules 的桶）
+//   与"消息属于哪个页签"（messageState）—— 这一轮的要求全是"**状态真的变了吗**"，
+//   只看接口回没回 200 是不够的（前几轮栽的就是"接口成功、记录没动"）。
+const { todos, schedules, messages, messageState, MESSAGE_TABS } = pages;
 import { NARRATIVE_SPECS } from './cockpit.mjs';   // 驾驶舱四块的落点（允许值从它取，**一处定义**）
 // ★ 2026-10-14 加：**相关上下文的 LLM 概括**（用户第 4/5/6/7 条都点名同一条：
 //   "检索 RAG 与本身知识库 → 经 LLM 概括后展示 → 不得显示文件路径"）。
@@ -32,6 +36,9 @@ import { summarizeContext, ctxSummaryCached } from './context-summary.mjs';
 //   原来那两处的标题是 `summary ?? raw` 再截 80 字，而 `summary` 本身就是原文截断
 //   ⇒ 结果是**被切一半的话**，不是"概括为一句话"。纯规则，不调模型（见 brief.mjs 的说明）。
 import { briefTitle, pickParticipants, pickPlace } from '../processor/brief.mjs';
+// ★ 2026-10-14 加（用户这一轮）：**从「消息 + 相关上下文」里提取结构化字段**。
+//   三种转换（转待办/转日程/转笔记）与两种跨转换都走它 —— 一处产地，不各写一套判法。
+import { extractTodo, extractSchedule, extractNote } from '../processor/extract.mjs';
 import { KB_ROOT as ROOT, PKG_ROOT } from '../paths.mjs';   // 路径收口（见 paths.mjs 顶部说明：原先按本文件深度往上数，包一挪就错）
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -404,29 +411,24 @@ export function handler(req, res) {
           //   可将其总结概括并记录为笔记"）—— 此前只支持 todo/schedule，那条需求没落点。
           if (to !== 'todo' && to !== 'schedule' && to !== 'note') return json(res, 400, { error: 'convert 需要 payload.to = "todo" / "schedule" / "note"', allowed: ['todo', 'schedule', 'note'] });
           const src = evt.payload ?? {};
-          let mk; let made;
+          // ★★ 2026-10-14 加（用户这一轮原话）：「**提取消息以及消息相关的上下文**当中包含的
+          //   跟待办/日程/笔记结构化字段相关的内容，创建…并将对应的内容填写到其中」。
+          //   ⇒ 把**召回的相关材料**也交给提取器（此前只用消息原文，上下文完全没参与）。
+          //   `evt.context.recalled` 是分析引擎召回后写进事件的，这里直接取用，不重复检索。
+          const recalled = (evt.context && Array.isArray(evt.context.recalled)) ? evt.context.recalled : [];
+          let mk; let made; let extractFrom = null;
           if (to === 'note') {
-            // 转笔记：内容用原文，主题可取人给的第一句（不给人就给原文首行）
-            const { toNotePayload } = await import('../processor/intent.mjs');
-            // ⚠️ 必须把 `_at` 一起给进去：`toNotePayload` 用 `evt._at` 生成日期，
-            //    漏了它就会得到 `NaN-NaN-NaN` 并被契约拒掉（实测踩到，表现为"转笔记失败"）。
-            const np = toNotePayload({ _at: evt._at ?? Date.now(), payload: { raw: src.raw, sender: src.sender, channel: src.channel } });
-            mk = { ...np, topic: String(body.payload?.topic ?? np.topic).slice(0, 80), content_md: String(body.payload?.content_md ?? np.content_md) };
-            if (Array.isArray(body.payload?.tags) && body.payload.tags.length) mk.tags = body.payload.tags;
+            const ex = extractNote(String(src.raw ?? ''), recalled, {
+              now: evt._at ?? Date.now(),
+              over: { ...(body.payload?.topic ? { topic: body.payload.topic } : {}), ...(body.payload?.content_md ? { content_md: body.payload.content_md } : {}), ...(Array.isArray(body.payload?.tags) && body.payload.tags.length ? { tags: body.payload.tags } : {}) },
+            });
+            mk = ex.payload; extractFrom = ex.from;
           } else if (to === 'todo') {
-            // ★★ 2026-10-14 改（用户第 5.1 条原话）：「**消息转待办：概括消息内容为一句话**，作为待办标题」。
-            //   原来写的是 `src.summary ?? src.raw` 再 `.slice(0, 80)` —— 而 `summary` 本身就是
-            //   原文的截断（`raw.slice(0, 60)`）⇒ 结果是一段**被切一半的话**，不是一句话。
-            //   ⇒ 走 `briefTitle()`（纯规则：剥 @/表情/URL、取第一句、去开头客套、在标点处收）。
-            //   ⚠️ 人给了标题就**用人给的**（界面上你填了就是你的意思，不该被系统改写）。
-            const title = String(body.payload?.topic ?? '').trim() || briefTitle(src.raw ?? src.summary ?? '');
-            mk = {
-              topic: (title || briefTitle(src.raw ?? '') || '（未命名待办）').slice(0, 80),
-              detail: String(body.payload?.detail ?? src.raw ?? ''),
-              due: body.payload?.due ?? null,
-              publisher: src.sender ?? null,
-              executor: body.payload?.executor ?? '我',
-            };
+            const ex = extractTodo(String(src.raw ?? ''), recalled, {
+              now: evt._at ?? Date.now(), sender: src.sender ?? null,
+              over: { ...(body.payload?.topic ? { topic: body.payload.topic } : {}), ...(body.payload?.due ? { due: body.payload.due } : {}), ...(body.payload?.executor ? { executor: body.payload.executor } : {}) },
+            });
+            mk = ex.payload; extractFrom = ex.from;
           } else {
             // 转日程：契约要求 start/end **必须有具体值**（实测：给 null 会被判非法、建了个空）
             const { deriveScheduleWindow } = await import('../processor/detect.mjs');
@@ -440,30 +442,25 @@ export function handler(req, res) {
                 parsed: w.ok ? { start: w.start, end: w.end } : null, why: w.ok ? null : w.why,
               });
             }
-            // ★★ 2026-10-14 改（用户第 6.1 条原话）：
-            //   「消息转日程：**概括消息内容为一句话，作为日程主题**，
-            //     并将**消息中其他与日程相关的内容分别填写到日程结构化字段中**」。
-            //   原来只填了主题 + 详情，`place` 恒为 null、`participants` 恒为空数组 ——
-            //   后半个要求（"分别填写到结构化字段"）等于没做。
-            //   ⇒ 现在：主题走 `briefTitle`；地点与参与人**从原话里挑**（挑不出就留空，不硬编）。
-            //   ⚠️ 人给了就用人的（同上）。
-            const rawText = String(src.raw ?? '');
-            const title = String(body.payload?.topic ?? '').trim() || briefTitle(rawText);
-            mk = {
-              topic: (title || briefTitle(rawText) || '（未命名日程）').slice(0, 80),
-              detail: String(body.payload?.detail ?? rawText ?? ''),
-              start,
-              end,
-              place: body.payload?.place ?? pickPlace(rawText),
-              participants: Array.isArray(body.payload?.participants) && body.payload.participants.length
-                ? body.payload.participants
-                : pickParticipants(rawText),
-            };
+            const ex = extractSchedule(String(src.raw ?? ''), recalled, {
+              now: evt._at ?? Date.now(), sender: src.sender ?? null,
+              over: { ...(body.payload?.topic ? { topic: body.payload.topic } : {}), ...(body.payload?.place ? { place: body.payload.place } : {}), ...(Array.isArray(body.payload?.participants) && body.payload.participants.length ? { participants: body.payload.participants } : {}) },
+            });
+            mk = { ...ex.payload, start, end }; extractFrom = ex.from;
           }
           made = createEvent(to, mk, { origin: { channel: evt.origin.channel, sender: evt.payload.sender, messageId: `from-${evt.origin.messageId ?? evt._id}`, raw: evt.payload.raw ?? null }, at: evt._at });
           if (made.ok === false) return json(res, 400, { error: '生成目标事件失败', errors: made.errors });
           store.patch('message', id, {}, { op: to === 'todo' ? 'to-todo' : to === 'schedule' ? 'to-schedule' : 'to-note', targetId: made.id, by: 'manual' });
-          return json(res, 200, { ok: true, from: id, to: made.id, kind: to, note: '已建目标事件并在来源消息上留痕' });
+          // ★ 2026-10-14：回执里带上**每个字段是从哪儿来的**（消息原文 / 相关上下文第 N 条 / 未找到）。
+          //   用户原话要求"提取消息**以及消息相关的上下文**当中包含的…内容" ——
+          //   那就得让人看得出"这个截止时间是从消息里读的，还是从召回材料里读的"。
+          //   不给出处的话，用户没法判断该不该改它。
+          return json(res, 200, {
+            ok: true, from: id, to: made.id, kind: to,
+            extractFrom,                                     // 逐字段来源
+            material: recalled.length ? `消息原文 + ${recalled.length} 条相关上下文` : '仅消息原文（这条还没召回到材料）',
+            note: '已建目标事件并在来源消息上留痕',
+          });
           })().catch((e) => json(res, 500, { error: `转换失败：${e.message}` }));
         }
 
@@ -476,9 +473,23 @@ export function handler(req, res) {
             const map = { '已完成': 'done', '完成': 'done', 'done': 'done', '已搁置': 'hold', '搁置': 'hold', 'hold': 'hold', '转日程': 'to-schedule', 'to-schedule': 'to-schedule' };
             const k = map[op];
             if (!k) return json(res, 400, { error: '不认识的动作', op, allowed: ['已完成', '已搁置', '转日程'] });
+            if (k === 'hold') {
+              // ★★ 2026-10-14 加（用户原话）：「待办详情页面的**已搁置**，暂时将该待办的
+              //   **截止时间转为无期限**，将该待办**移动到待定分类**中，同时**待定数量+1**」。
+              //   原来只写了一个 `hold` 记号 —— **截止时间原封不动** ⇒ 它仍然躺在"今日/本周"里，
+              //   "待定+1"也永远不会发生（待定那一档查的是"没有截止时间"，见 `todos()` 的 `undecided`）。
+              //   ⇒ 把 `due` 置空（这就是"转为无期限"），档位自然跟着变成待定，计数也就跟着对。
+              //   ⚠️ 原来的截止时间**不丢**：写进 ops 的 `evidence` 里，可回查。
+              const oldDue = evt.payload?.due ?? null;
+              store.patch('todo', id, { payload: { ...(evt.payload ?? {}), due: null } }, {
+                op: 'hold', by: 'manual',
+                evidence: oldDue ? `已搁置 ⇒ 截止时间由 ${oldDue} 转为无期限（原值记在这里，可回查）` : '已搁置 ⇒ 本来就是无期限',
+              });
+              return json(res, 200, { ok: true, id, op: 'hold', due: null, prevDue: oldDue, movedTo: 'undecided', note: '已搁置：截止时间转为无期限，进入「待定」' });
+            }
             if (k !== 'to-schedule') {
               store.patch('todo', id, {}, { op: k, by: 'manual' });
-              return json(res, 200, { ok: true, id, op: k });
+              return json(res, 200, { ok: true, id, op: k, note: k === 'done' ? '已完成：进入「已完成」分类' : undefined });
             }
             const tp = evt.payload ?? {};
             // 时刻：人给了就用人的；没给就按"截止那天 09:00~10:00"，连截止都没有就用明天同一时段。
@@ -585,9 +596,36 @@ export function handler(req, res) {
               }
             }
             list.push({ at: new Date().toISOString(), by: 'manual', text: text || null, link: link || null, note: note || null, attachment });
-            const pr = store.patch('todo', id, { deliverables: list }, { op: 'deliverable', by: 'manual', evidence: { text: !!text, attachment: attachment?.ref ?? null } });
+            // ★★ 2026-10-14 加（用户原话）：「待办详情页面的"提交交付物"指的是：
+            //   1. 将笔记提交的**文字说明**做记录；2. 将**链接内容爬取下来之后，存储到知识库**；
+            //   3. 如果有提交的**附件**，则存储到知识库中。」
+            //   核对下来：① 文字说明 ✅（就是 `text`）② 附件 ✅（上面那段复制进 `Other/Inflow/文件`）
+            //   **③ 链接 ❌ —— 原来只把这个字符串记在待办上，根本没去爬、也没进知识库。**
+            //   ⇒ 现在走**既有的链接队列**（`processor/links.mjs`）：
+            //     它由计划任务 `DSH-WorkbenchV1-Links` 每 5 分钟 `--drain` 一次，
+            //     抓回来的正文落 `Other/Inflow/链接/<日期>-<标题>.md`（就是知识库）。
+            //   ⚠️ 为什么不在这个请求里直接抓：那是网络请求，可能十几秒；
+            //     待办详情是**点一下就出结果**的地方，不能为一条外链卡住界面。
+            //     ⇒ **入队（立刻生效）+ 回执说清"已入队"**，由那个任务去抓。
+            //     这与"附件立刻复制"不冲突：附件是本地文件、秒级；外链是网络、不确定。
+            let linkQueued = null;
+            if (link !== '') {
+              try {
+                const { enqueue, pendingCount } = await import('../processor/links.mjs');
+                const q = enqueue([link], { fromId: id, from: `待办交付物（${evt.payload?.topic ?? id}）` });
+                linkQueued = { added: q.added.length, dup: q.dup, pending: pendingCount(), dir: 'Other/Inflow/链接' };
+              } catch (e) {
+                // 入队失败**不吞**：如实回给界面（用户要的是"存到知识库"，没存就得知道）
+                linkQueued = { added: 0, error: String((e && e.message) || e).slice(0, 120) };
+              }
+            }
+            const pr = store.patch('todo', id, { deliverables: list }, { op: 'deliverable', by: 'manual', evidence: { text: !!text, attachment: attachment?.ref ?? null, link: link || null, linkQueued: linkQueued?.added ?? 0 } });
             if (pr.ok === false) return json(res, 500, { error: `交付物写入被拒：${pr.why}` });
-            return json(res, 200, { ok: true, id, count: list.length, attachment, note: '结果已记在待办上，归档时随待办一起进知识库（处理引擎负责）' });
+            return json(res, 200, {
+              ok: true, id, count: list.length, attachment, linkQueued,
+              note: '文字说明已记录' + (attachment ? '；附件已存进知识库（Other/Inflow/文件）' : '')
+                + (link ? `；链接已入爬取队列（当前待处理 ${linkQueued?.pending ?? '?'} 条），抓回来的正文会落到 Other/Inflow/链接 —— 计划任务每 5 分钟出队一次` : ''),
+            });
           })().catch((e) => json(res, 500, { error: `交付物登记失败：${e.message}` }));
         }
 
@@ -810,6 +848,118 @@ export async function selfTest() {
         madeNote !== null && madeNote.payload.content_md === longMsg,
         `${madeNote?.payload?.content_md?.length} 字（原文 ${longMsg.length} 字）`);
       chk('API-48', '★ 主题不该带 @（概括会剥掉）', !String(madeNote?.payload?.topic ?? '').includes('@'));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // ★★ 2026-10-14 加（用户这一轮的逐条要求）：**每个动作真的做到它说的那件事**
+    //   这一组检查的共同点：**接口回 200 不算数，要看状态真的变了**。
+    //   前面几轮栽过的都是这一类 —— 接口说成功，记录上什么都没发生。
+    // ══════════════════════════════════════════════════════════════════════════
+    {
+      // ① 已搁置 ⇒ 截止时间转无期限（原来只盖一个 hold 记号，截止时间原封不动）
+      const h0 = await post('/todos', { topic: '审计·有截止时间的一条', detail: 'x', due: '2026-10-20', executor: '我' });
+      const h1 = await post('/todos/' + h0.body.id + '/act', { op: '已搁置' });
+      const hEvt = store.getById('todo', h0.body.id);
+      chk('API-49', '★★ 已搁置 ⇒ **截止时间真的转为无期限**（原来只盖记号、日期不动）',
+        h1.code === 200 && hEvt.payload.due === null, `due=${JSON.stringify(hEvt?.payload?.due)}`);
+      chk('API-50', '★ 原来的截止时间**不丢**（写进留痕，可回查）',
+        (hEvt.ops ?? []).some((o) => o.op === 'hold' && /2026-10-20/.test(String(o.evidence ?? ''))),
+        String((hEvt.ops ?? []).find((o) => o.op === 'hold')?.evidence ?? '').slice(0, 60));
+      chk('API-51', '★★ 已搁置 ⇒ 进了「待定」档，**待定数量 +1**（无期限就是待定的口径）', (() => {
+        const u = todos({ bucket: 'undecided', now: Date.now() }).list.map((x) => x.id);
+        return u.includes(h0.body.id);
+      })());
+
+      // ② 已完成 ⇒ 进「已完成」档（用户："已完成数量+1"）
+      const d0 = await post('/todos', { topic: '审计·待完成的一条', detail: 'y', due: '2026-10-21', executor: '我' });
+      const beforeDone = todos({ now: Date.now() }).counts.done;
+      await post('/todos/' + d0.body.id + '/act', { op: '已完成' });
+      const afterDone = todos({ now: Date.now() }).counts.done;
+      chk('API-52', '★★ 已完成 ⇒ 进「已完成」档且**数量 +1**', afterDone === beforeDone + 1, `${beforeDone} → ${afterDone}`);
+
+      // ③ 转日程 ⇒ 待办进「转日程」档
+      const s3 = await post('/todos', { topic: '审计·要转日程的一条', detail: 'z', due: '2026-10-22', executor: '我' });
+      const s4 = await post('/todos/' + s3.body.id + '/act', { op: '转日程' });
+      // ★ 把 ops 与桶一起打出来（别再猜"为什么不在档里"—— 前几轮猜错过两次）
+      const s3evt = store.getById('todo', s3.body.id);
+      const s3ops = JSON.stringify((s3evt?.ops ?? []).map((o) => o.op));
+      const s3bucket = todos({ bucket: 'to-schedule', now: Date.now() });
+      const s3in = s3bucket.list.map((x) => x.id).includes(s3.body.id);
+      chk('API-53', '★★ 转日程 ⇒ 待办进「转日程」档（用户点名要这个分类）',
+        s4.code === 200 && s3in,
+        `code=${s4.code} ops=${s3ops} in=${s3in} 档内${s3bucket.list.length}条 resp=${JSON.stringify(s4.body).slice(0, 80)}`);
+
+      // ④ 日程 已完成 / 转待办 两档
+      const sc1 = await post('/schedules', { topic: '审计·日程要完成', start: '2026-10-20T09:00', end: '2026-10-20T10:00' });
+      const beforeS = schedules({ now: Date.now() }).counts.done;
+      await post('/schedules/' + sc1.body.id + '/act', { op: '已完成' });
+      chk('API-54', '★★ 日程「已完成」⇒ 进「已完成」档且**数量 +1**',
+        schedules({ now: Date.now() }).counts.done === beforeS + 1, `${beforeS} → ${schedules({ now: Date.now() }).counts.done}`);
+      const sc2 = await post('/schedules', { topic: '审计·日程要转待办', start: '2026-10-21T09:00', end: '2026-10-21T10:00' });
+      await post('/schedules/' + sc2.body.id + '/act', { op: '转待办' });
+      chk('API-55', '★★ 日程「转待办」⇒ 进「转待办」档（用户点名要这个分类）',
+        schedules({ bucket: 'to-todo', now: Date.now() }).list.map((x) => x.id).includes(sc2.body.id));
+
+      // ⑤ 交付物：链接**入爬取队列**（用户："将链接内容爬取下来之后，存储到知识库"）
+      const t3 = await post('/todos', { topic: '审计·交交付物', detail: 'w', executor: '我' });
+      const dv = await post('/todos/' + t3.body.id + '/deliverable', { text: '做完了', link: 'https://example.com/audit-doc' });
+      chk('API-56', '★★ 交付物填了链接 ⇒ **真的进了爬取队列**（原来只把字符串记下来，没爬）',
+        dv.code === 200 && dv.body.linkQueued && dv.body.linkQueued.added === 1,
+        JSON.stringify(dv.body.linkQueued ?? dv.body.error));
+      chk('API-57', '★ 回执说清**链接会落到哪儿**（Other/Inflow/链接，计划任务出队）',
+        /Inflow\/链接/.test(String(dv.body.note ?? '')), String(dv.body.note ?? '').slice(0, 80));
+
+      // ⑥ 消息转笔记 ⇒ 进「已转笔记」档（原来没有这一档，转过了还显示"待处理"）
+      const m3 = await post('/messages', { channel: 'dingtalk', sender: '审计', raw: '审计·这条要转成笔记，内容要完整保留下来。', summary: '审计·转笔记', source: 'im', modality: 'text', isDirect: true, conversationId: 'cidToNoteChk' });
+      await post('/messages/' + m3.body.id + '/convert', { to: 'note' });
+      chk('API-58', '★★ 消息转笔记 ⇒ 进「已转笔记」档（原来转过还显示"待处理"）',
+        messageState(store.getById('message', m3.body.id)) === 'to-note',
+        messageState(store.getById('message', m3.body.id)));
+      chk('API-59', '★ 消息页有六个页签（含已转笔记）', MESSAGE_TABS.includes('to-note') && MESSAGE_TABS.length === 6, MESSAGE_TABS.join(','));
+
+      // ⑦ 提取：从**消息 + 相关上下文**里提字段（用户这一轮的核心要求）
+      const m4 = post('/messages', { channel: 'dingtalk', sender: '审计', raw: '那个事你再看看。', summary: '那个事', source: 'im', modality: 'text', isDirect: true, conversationId: 'cidExtractChk' });
+      const m4r = await m4;
+      store.patch('message', m4r.body.id, { context: { recalled: [{ text: '这个项目由冯杰楠跟进，地点在杭州西溪园区，本月内要给客户答复。' }], at: new Date().toISOString() } }, { op: 'recall' });
+      const conv4 = await post('/messages/' + m4r.body.id + '/convert', { to: 'todo' });
+      const madeT = conv4.body?.to ? store.getById('todo', conv4.body.to) : null;
+      chk('API-60', '★★★ 转换**用了相关上下文**：原文没给的截止时间从召回的上下文里补上了',
+        !!madeT?.payload?.due && conv4.body?.extractFrom?.due === '相关上下文第 1 条',
+        `due=${madeT?.payload?.due} from=${conv4.body?.extractFrom?.due}`);
+      chk('API-61', '★★ 回执里**逐字段说清来源**（消息原文 / 相关上下文第 N 条）',
+        conv4.body?.extractFrom && typeof conv4.body.extractFrom === 'object' && !!conv4.body.material,
+        JSON.stringify(conv4.body?.extractFrom ?? {}).slice(0, 90));
+
+      // ⑧ ★★ 每个页签都必须有**同名的桶**（键名一字不差）
+      //   来由：我第一版把桶名写成驼峰 `toSchedule`，而页签传的是 `to-schedule` ⇒
+      //   **计数说有 2 条、列表 0 条**（页面自相矛盾），自检 API-53 抓出来的。
+      //   这类"同一个东西两个名字"在本项目已经栽过三次（单数/复数查表、取第一个 .list）。
+      //   ⇒ 与其一条条补，不如**按页签名逐个问一遍**：每个页签都得能查到东西、且不报错。
+      const tabKeys = [
+        ['todos', ['all', 'today', 'week', 'undecided', 'to-schedule', 'done']],
+        ['schedules', ['today', 'next7', 'all', 'to-todo', 'done']],
+        ['messages', ['all', 'pending', 'to-todo', 'to-schedule', 'to-note', 'replied']],
+      ];
+      const bad = [];
+      for (const [page, keys] of tabKeys) {
+        for (const k of keys) {
+          const got = page === 'todos' ? todos({ bucket: k, now: Date.now() })
+            : page === 'schedules' ? schedules({ bucket: k, now: Date.now() })
+              : messages({ tab: k, now: Date.now() });
+          // 桶查不到时是 `undefined ?? []` ⇒ 空列表；这里**不能只看空不空**（空是合法的），
+          // 要看**页签键本身认不认**：认的键必然出现在返回的 counts 或 tabs 里。
+          const known = page === 'messages' ? (got.tabs ?? []).includes(k) : true;
+          if (!known) bad.push(`${page}#${k}`);
+          if (!Array.isArray(got.list)) bad.push(`${page}#${k}:no-list`);
+        }
+      }
+      chk('API-62', '★★ 每个页签都有**同名的桶**、且都能取到列表（键名一字不差）',
+        bad.length === 0, bad.join(' · ') || '待办 6 档 / 日程 5 档 / 消息 6 个页签 逐个通过');
+      // ⚠️ 光"能取到列表"还不够 —— 空列表和"桶不存在"返回的空列表长得一模一样。
+      //   这一条用**真值**钉：转过日程的那个待办必须出现在 to-schedule 档里。
+      chk('API-63', '★★ 桶查得到的**不是空壳**：转过日程的待办真的在 to-schedule 档里',
+        todos({ bucket: 'to-schedule', now: Date.now() }).list.some((x) => (x.ops ?? []).some((o) => o.op === 'to-schedule')),
+        `档内 ${todos({ bucket: 'to-schedule', now: Date.now() }).list.length} 条`);
     }
 
     // ★ API-29 由「断言 501（未接线）」改成「断言真接线」——**这是本轮唯一一处改动既有断言**。

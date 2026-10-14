@@ -70,13 +70,31 @@ export function pgHelperDir() {
  *     目标已存在 ⇒ **一律拒绝并如实回报**，请人工决定是改名还是先删。
  *   ⇒ 想覆盖既有图，必须**显式**设 `WB_V1_PG_ALLOW_OVERWRITE=1`（默认关）。
  *   宁可少建一次，也不拿你的图去赌。
+ *
+ * ★★ 2026-10-14 补：**"上一次失败留下的空文件"允许重写**（`allowFailedTarget`）
+ *   来由（真机点出来的死结）：构建中途失败时会留下一个**没写完的文件**，
+ *   而闸只看"文件在不在" ⇒ 从此每次都拒，那条笔记**永远停在"待构建"**，
+ *   用户点多少次都是"目标工程已存在"（实测那条笔记的 ref 指向一个 485 字节的残留）。
+ *
+ *   ⚠️ **第一版修错了，记在这里免得再犯**：我用"体积 < 3000 字节 ⇒ 空壳"来判，
+ *     结果 `VIS-16` 当场变红 —— 自检里那个**真建出来的两节点工程正好也是 485 字节**。
+ *     **体积根本分不出"空壳"和"小工程"**（合法的小图可以比残留还小）。
+ *     拿体积当判据，等于给"覆盖真数据"开了一道随时可能命中的口子 —— 那是拆闸，不是修闸。
+ *   ⇒ 改成**精确判法**：只有在"**这个文件正是上一次失败留下的那一个**"时才允许重写 ——
+ *     失败时把目标路径记进事件的 `visual.failedTarget`，下次构建时逐字比对。
+ *     这样"能重写"的对象是**点名的、有记录的**，而不是"任何小文件"。
  */
-export function assertPgWritable(file) {
+export function assertPgWritable(file, { allowFailedTarget = null } = {}) {
   const allow = process.env.WB_V1_PG_ALLOW_OVERWRITE === '1';
-  if (fs.existsSync(file) && !allow) {
-    return { ok: false, why: `目标工程已存在，拒绝覆盖：${file}（要覆盖请显式设 WB_V1_PG_ALLOW_OVERWRITE=1）` };
+  if (!fs.existsSync(file)) return { ok: true };
+  if (allow) return { ok: true };
+  // 精确例外：这个路径与"上次失败记下的目标"**逐字相同** ⇒ 它是没写完的残留，可以接着写。
+  if (allowFailedTarget && path.resolve(String(allowFailedTarget)) === path.resolve(file)) {
+    let bytes = 0;
+    try { bytes = fs.statSync(file).size } catch { bytes = 0 }
+    return { ok: true, replacedFailedTarget: bytes };
   }
-  return { ok: true };
+  return { ok: false, why: `目标工程已存在，拒绝覆盖：${file}（要覆盖请显式设 WB_V1_PG_ALLOW_OVERWRITE=1）` };
 }
 
 /**
@@ -84,10 +102,10 @@ export function assertPgWritable(file) {
  * 模板取 `pg-helper/empty-project.prg`（空工程自带一个根节点）。
  * @returns {{ok:boolean, ref?:string, detail?:string, reason?:string}}
  */
-export async function buildProjectGraphFile({ name, lines = [], template = null, dir = null } = {}) {
+export async function buildProjectGraphFile({ name, lines = [], template = null, dir = null, allowFailedTarget = null } = {}) {
   const target = path.join(dir ?? pgDir(), `${String(name).replace(/[\\/:*?"<>|]/g, '_').slice(0, 80)}.prg`);
-  const guard = assertPgWritable(target);
-  if (guard.ok !== true) return { ok: false, reason: guard.why };
+  const guard = assertPgWritable(target, { allowFailedTarget });
+  if (guard.ok !== true) return { ok: false, reason: guard.why, target };
   const tpl = template ?? path.join(pgHelperDir(), 'empty-project.prg');
   if (!fs.existsSync(tpl)) return { ok: false, reason: `空工程模板不存在：${tpl}` };
   try {
@@ -153,12 +171,13 @@ export const defaultDeps = Object.freeze({
     return { ok: true, ref: id, detail: `已在建模中心建模型 ${name}（id=${id}）` };
   },
   // 工程图：真建一个**新的** .prg（绝不覆盖已有工程 —— 见 assertPgWritable 的长注释）
-  graphFn: async ({ note, name }) => {
+  // ★ 2026-10-14：把"上次失败留下的那个文件"透下来 —— 只有它与这次的目标**逐字相同**时才允许重写。
+  graphFn: async ({ note, name, allowFailedTarget = null }) => {
     const topic = String(note?.payload?.topic ?? '').trim();
     const lines = [topic === '' ? String(name) : topic];
     const md = String(note?.payload?.content_md ?? '').trim();
     if (md !== '') for (const line of md.split(/\r?\n/)) { const t = line.trim(); if (t !== '') lines.push(t.slice(0, 120)); }
-    return buildProjectGraphFile({ name, lines: lines.slice(0, 40) });
+    return buildProjectGraphFile({ name, lines: lines.slice(0, 40), allowFailedTarget });
   },
 });
 
@@ -223,8 +242,8 @@ export async function buildOne({ tool, note, name, spec = null, intent = '', dep
     if (typeof d.graphFn !== 'function') {
       return { ok: false, tool, ref: null, detail: null, reason: 'project-graph 通路未接（本轮如实报未完成，不假装建过）', name: safeName };
     }
-    const r = await d.graphFn({ note, name: safeName, intent });
-    return { ok: r.ok === true, tool, ref: r.ref ?? null, detail: r.detail ?? null, reason: r.reason ?? null, name: safeName };
+    const r = await d.graphFn({ note, name: safeName, intent, allowFailedTarget: deps?.allowFailedTarget ?? null });
+    return { ok: r.ok === true, tool, ref: r.ref ?? null, detail: r.detail ?? null, reason: r.reason ?? null, name: safeName, target: r.target ?? null };
   }
   return { ok: false, tool: String(tool), ref: null, detail: null, reason: `未知工具：${tool}`, name: safeName };
 }
@@ -245,17 +264,27 @@ export async function buildVisualForNote(evt, { deps = {}, force = false, name =
   const nm = name ?? evt.analysis?.visual?.name ?? `笔记-${String(evt.payload?.topic ?? '').slice(0, 20)}-${shortId(evt._id)}`;
   if (dryRun) return { id: evt._id, action: 'built', tool, ref: '(dryRun)', reason: null, detail: '干跑：未真建' };
 
-  const r = await buildOne({ tool, note: evt, name: nm, spec, intent, deps });
+  // ★ 2026-10-14：把"**上一次失败留下的那个文件**"交给构建器 ——
+  //   它是唯一允许被重写的已存在文件（判法精确到"这一个"，见 `assertPgWritable` 的长注释）。
+  const allowFailedTarget = evt.analysis?.visual?.failedTarget ?? null;
+  const r = await buildOne({ tool, note: evt, name: nm, spec, intent, deps: { ...deps, allowFailedTarget } });
   const at = nowIso();
   if (r.ok) {
     store.patch('note', evt._id, {
-      analysis: { ...(evt.analysis ?? {}), visual: { ...(evt.analysis?.visual ?? {}), built: true, tool, ref: r.ref, name: r.name, at, error: null } },
+      analysis: { ...(evt.analysis ?? {}), visual: { ...(evt.analysis?.visual ?? {}), built: true, tool, ref: r.ref, name: r.name, at, error: null, failedTarget: null } },
     }, { op: 'visualized', by: 'builder', evidence: { tool, ref: r.ref, name: r.name } });
     return { id: evt._id, action: 'built', tool, ref: r.ref, reason: null, detail: r.detail };
   }
   store.patch('note', evt._id, {
-    analysis: { ...(evt.analysis ?? {}), visual: { ...(evt.analysis?.visual ?? {}), built: false, tool, at, error: r.reason } },
-  }, { op: 'visualize-failed', by: 'builder', evidence: { tool, reason: r.reason } });
+    analysis: {
+      ...(evt.analysis ?? {}),
+      // ★ 记下**这次试图写的目标**：只在这个路径阻塞时才记（别的失败原因与文件无关，记了会把那个文件误判成"残留"）。
+      visual: {
+        ...(evt.analysis?.visual ?? {}), built: false, tool, at, error: r.reason,
+        failedTarget: r.target ?? evt.analysis?.visual?.failedTarget ?? null,
+      },
+    },
+  }, { op: 'visualize-failed', by: 'builder', evidence: { tool, reason: r.reason, target: r.target ?? null } });
   return { id: evt._id, action: 'failed', tool, ref: null, reason: r.reason, detail: null };
 }
 
@@ -395,6 +424,26 @@ export async function selfTest() {
       // ★★ 覆盖闸：同一个名字再建一次 ⇒ **必须拒绝**（这是本文件最硬的一条纪律）
       const g2 = await buildProjectGraphFile({ name: '自检用图', lines: ['丙'], template: tpl, dir: pgTmp });
       chk('VIS-16', '★★ 拒绝覆盖已有工程（宁可少建一次，也不拿你的图去赌）', g2.ok === false && String(g2.reason).includes('拒绝覆盖'), JSON.stringify(g2));
+
+      // ★★ 2026-10-14 加（**真机点出来的死结**）：
+      //   构建中途失败会留下**没写完的文件**，原来那道闸只看"文件在不在"
+      //   ⇒ 从此每次都拒、那条笔记永远停在"待构建"（实测：一个 485 字节的残留挡住了它自己）。
+      //   ⚠️ 判法必须**精确到"这一个文件"**：第一版我用"体积 < 3000 字节"来判，
+      //     结果 VIS-16 当场变红 —— 自检里那个**真建出来的两节点工程正好也是 485 字节**。
+      //     体积分不出"空壳"与"小工程"；拿体积当判据等于给"覆盖真数据"开了口子。
+      const stubFile = px.join(pgTmp, '上次失败留下的那个.prg');
+      fsx.writeFileSync(stubFile, Buffer.alloc(485, 7));
+      const gs = assertPgWritable(stubFile, { allowFailedTarget: stubFile });
+      chk('VIS-17', '★★ 上次失败留下的那个文件 ⇒ **允许重写**（按钮不再被永久卡死）',
+        gs.ok === true && gs.replacedFailedTarget === 485, JSON.stringify(gs));
+      chk('VIS-18', '★★ 同样大小的**别的**文件 ⇒ 仍然拒绝（精确到"这一个"，不是"这一类小文件"）', (() => {
+        const other = px.join(pgTmp, '跟失败无关的小工程.prg');
+        fsx.writeFileSync(other, Buffer.alloc(485, 7));
+        const r = assertPgWritable(other, { allowFailedTarget: stubFile });
+        return r.ok === false && /拒绝覆盖/.test(String(r.why));
+      })());
+      chk('VIS-19', '★ 没有失败记录时（`allowFailedTarget` 不给）⇒ 一律拒绝，纪律不松',
+        assertPgWritable(stubFile).ok === false && assertPgWritable(stubFile).why.includes('拒绝覆盖'));
     }
   } finally {
     if (prev === undefined) delete process.env.WB_V1_OUT; else process.env.WB_V1_OUT = prev;

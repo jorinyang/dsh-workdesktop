@@ -73,9 +73,27 @@ export function stylesheet() {
   // ★★ 2026-10-14 加（用户第 4 条）：总览的数字卡可点跳转。
   //   `a.card` 默认带下划线、蓝色、行内显示 —— 三条都要按 `div.card` 的观感盖掉，
   //   否则同一个 `.stats` 里点得动的卡和点不动的卡看起来是两种东西。
-  s.push('a.card { text-decoration: none; color: inherit; display: block; cursor: pointer; transition: box-shadow .12s ease, transform .12s ease; }');
-  s.push('a.card:hover { box-shadow: var(--shadow-lifted); transform: translateY(-1px); }');
+  //   ⚠️ 2026-10-14 修：这里原来写的是 `a.card`，但 `.stats` 里的锚点**没有 `card` 这个类**
+  //     （`statCards` 给的是 `class="card card-go"`；而 `a.card` 与 `.card` 在 CSS 里
+  //     是**同一个选择器**，`.card` 本来就命中它）⇒ `display:block; cursor:pointer`
+  //     实际落到了**所有卡**上：四个内页那些"只是个数字、点不动"的卡也变成了**手型光标**，
+  //     鼠标移上去像是能点。**样式没生效在以为的地方，反而落到了不该落的地方。**
+  //   ⇒ 拆开写：普遍规则（所有卡：阴影 + 渐变）与"只给链接"的规则（上浮 + 手型 + 去下划线）。
+  s.push('.card { transition: box-shadow .12s ease, transform .12s ease; }');
+  s.push('.card:hover { box-shadow: var(--shadow-lifted); }');
+  s.push('a.card { text-decoration: none; color: inherit; display: block; cursor: pointer; }');
+  s.push('a.card:hover { transform: translateY(-1px); }');
   s.push('a.card:focus-visible { outline: 2px solid var(--c-accent-blue); outline-offset: 2px; }');
+  // ★★ 2026-10-14 加（用户原话）：「消息、待办、日程、笔记页面的**数据统计标签**，
+  //   需要增加**鼠标悬停时的阴影效果**，类似于在"今日总览"中，当鼠标移动到
+  //   "待处理消息"、"待完成待办"、"近7日日程"和"近1周笔记"时，出现的阴影效果一致」。
+  //
+  //   为什么原来只有总览那四张有：它们是链接（**可点跳转**），悬停效果写在了链接那条规则上；
+  //   四个内页的统计卡是普通卡（**只是个数字，不跳**）⇒ 压根没有悬停样式。
+  //   ⇒ 现在阴影给**所有卡**（上面那条 `.card:hover`），两处观感一致。
+  //   ⚠️ 可点的卡**仍多两条**：轻微上浮 + 手型光标 —— 有区别是对的，
+  //     否则用户分不清哪张点得动。用户要的是"阴影效果一致"，不是"两种卡完全一样"。
+  //   ⚠️ 阴影必须配 `transition`（上面那条），否则是**瞬变**、看起来像闪一下，而总览那四张是渐变的。
   s.push('.card .num { font-size: 28px; font-weight: var(--w-strong); color: var(--c-ink); line-height: 1.2; }');
   s.push('.card .cap { font-size: 13px; color: var(--c-mute); margin-top: var(--s-xs); }');
   s.push('.section { margin-top: var(--s-xl); }');
@@ -490,7 +508,12 @@ export function pageOverview(snap) {
     + listBlock('长期未回复的信息', stl);
 }
 
-const TAB_LABEL = { all: '全部', pending: '待处理', 'to-todo': '已转待办', 'to-schedule': '已转日程', replied: '已回复' };
+const TAB_LABEL = { all: '全部', pending: '待处理', 'to-todo': '已转待办', 'to-schedule': '已转日程', 'to-note': '已转笔记', replied: '已回复' };
+// ★ 待办页与日程页的页签名（用户这一轮点名）
+//   待办：「全部 / 今日 / 本周 / 待定 / 转日程 / 已完成」
+//   日程：「今日 / 未来7天 / 全部」+ 新增「转待办 / 已完成」
+const TODO_TABS = Object.freeze([['all', '全部'], ['today', '今日'], ['week', '本周'], ['undecided', '待定'], ['to-schedule', '转日程'], ['done', '已完成']]);
+const SCHED_TABS = Object.freeze([['today', '今日'], ['next7', '未来7天'], ['all', '全部'], ['to-todo', '转待办'], ['done', '已完成']]);
 
 export function pageMessages(snap) {
   // ★ 2026-10-12 修：**从地址里读 `?tab=` 再传给聚合**。
@@ -500,9 +523,11 @@ export function pageMessages(snap) {
   const tab = (snap && snap.query && snap.query.tab) || 'all';
   const m = (snap && snap.messages) || messages({ tab });
   const c = m.counts;
-  const cards = statCards([['待处理', c.pending], ['已转待办', c.toTodo], ['已转日程', c.toSchedule], ['已回复', c.replied]]);
+  // ★★ 2026-10-14 加（用户原话）：「转笔记…**将消息移动到已转笔记本内**」——
+  //   统计卡与页签都要有这一档，否则转过笔记的消息在界面上无处可查。
+  const cards = statCards([['待处理', c.pending], ['已转待办', c.toTodo], ['已转日程', c.toSchedule], ['已转笔记', c.toNote], ['已回复', c.replied]]);
   let tabs = [];
-  for (const t of ['all', 'pending', 'to-todo', 'to-schedule', 'replied']) {
+  for (const t of ['all', 'pending', 'to-todo', 'to-schedule', 'to-note', 'replied']) {
     // ★★ 2026-10-12 修（**消息页五个 Tab 点了没反应**）：
     //   原来写的是 `href="#messages?tab=<t>"` —— 页内锚点，点了既不筛列表也不跳页。
     //   现在链接**带查询串**去请求同一个文件；`?tab=` 由**客户端脚本**用来隐藏不匹配的行
@@ -541,6 +566,26 @@ export function pageTodos(snap) {
   //   ⇒ 现在**严格照用户给的顺序**：col1=截止 · col3=来源 · col2=执行人 · col4=待办标题。
   //     （`listBlock` 的第四格以前固定当"来源"用；这里让位给标题，来源放第三格 ——
   //      列序以**用户点名的**为准，不迁就实现上的旧约定。）
+  // ★★ 2026-10-14 加：行上带**它属于哪几档**（`data-state` 改成**多值**，空格分隔）。
+  //   为什么是多值：待办的「转日程」与「已完成」**可以重叠**（转过日程的也可能已完成），
+  //   日程同理。单值模型下只能挑一个 ⇒ 另一档里那条会**凭空消失**（用户点"已完成"看不见它）。
+  //   客户端的筛法相应改成"包含即显示"（见 `client.mjs`）。
+  const isDoneT = (e) => (e.ops ?? []).some((o) => o.op === 'done');
+  const hasOpT = (e) => (e.ops ?? []).some((o) => o.op === 'to-schedule');
+  const dNow = Date.now();
+  const st = (e) => {
+    const tags = [];
+    const due = e.payload?.due ? Date.parse(e.payload.due) : NaN;
+    if (Number.isFinite(due)) {
+      const d0 = new Date(dNow); d0.setHours(0, 0, 0, 0);
+      const t0 = new Date(due); t0.setHours(0, 0, 0, 0);
+      if (t0.getTime() <= d0.getTime()) tags.push('today');            // 逾期 + 今天到期，与后端同口径
+      if (t0.getTime() >= d0.getTime() && t0.getTime() <= d0.getTime() + 7 * 86400000) tags.push('week');
+    } else tags.push('undecided');                                     // 无期限 ⇒ 待定
+    if (hasOpT(e)) tags.push('to-schedule');
+    if (isDoneT(e)) tags.push('done');
+    return tags.join(' ') || 'all';
+  };
   const rows = t.list.map(function (r) {
     return {
       id: r.id,
@@ -549,10 +594,18 @@ export function pageTodos(snap) {
       col3: r.source && r.source.label,
       col4: r.topic + (r.detail ? ' ' + r.detail : ''),
       overdue: r.overdue,
+      state: st(r),
     };
   });
   return '<div class="stats">' + cards + '</div>' + inlineForm('todos')
-    + listBlock('待办列表', rows, '', { pageKey: 'todos', scroll: true, head: ['截止时间', '来源', '执行人', '待办标题'] });
+    + listBlock('待办列表', rows, '', {
+      pageKey: 'todos',
+      scroll: true,
+      // ★★ 2026-10-14 加（用户原话）：「待办列表下需要增加 tab，将
+      //   **全部 / 今日 / 本周 / 待定 / 转日程 / 已完成** 做分类」。
+      tabs: TODO_TABS,
+      head: ['截止时间', '来源', '执行人', '待办标题'],
+    });
 }
 
 export function pageSchedules(snap) {
@@ -575,14 +628,16 @@ export function pageSchedules(snap) {
     const s = String(r.start || ''); const e = String(r.end || '');
     const t0 = Date.parse(s);
     const d1 = new Date(t0); d1.setHours(0, 0, 0, 0);
-    const st = (Number.isFinite(t0) && d1.getTime() === d0) ? 'today'
-      : ((Number.isFinite(t0) && t0 >= d0 && t0 <= d0 + 7 * 86400000) ? 'next7' : 'all');
-    // ★★ 2026-10-14 改（用户第 2 条原话）：
-    //   「开始时间与截止时间中间的间隔过大，我希望是**开始时间到截止时间，中间用一个"-"连接**。」
-    //   原来把开始、截止拆成**两列**（各占一个 flex 格）—— 两格之间被 `gap` 撑开，
-    //   看起来像两个不相干的字段，那正是用户说的"间隔过大"。
-    //   ⇒ 合成**一格**：`09:00-10:30`。表头相应从五列变四列
-    //     （日期 / 起止时间 / 来源 / 日程主题）—— 用户要的是"中间一个连字符"，不是"两列挨近点"。
+    // ★★ 2026-10-14 改：`state` 改成**多值**（空格分隔），与待办页同一套 ——
+    //   用户这一轮要求日程页新增「转待办」「已完成」两个页签，而一条日程
+    //   **可以同时**是"今日"和"转待办"（时间档 + 处置档本就是两个维度）。
+    //   单值模型下只能挑一个 ⇒ 点"转待办"就看不见今天那些了。
+    const tags = [];
+    if (Number.isFinite(t0) && d1.getTime() === d0) tags.push('today');
+    if (Number.isFinite(t0) && t0 >= d0 && t0 <= d0 + 7 * 86400000) tags.push('next7');
+    if ((r.ops ?? []).some(function (o) { return o.op === 'to-todo' })) tags.push('to-todo');
+    if (r.done === true) tags.push('done');
+    tags.push('all');
     const startT = s.slice(11, 16); const endT = e.slice(11, 16);
     const span = startT ? (endT ? startT + '-' + endT : startT) : '—';
     return {
@@ -591,14 +646,14 @@ export function pageSchedules(snap) {
       col2: span,                                            // 起止时间（一个连字符连接）
       col3: r.source && r.source.label,                      // 来源
       col4: r.topic + (r.place ? ' · ' + r.place : ''),      // 日程主题（地点跟在后面，便于一眼看全）
-      state: st,
+      state: tags.join(' '),
     };
   });
   // ★ 日程密度热力图（需求 3.3.5）：左=当月每天热力，右=动态分析。
   //   数据来自 `api/pages.mjs#scheduleHeatmap`（**纯规则**，不调模型 —— 这页不该偷偷烧 token）。
   const hm = (snap && snap.heatmap) || scheduleHeatmap({});
   // 页签三档：今日 / 未来7天 / 全部（用户点名）。`bucket` 与 `schedules()` 的桶名对齐。
-  const schedTabs = [['today', '今日'], ['next7', '未来7天'], ['all', '全部']];
+  const schedTabs = SCHED_TABS;   // 今日 / 未来7天 / 全部 / 转待办 / 已完成（用户这一轮点名）
   return '<div class="stats">' + cards + '</div>' + heatBlock(hm) + inlineForm('schedules')
     + listBlock('日程列表', rows, '', {
       pageKey: 'schedules',
@@ -648,8 +703,17 @@ export function pageNotes(snap) {
   });
   // ★ 笔记列表：分页 + **单独滚动**（用户第 5 条后半句："如果笔记列表高度超过页面高度不够，
   //   仅在笔记列表位置出现滚动条，而不是在整体页面出现垂直滚动条"）
+  // ★★ 2026-10-14 修（**用户报"笔记列表的表头和下面的字段没有对齐"**）：
+  //   行的三格占的是 **col1 / col3 / col4**（`listBlock` 把第四格固定当"来源"用，
+  //   笔记只有三项 ⇒ 第二格空着），而表头原来只给了 **3** 个名字 ⇒ 表头 3 格、行 4 格，
+  //   **从第二格起全部错开**（这正是用户看到的现象）。
+  //   ⇒ 表头补一个**空格子**顶住第二格。为什么不在行的第二格写"笔记概括"：
+  //   那样表头第三格"来源"会落在行的第三格（笔记概括）上，**换了个错法**而已。
+  //   列名与列位必须以**行的实际格位**为准。
+  //   ⚠️ 真机量过：另外三页的表头格数与行格数本来就相等（消息 5/5、待办 4/4、日程 4/4），
+  //     只有笔记这一页不齐 —— 所以只改这一页，别去动那三页。
   return '<div class="stats">' + cards + '</div>' + inlineForm('notes')
-    + listBlock('笔记列表', rows, '', { pageKey: 'notes', scroll: true, head: ['日期', '笔记概括', '来源'] });
+    + listBlock('笔记列表', rows, '', { pageKey: 'notes', scroll: true, head: ['日期', '', '笔记概括', '来源'] });
 }
 
 export const PAGES = Object.freeze({ overview: pageOverview, messages: pageMessages, todos: pageTodos, schedules: pageSchedules, notes: pageNotes });
@@ -784,6 +848,31 @@ export function selfTest() {
     const h = renderPage('schedules', { snap: { schedules: { counts: { today: 0, next7: 0, done30: 0, total: 0 }, list: [] }, heatmap: emptyHeat } });
     return h.includes('没有数据就不分析');
   })(), '');
+
+  // ★★ 2026-10-14 加（用户原话）：四页的**数据统计卡要有悬停阴影**，与总览那四张一致。
+  //   这里守两条，都是真机量出来的：
+  //     · 阴影**给所有卡**（`.card:hover`）—— 原来只有总览那几张有（它们是可点的链接）；
+  //     · **手型光标只给链接** —— 我第一版把 `display:block; cursor:pointer` 写在 `.card` 上，
+  //       而 CSS 里 `.card` 与 `a.card` 是同一个选择器 ⇒ **四个内页那些点不动的卡也变成了手型**，
+  //       鼠标移上去像是能点（样式没生效在以为的地方，反而落到了不该落的地方）。
+  const cssAll = stylesheet();
+  chk('SH-32', '★★ 所有统计卡都有悬停阴影（`.card:hover`）', /\.card:hover\s*\{[^}]*box-shadow/.test(cssAll));
+  chk('SH-33', '★★ 手型光标**不在普通卡上**（点不动的卡不该是手型）', (function () {
+    const rules = [...cssAll.matchAll(/([^{}]*)\{([^}]*)\}/g)].map(function (m) { return [m[1].trim(), m[2]]; });
+    // ⚠️ 判法改了两次，两次都错在同一个地方：**把范围划得比问题大**。
+    //   第一版只认"以 a 紧接符号开头"，把 `a.card` 误判成"不是链接"；
+    //   第二版改成"凡是 cursor:pointer 就必须是链接"，又把 `button`、`.pager button`、
+    //   `.statusbar .switch` 这些**本来就该是手型**的判成了错（它们不是链接，但它们是按钮）。
+    //   ⇒ 要守的其实是**很窄的一件事**：`.card` 这一条规则里**不许**出现手型光标
+    //     （因为四个内页的统计卡点不动，手型会让用户以为能点）。
+    //     别的元素是不是手型，不归这条管。
+    const cardGeneric = rules.filter(function (p) { return /^\.card$/.test(p[0]); });
+    return cardGeneric.every(function (p) { return !/cursor:\s*pointer/.test(p[1]); });
+  })(), (function () {
+    const rules = [...cssAll.matchAll(/([^{}]*)\{([^}]*)\}/g)].map(function (m) { return [m[1].trim(), m[2]]; });
+    return rules.filter(function (p) { return /^\.card$/.test(p[0]) && /cursor:\s*pointer/.test(p[1]); }).map(function (p) { return p[0]; }).join('|') || '普通卡上没有手型';
+  })());
+  chk('SH-34', '★ 阴影是渐变的（`.card` 上有 transition），不是闪一下', /\.card\s*\{[^}]*transition:\s*box-shadow/.test(cssAll));
 
   const pass = out.filter(function (x) { return x.ok; }).length;
   return { pass: pass, fail: out.length - pass, details: out };

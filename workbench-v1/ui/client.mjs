@@ -564,7 +564,13 @@ export function clientScript(apiBase) {
   L.push('      for (var i = 0; i < lis.length; i++) {');
   // ★ 2026-10-13：筛选结果写进**自己的属性**（`data-tab-hidden`），不去碰 `style.display` ——
   //   那个属性归分页管。两者共用一个属性就会互相覆盖（真机验证抓出来过）。
-  L.push('        var hide = !(t === "all" || lis[i].getAttribute("data-state") === t);');
+  // ★★ 2026-10-14 改：`data-state` 从**单值**变成**多值**（空格分隔的档位标签）。
+  //   为什么：待办的「转日程」与「已完成」**可以重叠**（转过日程的也可能已完成），
+  //   日程同理。单值模型下渲染层只能挑一个写进去 ⇒ 另一档里那条会**凭空消失**。
+  //   ⇒ 判据改成"**包含即显示**"：行的标签里含当前页签就算命中。
+  //   ⚠️ 用空格切分后做**整词比较**，不用 `indexOf` —— 否则 `to-schedule` 会被 `schedule` 误命中。
+  L.push('        var tags = " " + String(lis[i].getAttribute("data-state") || "") + " ";');
+  L.push('        var hide = !(t === "all" || tags.indexOf(" " + t + " ") >= 0);');
   L.push('        lis[i].setAttribute("data-tab-hidden", hide ? "1" : "0");');
   L.push('      }');
   L.push('      for (var j = 0; j < links.length; j++) {');
