@@ -51,6 +51,41 @@ export function dwsDownloadHook({ dirRel = null, timeoutSec = 120 } = {}) {
     try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { return { ok: false, why: `建目录失败：${e.message}` }; }
 
     // ══════════════════════════════════════════════════════════════════════════════
+    // ★★ 2026-10-15 加：**钉钉云盘那条路**（`fileId:` ⇒ `dws drive download`）。
+    //
+    //   来由：`deferred.jsonl` 里那 4 条含 `fileId:` 的文件一直躺着，why 是"没有 mediaId"。
+    //   它们**不是聊天媒体** —— 提示语自己就写了该用哪条命令：
+    //     `注意：如需下载使用dws drive download命令下载`
+    //   实测（2026-10-15）真跑一条：
+    //     `dws drive download --node QG53mjyd801qbBY3ue2M9rLqW6zbX04v --output <目录>`
+    //     ⇒ 成功，落盘 `海报文案-竞品情报场景V2.md`（3506 字节）。
+    //
+    //   ⚠️ 两个接口**不能混用**（混了服务端会回"取不到该资源的下载地址"，那正是这 4 条的历史）：
+    //     · `mediaId=` ⇒ 聊天媒体 ⇒ `dws chat message download-media --resource-id`
+    //     · `fileId:`  ⇒ 钉钉云盘 ⇒ `dws drive download --node`
+    //   ⚠️ 判据用 `ctx.viaDrive`（由 `modality.mjs` 明确传下来），**不靠"看这个 id 像不像"** ——
+    //     两种 id 都是无规律的字母数字串，形态上分不出来；靠猜迟早猜错。
+    //   ⚠️ 这条**不需要** `messageId`/`conversationId`（那是聊天媒体那条要的）——
+    //     早退会让本来能下的下不来（图那条已经吃过一次这个亏）。
+    // ══════════════════════════════════════════════════════════════════════════════
+    if (ctx.viaDrive === true) {
+      const q0 = (v) => `'${String(v).replace(/'/g, "''")}'`;
+      const cmd0 = `dws drive download --node ${q0(mediaId)} --output ${q0(dir + path.sep)}`;
+      const r0 = spawnSync(PS, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', cmd0],
+        { encoding: 'utf8', timeout: timeoutSec * 1000, maxBuffer: 16 * 1024 * 1024 });
+      const out0 = String(r0.stdout ?? ''); const err0 = String(r0.stderr ?? '');
+      if (r0.error) return { ok: false, why: `云盘下载调用失败：${r0.error.message}` };
+      // 这条命令**不回 JSON**，只打 `[INFO] 下载完成: <绝对路径>`（实测）。
+      // ⚠️ 所以不能沿用下面那条"解析 JSON"的路 —— 那条在这里必然判失败，
+      //   而它在上面那条（聊天媒体）是对的。两种输出格式，两套解析。
+      const m0 = /下载完成[:：]\s*(.+?)\s*$/m.exec(out0) ?? /下载完成[:：]\s*(.+?)\s*$/m.exec(err0);
+      if (!m0) return { ok: false, why: `云盘下载未回报完成（exit=${r0.status}）：${(err0 || out0).trim().slice(0, 200)}` };
+      const abs0 = path.resolve(m0[1].trim());
+      if (!fs.existsSync(abs0)) return { ok: false, why: `云盘下载回报完成但文件不存在：${abs0}` };
+      return { ok: true, path: path.relative(kbRoot(), abs0).split(path.sep).join('/') };
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
     // ★★ 2026-10-15 加：**mediaId 本身是网址时，直接 HTTP 取，不交 dws**。
     //
     //   来由（这一轮要"对齐所有功能与数据链路"，这是实测断掉的一处）：
@@ -203,6 +238,22 @@ export async function selfTest() {
     chk('MED-5', '★ 负向对照：真 mediaId（`$`/`@` 形态）仍走 dws 那条路，没被"网址"分支截走',
       r5.ok === true || /download-media|下载未成功|CLI|dws|缺 messageId/i.test(String(r5.why ?? '')),
       `ok=${r5.ok} why=${String(r5.why ?? '').slice(0, 70)}`);
+
+    // ⑥★ 云盘那条路：`viaDrive` 为真 ⇒ 必须走 `dws drive download`，**不许**走聊天媒体那条。
+    //   判据取"命令形态"而不是"成功"：dws 在不在、那个 id 还有没有效都不一定
+    //   （自检要能在任何机器上跑）。用**编的 id** ⇒ 必然失败，但失败原因必须来自云盘那条命令。
+    const r6 = await hook('THIS-IS-NOT-A-REAL-DENTRY-UUID', { viaDrive: true, at: Date.now() });
+    chk('MED-6', '★ 云盘形态（viaDrive）走 `dws drive download --node`，不走聊天媒体那条',
+      r6.ok === false && /云盘下载/.test(String(r6.why ?? '')),
+      `ok=${r6.ok} why=${String(r6.why ?? '').slice(0, 90)}`);
+
+    // ⑦ 负向对照：**没带 viaDrive 的同一个 id 不该走云盘那条** ——
+    //   两种 id 都是无规律字母数字串、形态上分不出来，只能靠这个旗标分。
+    //   这条守的正是"别把两条路混起来"：混了服务端会回"取不到该资源的下载地址"。
+    const r7 = await hook('THIS-IS-NOT-A-REAL-DENTRY-UUID', { messageId: 'm', conversationId: 'c', at: Date.now() });
+    chk('MED-7', '★ 负向对照：没带 viaDrive ⇒ 不走云盘那条（两条路靠旗标分，不靠猜 id 形态）',
+      !/云盘下载/.test(String(r7.why ?? '')),
+      `ok=${r7.ok} why=${String(r7.why ?? '').slice(0, 90)}`);
   } finally {
     server.close();
     if (prevKb === undefined) delete process.env.WB_V1_KB_ROOT; else process.env.WB_V1_KB_ROOT = prevKb;

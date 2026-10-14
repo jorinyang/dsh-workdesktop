@@ -44,6 +44,24 @@ export function extractMediaId(content) {
   return m ? m[1] : null;
 }
 
+/**
+ * 取**钉钉云盘的 `fileId:`**（未识别到返回 null）。
+ *
+ * ★★ 2026-10-15 加：这是**第二种 id 形态** —— 与 `mediaId=` 并列，不是替代。
+ *   实测（deferred 里那 4 条）正文形如：
+ *     `[文件] 海报文案-竞品情报场景V2.md fileId: QQG53… 注意：如需下载使用dws drive download命令下载`
+ *   两者区别（**别混着用**，用错接口服务端会回"取不到该资源的下载地址"）：
+ *     · `mediaId=` ⇒ 聊天里的媒体 ⇒ `dws chat message download-media --resource-id`
+ *     · `fileId:`  ⇒ 钉钉云盘的文件 ⇒ `dws drive download --node`
+ *   ⚠️ 字符集按实测取 `[A-Za-z0-9_-]`（那 4 个 id 都是这个形态）；
+ *     不能用 `\S+` —— 后面紧跟一个空格再接"注意："，`\S+` 正好停得住，
+ *     但万一格式变了（比如换行）就会把提示语吃进 id 里。
+ */
+export function extractFileId(content) {
+  const m = /fileId:\s*([A-Za-z0-9_-]+)/.exec(String(content ?? ''));
+  return m ? m[1] : null;
+}
+
 /** 去掉钉钉附在正文尾部的那句"下载提示"，它不该进信息原文
  *  ★ 实测样本里提示含**空格**（`使用dws chat message download-media命令下载`）⇒ 不能用 `\S*` 硬匹配 */
 export function stripDownloadHint(content) {
@@ -120,9 +138,24 @@ export function convert(content, hooks = NO_HOOK, ctx = {}) {
   }
 
   // 文件：不改变模态，但要落盘留引用
+  //
+  // ★★ 2026-10-15 加：**钉钉云盘的 `fileId:` 形态**（用户这一轮要"对齐所有功能与数据链路"，
+  //   这是 deferred 里最后一批真卡住的）。
+  //
+  //   实测那 4 条的正文长这样：
+  //     `[文件] 海报文案-竞品情报场景V2.md fileId: QG53mjyd801qbBY3ue2M9rLqW6zbX04v 注意：如需下载使用dws drive download命令下载`
+  //   它们**不是**聊天媒体（没有 `mediaId=`）⇒ `extractMediaId` 返回 null ⇒
+  //   旧逻辑判"文件下载失败：没有 mediaId" ⇒ 永远躺在 deferred 里。
+  //   而提示语自己就写了该用哪条命令：`dws drive download`（`--node <dentryUuid>`）。
+  //
+  //   ⇒ 认 `fileId:`：把它当**第二种 id 形态**交给同一个 download hook（hook 自己按形态选命令）。
+  //     `ctx.fileId` 传下去，`mediaId` 保持 null（不为它编一个假 id —— 那会让日志骗人）。
   if (modality === 'file') {
+    const fileId = extractFileId(content);
+    const idForHook = mediaId ?? fileId;
+    if (!idForHook) return { ok: false, modality, text: null, fileRef: null, why: '文件既没有 mediaId 也没有 fileId ⇒ 无从下载', mediaId };
     if (typeof h.download !== 'function') return { ok: false, modality, text: null, fileRef: null, why: '文件下载通道未接线（download hook 为空）⇒ 本条留在队列', mediaId };
-    const r = h.download(mediaId, ctx);
+    const r = h.download(idForHook, { ...ctx, fileId, viaDrive: Boolean(fileId && !mediaId) });
     if (!r || r.ok !== true || !r.path) return { ok: false, modality, text: null, fileRef: null, why: `文件下载失败：${r?.why ?? '未返回路径'}`, mediaId };
     return { ok: true, modality: 'file', text: stripDownloadHint(content), fileRef: r.path, why: null, mediaId };
   }
@@ -198,6 +231,24 @@ export function selfTest() {
   chk('MOD-15', '★ `@` 前缀的 mediaId 也要抽得到（实测踩过的假缺口）', extractMediaId(atPrefix) === '@lQLPKck4jBI_1I3NAYvNAcGwrBt7GU_5sHcKnJMKiTWkAA', String(extractMediaId(atPrefix)));
   chk('MOD-16', '`$` 前缀仍要抽得到（两种都对）', extractMediaId(REAL_IMAGE).startsWith('$iwEc'));
   chk('MOD-17', '★ 取到右括号为止（后面跟着 @某人 的正文不会被吞进 mediaId）', extractMediaId(atPrefix).endsWith('AA') && !extractMediaId(atPrefix).includes('老陈'));
+
+  // ★★ 2026-10-15 加：**钉钉云盘的 `fileId:`**（第二种 id 形态，与 `mediaId=` 并列）。
+  //   来由：deferred 里那 4 条含 `fileId:` 的文件永远躺着，why 是"没有 mediaId" ——
+  //   因为它们**本来就不是聊天媒体**（提示语自己写了该用 `dws drive download`）。
+  //   用的是**真实正文样本**（那 4 条之一），不是造的。
+  const REAL_DRIVE_FILE = '[文件] 海报文案-竞品情报场景V2.md fileId: QG53mjyd801qbBY3ue2M9rLqW6zbX04v 注意：如需下载使用dws drive download命令下载';
+  chk('MOD-18', '★★ 认得出钉钉云盘的 `fileId:`（第二种 id 形态；旧逻辑只会看 mediaId ⇒ 判"没有 mediaId"）',
+    extractFileId(REAL_DRIVE_FILE) === 'QG53mjyd801qbBY3ue2M9rLqW6zbX04v',
+    `抽到 ${String(extractFileId(REAL_DRIVE_FILE))}`);
+  chk('MOD-19', '★ `fileId:` 后面紧跟"注意：…"时不许把提示语吃进 id（字符集要收窄，不能用 \\S+）',
+    !String(extractFileId(REAL_DRIVE_FILE)).includes('注意') && !String(extractFileId(REAL_DRIVE_FILE)).includes(' '),
+    String(extractFileId(REAL_DRIVE_FILE)));
+  // 负向对照：聊天媒体那条**不该**抽出 fileId（两条路不能混）
+  chk('MOD-20', '★ 负向对照：聊天媒体（只有 mediaId=）抽不出 fileId ⇒ 两条路不混',
+    extractFileId(REAL_IMAGE) === null, String(extractFileId(REAL_IMAGE)));
+  // 负向对照：云盘那条**不该**抽出 mediaId
+  chk('MOD-21', '★ 负向对照：云盘文件（只有 fileId:）抽不出 mediaId',
+    extractMediaId(REAL_DRIVE_FILE) === null, String(extractMediaId(REAL_DRIVE_FILE)));
 
   const pass = out.filter((x) => x.ok).length;
   return { pass, fail: out.length - pass, details: out };
