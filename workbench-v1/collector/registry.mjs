@@ -19,6 +19,14 @@
  * ═══════════════════════════════════════════════════════════════════════════════
  */
 
+// ⚠️ 这个文件原本**一个 import 都没有**（纯声明 + 纯函数）。
+//   2026-10-14 加 `producerHealth()` 时需要读文件时间 ⇒ 必须显式引 fs。
+//   **不加会怎样**：那是个运行时错误（`fs is not defined`），而且只在**调那个函数时**才炸 ——
+//   套件里若没覆盖到它，就会一路以为"体检模块写好了"。
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 /**
  * **v1.0 采集起点**（Q18 用户裁定）："整个重构完成后，采集从 10 月 12 日零点零分开始的所有新资料。"
  *   更早的数据一律只读（旧库），**不进新流程** —— 所以采集器对早于这个时刻的事件只跳过、不入流。
@@ -205,7 +213,7 @@ export const REQUIRED_COVERAGE = Object.freeze({
 export const INTERVAL_EXCEPTIONS = Object.freeze({ 'fs-im-p2p': FEISHU_P2P_INTERVAL_SEC });
 
 /**
- * **采集范围排除项**（用户 2026-10-12 裁定：飞书「示例群（发布脱敏）」的信息不获取）。
+ * **采集范围排除项**（用户 2026-10-12 裁定：飞书「Xiaomi MiMo Desktop 交流1群」的信息不获取）。
  *   为什么放在这里而不是写在各采集器里：范围是一条**裁定**，改了要能一眼看见、要能被断言；
  *   写进注册表 ⇒ 采集器从它读、自检能判否，不会"某个通道忘了排除"。
  *   匹配口径：**群名精确匹配**（飞书事件带 chat_id 与群名索引；钉钉群名在事件里没有，
@@ -213,7 +221,7 @@ export const INTERVAL_EXCEPTIONS = Object.freeze({ 'fs-im-p2p': FEISHU_P2P_INTER
  */
 export const SCOPE_DENY = Object.freeze({
   feishu: Object.freeze([
-    { name: '示例群（发布脱敏）', reason: '用户 2026-10-12 明确：这个群的信息不获取' },
+    { name: 'Xiaomi MiMo Desktop 交流1群', reason: '用户 2026-10-12 明确：这个群的信息不获取' },
   ]),
   dingtalk: Object.freeze([]),
 });
@@ -231,6 +239,65 @@ export const streams = () => ROUTES.filter((r) => r.kind === 'stream');
 export const polls = () => ROUTES.filter((r) => r.kind === 'poll');
 export const implementedRoutes = () => ROUTES.filter((r) => r.implemented);
 export const missingRoutes = () => ROUTES.filter((r) => !r.implemented);
+
+/**
+ * 生产方式体检：**"代码写了"与"有人在喂"是两件事**。
+ *
+ * ★★ 2026-10-14 加。为什么需要它：
+ *   `health()` 报 `implemented:19 / missing:0` —— 那是**"代码写了多少"**的读数。
+ *   而飞书那条链的实情是：读端的代码**写了**（`implemented:true`），
+ *   但唯一该写那个事件文件的常驻进程**没有任何计划任务拉起**，事件文件**停在两天前**。
+ *   ⇒ 面板与日报读 `health()` 会看到"19/19 全接好"，**而消息根本没进来**。
+ *   **一个只在"代码写了"这个维度上报数的体检，会把"没人在喂"整个盖住。**
+ *
+ * ⇒ 这个函数专门报**第二维**：哪些通道依赖"外部的常驻生产者"、那个生产者**最近有没有在写**。
+ *   判据是**文件的修改时间**（不是"文件存不存在" —— 存在但是两天前的，恰恰是最坏的情况）。
+ *   只在**有外部生产者的通道**上判：其余通道是每轮现拉（CLI 轮询），没有"喂"这回事。
+ *
+ * 返回 `{ at, producers: [{ key, label, file, lastWriteAt, ageSec, stale, why }] }`
+ * `stale:true` = 生产者没在写（这才是要人管的状态）。探不到文件 ⇒ `lastWriteAt:null` + `why` 写明。
+ */
+export function producerHealth({ now = Date.now(), staleSec = 3600 } = {}) {
+  const producers = [];
+  // ① 飞书聊天：常驻进程写 NDJSON，采集器读
+  //   ⚠️ 路径**不 import `feishu-events.mjs`** —— 那个模块反过来引本文件（`inScope`），会成环。
+  //     所以这里按同一条规则自己拼：`<v1Out>/.runtime/fs-im-events.ndjson`。
+  //     `v1Out` 是 `paths.mjs` 给的（`WB_V1_OUT` 或默认 `<KB>/_meta/out/v1`），本文件不另立一套。
+  {
+    let file = null; let why = null;
+    try {
+      file = path.join(v1Out(), '.runtime', 'fs-im-events.ndjson');
+    } catch (e) { why = `取不到运行态目录：${String(e.message).slice(0, 80)}` }
+    let lastWriteAt = null; let ageSec = null; let note = why;
+    if (file) {
+      try {
+        const st = fs.statSync(file);
+        lastWriteAt = st.mtimeMs; ageSec = Math.round((now - st.mtimeMs) / 1000);
+        note = st.size === 0 ? '文件在写但**是空的**（生产者可能刚起、或一条都没收到）' : null;
+      } catch { note = '事件文件**不存在** —— 生产者一次都没写过' }
+    }
+    producers.push({
+      key: 'feishu-im-live',
+      label: '飞书 · 聊天实时',
+      producer: '_meta/tools/lark-event-consume.ps1（或 collector/feishu-events-run.mjs）',
+      file, lastWriteAt, ageSec,
+      stale: lastWriteAt === null || ageSec > staleSec,
+      why: note,
+    });
+  }
+  return { at: new Date(now).toISOString(), staleSec, producers };
+}
+
+/** 运行态根：与 `paths.mjs` 同一条规则（避免为一个路径再引一个模块回来） */
+function v1Out() {
+  const o = process.env.WB_V1_OUT;
+  if (o && String(o).trim() !== '') return String(o);
+  const kb = process.env.WB_V1_KB_ROOT;
+  if (kb && String(kb).trim() !== '') return path.join(String(kb), '_meta', 'out', 'v1');
+  // 本文件在 <KB>/_meta/workbench/v1/collector/ ⇒ 往上三层到 <KB>
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  return path.join(path.resolve(here, '..', '..', '..', '..'), '_meta', 'out', 'v1');
+}
 
 /** 通道健康（驾驶舱/前端底栏/日报都能读）：如实报"已接多少 / 还缺哪些" */
 export function health() {
@@ -279,7 +346,22 @@ export function selfTest() {
   // ★ 采集范围排除项（用户裁定要能被断言，不能只写在注释里）
   const denied = SCOPE_DENY.feishu ?? [];
   chk('REG-9', '排除项已登记且写明理由（用户裁定的群不采集）', denied.length >= 1 && denied.every((d) => d.name && typeof d.reason === 'string' && d.reason.length >= 8), JSON.stringify(denied));
-  chk('REG-10', '★ isDenied 判得准：已裁定的群为真、其它群为假、空名不误伤', isDenied('feishu', '示例群（发布脱敏）') === true && isDenied('feishu', 'AI+研究院') === false && isDenied('feishu', '') === false && isDenied('dingtalk', '示例群（发布脱敏）') === false, `feishu/交流1群=${isDenied('feishu', '示例群（发布脱敏）')} feishu/AI+研究院=${isDenied('feishu', 'AI+研究院')}`);
+  chk('REG-10', '★ isDenied 判得准：已裁定的群为真、其它群为假、空名不误伤', isDenied('feishu', 'Xiaomi MiMo Desktop 交流1群') === true && isDenied('feishu', 'AI+研究院') === false && isDenied('feishu', '') === false && isDenied('dingtalk', 'Xiaomi MiMo Desktop 交流1群') === false, `feishu/交流1群=${isDenied('feishu', 'Xiaomi MiMo Desktop 交流1群')} feishu/AI+研究院=${isDenied('feishu', 'AI+研究院')}`);
+
+  // ★★ 2026-10-14 加（producerHealth）：**"代码写了"与"有人在喂"必须两个读数都有**。
+  //   为什么单独立一条检查：`health()` 报 19/19 全接好，而飞书那条**两天没在喂** ——
+  //   一个只报"代码写了"的体检会把"没人在喂"整个盖住。这条守的就是"第二维存在且判得对"。
+  {
+    const ph = producerHealth();
+    chk('REG-11', '★★ producerHealth 存在且逐条给出"生产者最近有没有在写"', Array.isArray(ph.producers) && ph.producers.length >= 1
+      && ph.producers.every((p) => typeof p.stale === 'boolean' && 'lastWriteAt' in p && 'ageSec' in p),
+      JSON.stringify(ph.producers.map((p) => ({ key: p.key, stale: p.stale, ageSec: p.ageSec }))));
+    // 负向对照：**探不到文件必须判 stale，不许判成"正常"**（否则这个读数就是安慰剂）
+    const fake = producerHealth({ now: Date.now() + 10 * 365 * 24 * 3600 * 1000 });
+    chk('REG-12', '★ 负向对照：生产者久未写入 ⇒ 必须判 stale（不许把"没在喂"读成正常）',
+      fake.producers.every((p) => p.stale === true),
+      JSON.stringify(fake.producers.map((p) => ({ key: p.key, stale: p.stale, ageSec: p.ageSec }))));
+  }
 
   const pass = out.filter((x) => x.ok).length;
   return { pass, fail: out.length - pass, details: out };
