@@ -16,6 +16,10 @@ import path from 'node:path';
 
 const rows = [];
 let pass = 0; let fail = 0;
+/** 要包外文件而跳过的组（**不计入 pass / fail**，末尾单独列 —— 不假装它们跑过） */
+const skipped = [];
+/** 子模块自己报的"本机跑不了"条数（例如缺工程图 helper），同样不计入 pass / fail */
+let skippedTotal = 0;
 
 async function run(id, label, loader) {
   // 每条套件在**自己的临时运行态**里跑，互不污染；同时也保证不碰真实数据
@@ -27,13 +31,32 @@ async function run(id, label, loader) {
   try {
     const res = await loader();
     const p = res?.pass ?? 0; const f = res?.fail ?? 0;
-    pass += p; fail += f;
-    rows.push({ id, label, pass: p, fail: f, failed: (res?.details ?? []).filter((d) => !d.ok).map((d) => `${d.id} ${d.desc}`) });
-    console.log(`  ${f === 0 ? '✓' : '✗'} ${label.padEnd(22)} PASS=${String(p).padStart(3)} FAIL=${f}`);
+    // ★ 2026-10-14：子模块自己报的 skipped 也累加进来（例如 visual.mjs 的 VIS-14
+    //   "本机没有工程图 helper ⇒ 这条跑不了"）。**skipped 不进 pass 也不进 fail** ——
+    //   算进 pass 是虚报覆盖，算进 fail 是把"跑不了"说成"没通过"。
+    const sk = res?.skipped ?? 0;
+    pass += p; fail += f; skippedTotal += sk;
+    rows.push({ id, label, pass: p, fail: f, skipped: sk, failed: (res?.details ?? []).filter((d) => !d.ok).map((d) => `${d.id} ${d.desc}`) });
+    console.log(`  ${f === 0 ? '✓' : '✗'} ${label.padEnd(22)} PASS=${String(p).padStart(3)} FAIL=${f}${sk ? ` 跳过=${sk}` : ''}`);
   } catch (e) {
-    fail += 1;
-    rows.push({ id, label, pass: 0, fail: 1, failed: [`抛异常：${e.message}`] });
-    console.log(`  ✗ ${label.padEnd(22)} 抛异常：${e.message}`);
+    // ★★ 2026-10-14 加：**包外依赖要"跳过并说清"，不能算一次失败**。
+    //   现象（在裸 clone 里实测）：`P1t` 组加载的是 `../system-switches.mjs` ——
+    //   那个文件在**知识库侧**（`_meta/workbench/` 下），**不在本包里**。
+    //   于是这一条在发布件里必然抛 `Cannot find module`，套件以 FAIL=1、退出码 1 收场。
+    //   后果很坏：**"clone 下来就能自证"这句承诺当场破产**，而且失败信息是一条原始模块错，
+    //   看的人只会以为包坏了，看不出"这条本来就跑不了"。
+    //   ⇒ 认这个错误码，记成**跳过**（不计入 pass / fail），并在末尾单独列出来。
+    //     判据是 `ERR_MODULE_NOT_FOUND`，不是"错误消息里含某个词" —— 后者会误吞真的写错路径。
+    if (e && (e.code === 'ERR_MODULE_NOT_FOUND' || /ERR_MODULE_NOT_FOUND/.test(String(e.message)))) {
+      const need = /'([^']+)'/.exec(String(e.message));
+      const what = need ? need[1] : '(未知)';
+      skipped.push({ id, label, need: what });
+      console.log(`  ⊘ ${label.padEnd(22)} 跳过：要包外文件 ${what}（本包不含，属知识库侧）`);
+    } else {
+      fail += 1;
+      rows.push({ id, label, pass: 0, fail: 1, failed: [`抛异常：${e.message}`] });
+      console.log(`  ✗ ${label.padEnd(22)} 抛异常：${e.message}`);
+    }
   } finally {
     if (prevOut === undefined) delete process.env.WB_V1_OUT; else process.env.WB_V1_OUT = prevOut;
     if (prevKb === undefined) delete process.env.WB_V1_KB_ROOT; else process.env.WB_V1_KB_ROOT = prevKb;
@@ -179,6 +202,19 @@ const bad = rows.filter((r) => r.fail > 0);
 if (bad.length) {
   console.log('未通过项：');
   for (const r of bad) for (const f of r.failed) console.log(`  - [${r.id}] ${f}`);
+  console.log('');
+}
+// ★ 跳过的组单独列出来。**不写进 PASS/FAIL**，也不假装跑过 ——
+//   看的人要能一眼分清"这些过了 / 这些没过 / 这些根本没跑（缺包外文件）"。
+if (skipped.length) {
+  console.log('跳过的组（要包外文件，本包不含 ⇒ **没有跑**，不计入下面的数）：');
+  for (const s of skipped) console.log(`  - [${s.id}] ${s.label} —— 需要 ${s.need}`);
+  console.log('  说明：这些组测的是知识库侧的同名模块（如 system-switches.mjs）。');
+  console.log('        本包只含引擎与页面，故在裸 clone 里跑不了；放回 <KB>/_meta/workbench/v1/ 即可全跑。');
+  console.log('');
+}
+if (skippedTotal > 0) {
+  console.log(`本机跑不了的检查项：${skippedTotal} 条（不在下面的数里；缺的是本机没有的东西，不是代码问题）`);
   console.log('');
 }
 console.log(`PASS = ${pass}   FAIL = ${fail}`);

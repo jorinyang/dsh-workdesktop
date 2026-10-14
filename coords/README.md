@@ -6,9 +6,14 @@
 官方指南页上这张入口卡的图标是**彩色**的（紫色底板 `rgb(139,118,246)` + 白色坐标轴图形，
 与官方那两张卡同一形状语法）；tab 标题条与左侧栏那几处仍是单色 `currentColor` 那枚。
 
-参考实现：
-[项目价值坐标（2D）](https://gzzhike.cn/web-spa/zhongyi-value-map/index.html) ·
-[场景坐标系（3D）](https://gzzhike.cn/web-spa/zhongyi-coord3d/scene.html)
+参考实现（**这两条链接在发布件里已换成占位**：域名里带着真实客户的拼音，
+按"本仓不出现真实客户名"的规矩处理。真链在知识库侧的私有记录里，本仓不再写）：
+
+```
+https://<客户项目站>/web-spa/<客户代号>-value-map/index.html   # 项目价值坐标（2D）
+https://<客户项目站>/web-spa/<客户代号>-coord3d/scene.html     # 场景坐标系（3D）
+```
+
 —— 三轴 0–5、点云、点击看点、选中画**坐标盒**（三条阶梯 + 三条闭合棱，全红虚线）这套
 视觉语言直接沿用；3D 由自绘投影实现（不引 three.js，卡片里不带 1.3MB 依赖）。
 

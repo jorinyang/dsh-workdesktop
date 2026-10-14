@@ -31,7 +31,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import * as store from '../store.mjs';
 
 /** DSH 家目录（坐标系落盘在那里；测试可用 deps.coordsDir 覆盖） */
@@ -56,8 +56,44 @@ export function pgDir() {
   if (o && String(o).trim() !== '') return String(o);
   return path.join(dshHome(), '.dsh-project-graph', 'projects');
 }
+/**
+ * 工程图 helper 所在目录；**找不到就返回 null**（不编一个不存在的路径）。
+ *
+ * ★★ 2026-10-14 改（**原来这里写死了一条本机绝对路径**）：
+ *   原实现是 `process.env.WB_V1_PG_HELPER || 'C:\\Users\\<用户名>\\Desktop\\DSH\\plugins\\dsh-workdesktop\\pg-helper'`
+ *   —— 兜底值把**用户名**写进了发布件，而且换台机器就指不到。
+ *   ⚠️ 它当时"看起来能用"，只是因为在**那台机器上恰好存在** —— 这类"写死路径 + 本机巧合"最会骗人。
+ *
+ * ⇒ 改成**按候选逐层探**，谁底下真有 `build-empty-project.mjs` 就用谁：
+ *   ① 环境变量 `WB_V1_PG_HELPER`（显式指定优先）
+ *   ② 从本文件往上逐层找 `pg-helper/`
+ *   ③ `<仓库根>/pg-helper`（仓库布局：`workbench-v1/` 与 `pg-helper/` 平级）
+ *   ④ `<仓库根>/workbench-v1` 的**兄弟目录**里找（知识库布局：`_meta/workbench/pg-helper`）
+ *   ⑤ DSH 插件目录（`<DSH>/plugins/dsh-workdesktop/pg-helper`）—— 用 `DSH_ROOT`/推算，**不写死用户名**
+ * 探不到 → `null`，调用方**如实报"本机没有工程图 helper"**，而不是拿个错目录去建工程。
+ */
 export function pgHelperDir() {
-  return process.env.WB_V1_PG_HELPER || 'C:\\Users\\Aorus\\Desktop\\DSH\\plugins\\dsh-workdesktop\\pg-helper';
+  const o = process.env.WB_V1_PG_HELPER;
+  if (o && String(o).trim() !== '') return String(o);
+
+  const here = path.dirname(fileURLToPath(import.meta.url));   // …/workbench-v1/processor
+  const pkgRoot = path.resolve(here, '..');                     // …/workbench-v1
+  const parent = path.resolve(pkgRoot, '..');                   // …/（仓库根 或 _meta/workbench）
+
+  const looksRight = (d) => d && fs.existsSync(path.join(d, 'build-empty-project.mjs'));
+  const candidates = [
+    path.join(pkgRoot, 'pg-helper'),          // 包内（有些布局会把 helper 放进来）
+    path.join(parent, 'pg-helper'),           // 与 workbench-v1 平级
+    path.resolve(parent, '..', 'pg-helper'),  // 再上一层（知识库：_meta/workbench/pg-helper 的对位）
+  ];
+  // DSH 插件目录：从环境变量拿根，**不写死用户名**
+  const dshRoot = process.env.DSH_ROOT
+    || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'Desktop', 'DSH') : null)
+    || (process.env.HOME ? path.join(process.env.HOME, 'Desktop', 'DSH') : null);
+  if (dshRoot) candidates.push(path.join(dshRoot, 'plugins', 'dsh-workdesktop', 'pg-helper'));
+
+  for (const c of candidates) if (looksRight(c)) return c;
+  return null;   // 找不到就说找不到
 }
 
 /**
@@ -106,12 +142,19 @@ export async function buildProjectGraphFile({ name, lines = [], template = null,
   const target = path.join(dir ?? pgDir(), `${String(name).replace(/[\\/:*?"<>|]/g, '_').slice(0, 80)}.prg`);
   const guard = assertPgWritable(target, { allowFailedTarget });
   if (guard.ok !== true) return { ok: false, reason: guard.why, target };
-  const tpl = template ?? path.join(pgHelperDir(), 'empty-project.prg');
+  // ★ 2026-10-14：`pgHelperDir()` 现在**可能返回 null**（本机确实没有工程图 helper 时）。
+  //   这里**如实报"本机没有"**，而不是拿 `null` 拼路径拼出一个乱字符串 ——
+  //   那样错误信息会变成 `null/empty-project.prg`，看的人根本不知道发生了什么。
+  const helper = pgHelperDir();
+  if (helper === null && template === null) {
+    return { ok: false, reason: '本机没有工程图 helper（没找到 pg-helper/，可用 WB_V1_PG_HELPER 指定）', target };
+  }
+  const tpl = template ?? path.join(helper, 'empty-project.prg');
   if (!fs.existsSync(tpl)) return { ok: false, reason: `空工程模板不存在：${tpl}` };
   try {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.copyFileSync(tpl, target);                       // 先落一份模板，再按文档层改它
-    const doc = await import(pathToFileURL(path.join(pgHelperDir(), 'project-graph-doc.mjs')).href);
+    const doc = await import(pathToFileURL(path.join(helper, 'project-graph-doc.mjs')).href);
     // ★ 用法照仓库里既有的脚本（`verify-project-graph-clipboard.mjs:38-52`）：
     //   `const doc0 = readDocument(file)` ⇒ `doc0.stage` 是舞台数组、`doc0.doc` 是文档壳；
     //   `stage = insertObjects(stage, [obj], null)` **直接返回新舞台**；`writeDocument(file, doc0.doc, stage)`。
@@ -406,16 +449,25 @@ export async function selfTest() {
     chk('VIS-13', '跑批：只处理有建议的，且逐条给结果', r8.inCount >= 3 && Array.isArray(r8.rows) && r8.built >= 3, JSON.stringify({ in: r8.inCount, built: r8.built, failed: r8.failed }));
 
     // ⑩ ★ **工程图真建（不注入、走真实现）** —— 工作区已指向临时目录（见上面 WB_V1_PG_DIR），绝不碰你已有的 .prg
+    // ⚠️ 2026-10-14 改：原来这里是 `chk('VIS-14', …, false, tpl)` —— **环境不具备就算一次失败**。
+    //   后果：只要本机没装工程图 helper（裸 clone、或知识库那份），这条永远红，
+    //   而它想说的其实是"这台机器上没有，跑不了"。**"跑不了"和"没通过"是两件事，不能混。**
+    //   ⇒ 缺 helper / 缺模板 ⇒ 记成 **skipped**（套件统计里不算失败），并写明要什么。
     const pgTmp = process.env.WB_V1_PG_DIR;
     fsx.mkdirSync(pgTmp, { recursive: true });
-    const tpl = px.join(pgHelperDir(), 'empty-project.prg');
-    if (!fsx.existsSync(tpl)) {
-      chk('VIS-14', '工程图真建：跳过（本机无空工程模板）', false, tpl);
+    const pgHelper = pgHelperDir();
+    const tpl = pgHelper === null ? null : px.join(pgHelper, 'empty-project.prg');
+    if (pgHelper === null || !fsx.existsSync(tpl)) {
+      out.push({
+        id: 'VIS-14', ok: true, skipped: true,
+        desc: '★ 工程图真建：**跳过**（本机没有工程图 helper / 空工程模板 ⇒ 这条跑不了，不算失败）',
+        detail: pgHelper === null ? '没找到 pg-helper/（可用 WB_V1_PG_HELPER 指定）' : `模板不存在：${tpl}`,
+      });
     } else {
       const g1 = await buildProjectGraphFile({ name: '自检用图', lines: ['甲', '乙'], template: tpl, dir: pgTmp });
       chk('VIS-14', '★ 工程图真建：建出 .prg 且回读节点一个不少（真实现，不注入）', g1.ok === true && fsx.existsSync(g1.ref), JSON.stringify(g1));
       if (g1.ok === true) {
-        const d = await import(pathToFileURL(px.join(pgHelperDir(), 'project-graph-doc.mjs')).href);
+        const d = await import(pathToFileURL(px.join(pgHelper, 'project-graph-doc.mjs')).href);
         const texts = (d.readDocument(g1.ref).stage ?? []).filter((o) => o && o._ === 'TextNode').map((o) => o.text);
         chk('VIS-15', '回读确认两个节点都在（甲/乙）', texts.includes('甲') && texts.includes('乙'), JSON.stringify(texts.slice(0, 6)));
       } else {
@@ -451,6 +503,10 @@ export async function selfTest() {
     try { fsx.rmSync(tmp, { recursive: true, force: true }); } catch { /* noop */ }
   }
 
-  const pass = out.filter((x) => x.ok).length;
-  return { pass, fail: out.length - pass, details: out };
+  // ★ 2026-10-14：**跳过的不算"过"** —— 它没被验过，算进 pass 就是在虚报覆盖。
+  //   三个数分开：pass（真验过且过）· fail（真验过且没过）· skipped（本机跑不了）。
+  //   套件层（selftest-all.mjs）对 skipped 也是同一条约定：不计入 PASS/FAIL。
+  const skipped = out.filter((x) => x.skipped === true).length;
+  const pass = out.filter((x) => x.ok && x.skipped !== true).length;
+  return { pass, fail: out.length - pass - skipped, skipped, details: out };
 }

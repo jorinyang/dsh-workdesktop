@@ -188,7 +188,11 @@ export async function selfTest() {
   const chk = (id, desc, ok, detail = '') => out.push({ id, desc, ok: !!ok, detail: String(detail) });
 
   // CS-1 路径兜底：模型漏出来的路径必须被剔掉（用户点名的那条硬要求）
-  const dirty = '材料提到 Work/中艺AI大赛/Input/钉钉/_transcripts/单聊-木兰.txt 这份记录，还提到 C:\\Users\\Aorus\\Desktop\\Knowledge\\Other\\Inflow\\x.md 和 方案.docx。';
+  // ⚠️ 2026-10-14 脱敏：这行原来用的是**真实客户目录名**与**本机绝对路径**做样例 ——
+  //   测试样例会连着写进仓库，等于把客户名和用户名一起发布出去。换成通用占位：
+  //   被测的行为（把路径和文件名剔干净）**一模一样**，因为 `stripPaths` 认的是"像不像路径"，
+  //   不是"路径里写着谁"。**以后加这类样例，一律用 Work/示例客户甲/… 与 C:\Users\<用户>\…**。
+  const dirty = '材料提到 Work/示例客户甲/Input/钉钉/_transcripts/单聊-示例.txt 这份记录，还提到 C:\\Users\\<用户>\\Desktop\\Knowledge\\Other\\Inflow\\x.md 和 方案.docx。';
   const cleaned = stripPaths(dirty);
   chk('CS-1', '★ 概括里漏出来的路径/文件名被剔掉（用户点名：不得显示文件路径）',
     !/Work\/|C:\\|\.md|\.docx|_transcripts/.test(cleaned) && cleaned.includes('材料提到'),

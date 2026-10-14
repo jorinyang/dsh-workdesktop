@@ -443,7 +443,7 @@ console.log('\n[4] desensitization guard (scans this repository, with a negative
 
 // Patterns are assembled from fragments so the scanner file does not match itself.
 // ★★ 2026-10-14 修（**这两条正则把"已经脱敏的占位符"报成了个人路径**）：
-//   打包坐标系那一轮，仓库里 16 处本机路径被换成占位符（`C:\Users\Aorus\` → `C:\Users\<用户>\`）。
+//   打包坐标系那一轮，仓库里 16 处本机路径被换成占位符（真实用户名 → `<用户>` 占位）。
 //   换完之后这条门禁**立刻变红**，报"仓库自身有 12 处个人路径"—— 而命中的**全是占位符本身**：
 //     `C:\Users\<用户>\Desktop\DSH\plugins\dsh-coords`
 //     `C:/Users/<用户>/.dsh-coords-verify/live-home.png`
