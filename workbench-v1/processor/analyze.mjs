@@ -207,10 +207,33 @@ export function buildNotePrompt(note, hits) {
 }
 
 /**
- * 跑一轮分析。
- * @param {{limit?:number, dryRun?:boolean, recallFn?:Function, modelFn?:Function, now?:number}} o
+ * **带台账的入口**（不管谁调都留痕）。
+ *
+ * ★★ 2026-10-15 修（**台账里从来没有 analyze** —— 这是"数据链路没对齐"最实的一处）。
+ *
+ *   改之前的结构：
+ *     · `analyzeOnce()` —— 干活，**不记台账**；
+ *     · `analyze()`     —— `runEngine('analyze', …analyzeOnce…)`，**记台账**。
+ *   而**筛选引擎就地触发分析时调的是 `analyzeOnce`**（`filter.mjs` 里 `await analyzeOnce({ limit: 400 })`）
+ *   ⇒ 分析**每 5 分钟都在跑**（台账里 filter 有 225 条），**却一条 analyze 都没有**。
+ *   实测（2026-10-15 01:33）台账 15073 行里：
+ *     collector 3333 · filter 225 · process 221 · archive 221 · **analyze 0**。
+ *
+ *   ⇒ 后果不是"少一行日志"：**台账是唯一能照出"某引擎没在干活"的东西** ——
+ *     分析引擎曾经完全没被触发、而套件全绿，就是台账照出来的。它对这个引擎失效之后，
+ *     "分析到底跑没跑"就只能靠翻 filter 那行控制台输出，而那**不留档**。
+ *
+ *   ⇒ 改法：把记账**挪进 `analyzeOnce`**（唯一干活的那个）⇒ 无论谁调都留痕。
+ *     `analyze()` 保留为兼容入口（面板/CLI 有用到），它现在只是转调，**不再自己包一层** ——
+ *     否则会把同一轮记两次账（`runEngine` 里再包一次 `analyzeOnce` 就是两层）。
  */
-export async function analyzeOnce({ limit = 50, dryRun = false, recallFn = null, modelFn = runModelInWorker } = {}) {
+export async function analyzeOnce(o = {}) {
+  const { limit = 50, dryRun = false, recallFn = null, modelFn = runModelInWorker } = o;
+  return runEngine('analyze', async () => analyzeOnceInner({ limit, dryRun, recallFn, modelFn }));
+}
+
+/** 真正干活的那个（**不记台账** —— 记账统一在 `analyzeOnce` 那一层做，避免两处） */
+async function analyzeOnceInner({ limit = 50, dryRun = false, recallFn = null, modelFn = runModelInWorker } = {}) {
   const recall = recallFn ?? (await import('./recall.mjs')).recall;
   const errors = [];
   // ★★ 2026-10-13 修（**笔记永远拿不到分析结论的根因** —— 用户第 11 条报的正是这个）：
@@ -308,9 +331,11 @@ export async function analyzeOnce({ limit = 50, dryRun = false, recallFn = null,
   return { inCount: batch.length, ...out, errors, why: batch.length === 0 ? '没有待分析的事件' : null };
 }
 
-/** 带台账的入口 */
+/** 兼容入口：面板与 CLI 用这个名字调。
+ *  ★ 2026-10-15：它现在**只是转调 `analyzeOnce`**（记账已挪进那一层）。
+ *    原来它自己包 `runEngine` ⇒ 若照旧保留，`analyzeOnce` 再包一层就会**同一轮记两次账**。 */
 export async function analyze({ limit = 50 } = {}) {
-  return runEngine('analyze', async () => analyzeOnce({ limit }));
+  return analyzeOnce({ limit });
 }
 
 /**
@@ -418,6 +443,36 @@ export async function selfTest() {
     chk('ANZ-11', '可视化规则：关系/流程 ⇒ 工程图', suggestVisual('这里的流程与依赖关系需要理清')?.suggested === 'project_graph');
     chk('ANZ-12', '★ 负向对照：普通笔记不硬套可视化建议', suggestVisual('今天下午开了个会，聊了聊进度') === null);
     chk('ANZ-13', '提示词含笔记内容与材料（供模型用）', buildNotePrompt({ payload: { topic: 'T', content_md: 'C' } }, [{ path: 'P', text: 'S', similarity: 0.6 }]).includes('【材料1】P'));
+
+    // ★★ 2026-10-15 加（**守"分析有没有记账"** —— 用户这一轮要"对齐数据链路"，这是最实的一处）。
+    //   起因：`analyzeOnce`（干活的那个）**不记账**，只有 `analyze()` 记。
+    //   而筛选引擎就地触发分析时调的是 `analyzeOnce` ⇒ 分析**每 5 分钟都在跑，台账里却一条都没有**
+    //   （实测 2026-10-15 台账 15073 行：collector 3333 · filter 225 · process 221 · archive 221 · **analyze 0**）。
+    //   后果不是"少一行日志"：**台账是唯一能照出"某引擎没在干活"的东西** ——
+    //   分析引擎曾经完全没被触发而套件全绿，就是台账照出来的。它对这个引擎失效之后，
+    //   "分析到底跑没跑"就只能靠翻控制台输出，而那不留档。
+    //
+    //   判据：直接把 `analyzeOnce` 跑一轮（**不是跑 `analyze()`** —— 那正是绕过去的那条路），
+    //   然后看台账里有没有多出一条 `engine: 'analyze'`。
+    {
+      const led = await import('../ledger.mjs');
+      const before = led.readRuns({ engine: 'analyze' }).length;
+      await analyzeOnce({ limit: 1 });
+      const after = led.readRuns({ engine: 'analyze' }).length;
+      chk('ANZ-14', '★★ 直接调 analyzeOnce 也**必须**记台账（调度入口绕过去的那条路 —— 记账已挪进它这一层）',
+        after > before, `台账里 analyze：跑前 ${before} 条 → 跑后 ${after} 条`);
+      // ★ 负向对照：**一轮只许记一条** —— 两层各包一次 `runEngine` 会把同一轮记两遍。
+      //   ⚠️ 这条**必须走 `analyze()`**（不是 `analyzeOnce()`）：
+      //     重复记账发生在**外层**（`analyze` 与 `analyzeOnce` 各包一次），
+      //     而只调 `analyzeOnce` 永远只碰到一层 —— **测不出两层**。
+      //     （第一版调的就是 `analyzeOnce`；负向验证时把外层改成"两层重复记账"，
+      //       它照样判过 ⇒ 那是个摆设。）
+      const before2 = led.readRuns({ engine: 'analyze' }).length;
+      await analyze({ limit: 1 });
+      const after2 = led.readRuns({ engine: 'analyze' }).length;
+      chk('ANZ-15', '★ 走 analyze() 一轮也只记一条（防两层各包一次 runEngine ⇒ 同一轮记两遍）',
+        after2 - before2 === 1, `analyze() 这一轮新增 ${after2 - before2} 条`);
+    }
   } finally {
     if (prev === undefined) delete process.env.WB_V1_OUT; else process.env.WB_V1_OUT = prev;
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* noop */ }
