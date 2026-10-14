@@ -1,23 +1,88 @@
 {
-  "schema": "workbench-v1-write-routes/1",
-  "updatedAt": "2026-10-12",
-  "why": "v1.0 写路径登记表：所有会改变状态的路由/入口必须先在这里登记（route + ≥12 字理由 + 归属引擎），否则守卫判红。依据：旧世界 T16-88「写控件预算 = 登记表求和」的纪律，v1.0 沿用但改为显式登记表。",
-  "routes": [
-    { "route": "POST /workdesktop/api/v1/messages", "engine": "process", "reason": "前端新增一条消息（同时触发知识库召回作为上下文）" },
-    { "route": "POST /workdesktop/api/v1/messages/:id/convert", "engine": "process", "reason": "消息转待办或转日程（写入目标事件并回写来源操作留痕）" },
-    { "route": "POST /workdesktop/api/v1/messages/:id/replied", "engine": "process", "reason": "把消息标记为已回复（人工确认，或由沟通工具回复检测自动置位）" },
-    { "route": "POST /workdesktop/api/v1/todos", "engine": "process", "reason": "前端新增一条待办（创建时生成可机器验证的关闭条件）" },
-    { "route": "POST /workdesktop/api/v1/todos/:id/act", "engine": "process", "reason": "待办动作：已完成 / 已搁置 / 转日程（三选一，需留痕）" },
-    { "route": "POST /workdesktop/api/v1/todos/:id/deliverable", "engine": "process", "reason": "登记结果交付物：文字说明与附件上传" },
-    { "route": "POST /workdesktop/api/v1/schedules", "engine": "process", "reason": "前端新增一条日程（含类型、参与人、地点）" },
-    { "route": "POST /workdesktop/api/v1/schedules/:id/act", "engine": "process", "reason": "日程动作：已完成 / 转待办（三种完成条件之一的手动路径）" },
-    { "route": "POST /workdesktop/api/v1/notes", "engine": "process", "reason": "前端新增一条笔记（写入后由分析引擎召回上下文并给出分析建议）" },
-    { "route": "POST /workdesktop/api/v1/notes/:id/analyze", "engine": "analyze", "reason": "对笔记重新执行分析（分析笔记动作，可重复触发）" },
-    { "route": "POST /workdesktop/api/v1/notes/:id/visualize", "engine": "analyze", "reason": "对笔记执行可视化构建（坐标系 / 工程图 / 建模中心三选一）" },
-    { "route": "POST /workdesktop/api/v1/cockpit/:kind", "engine": "dashboard", "reason": "生成驾驶舱的一块分析（insight 业务洞察 / state 状态分析 / advice 发展建议）：按真实数据切片调模型，没数据则拒绝生成" },
-    { "route": "POST /workdesktop/api/v1/system-switch", "engine": "process", "reason": "底部状态栏三个能力开关（实时回复 / 响应功能 / 向量检索）的状态置位" },
-    { "route": "GET /workdesktop/api/v1/state", "engine": "store", "reason": "只读：前端一次性取回四类运行态与统计（非写路径，登记以便守卫核对方法）" },
-    { "route": "GET /workdesktop/api/v1/file", "engine": "store", "reason": "只读：把消息里的图片取出来给详情页显示（用户第 7 条）。**只允许 Inflow 下的文件**，且拒绝路径穿越，读不到知识库其它位置" },
-    { "route": "GET /workdesktop/api/v1/detail/:type/:id", "engine": "store", "reason": "只读：详情浮层取单条事件的完整内容（结构化字段/原始消息/相关上下文/可执行操作）；登记以便守卫核对方法" }
-  ]
+ "schema": "workbench-v1-write-routes/1",
+ "updatedAt": "2026-10-12",
+ "why": "v1.0 写路径登记表：所有会改变状态的路由/入口必须先在这里登记（route + ≥12 字理由 + 归属引擎），否则守卫判红。依据：旧世界 T16-88「写控件预算 = 登记表求和」的纪律，v1.0 沿用但改为显式登记表。",
+ "//2026-10-14": "**摘掉了 `GET /state` 那条登记** —— 它在表里，但**服务端从来没实现过**（请求返回 404「未知读路径」）。实测确认之后摘的。登记表里留着一条不存在的路径，等于告诉后来的人「这条路能用」，而它会 404 —— 这比没有登记更坏。",
+ "routes": [
+  {
+   "route": "POST /workdesktop/api/v1/messages",
+   "engine": "process",
+   "reason": "前端新增一条消息（同时触发知识库召回作为上下文）"
+  },
+  {
+   "route": "POST /workdesktop/api/v1/messages/:id/convert",
+   "engine": "process",
+   "reason": "消息转待办或转日程（写入目标事件并回写来源操作留痕）"
+  },
+  {
+   "route": "POST /workdesktop/api/v1/messages/:id/replied",
+   "engine": "process",
+   "reason": "把消息标记为已回复（人工确认，或由沟通工具回复检测自动置位）"
+  },
+  {
+   "route": "POST /workdesktop/api/v1/todos",
+   "engine": "process",
+   "reason": "前端新增一条待办（创建时生成可机器验证的关闭条件）"
+  },
+  {
+   "route": "POST /workdesktop/api/v1/todos/:id/act",
+   "engine": "process",
+   "reason": "待办动作：已完成 / 已搁置 / 转日程（三选一，需留痕）"
+  },
+  {
+   "route": "POST /workdesktop/api/v1/todos/:id/deliverable",
+   "engine": "process",
+   "reason": "登记结果交付物：文字说明与附件上传"
+  },
+  {
+   "route": "POST /workdesktop/api/v1/schedules",
+   "engine": "process",
+   "reason": "前端新增一条日程（含类型、参与人、地点）"
+  },
+  {
+   "route": "POST /workdesktop/api/v1/schedules/:id/act",
+   "engine": "process",
+   "reason": "日程动作：已完成 / 转待办（三种完成条件之一的手动路径）"
+  },
+  {
+   "route": "POST /workdesktop/api/v1/notes",
+   "engine": "process",
+   "reason": "前端新增一条笔记（写入后由分析引擎召回上下文并给出分析建议）"
+  },
+  {
+   "route": "POST /workdesktop/api/v1/notes/:id/analyze",
+   "engine": "analyze",
+   "reason": "对笔记重新执行分析（分析笔记动作，可重复触发）"
+  },
+  {
+   "route": "POST /workdesktop/api/v1/notes/:id/visualize",
+   "engine": "analyze",
+   "reason": "对笔记执行可视化构建（坐标系 / 工程图 / 建模中心三选一）"
+  },
+  {
+   "route": "POST /workdesktop/api/v1/cockpit/:kind",
+   "engine": "dashboard",
+   "reason": "生成驾驶舱的一块分析（insight 业务洞察 / state 状态分析 / advice 发展建议）：按真实数据切片调模型，没数据则拒绝生成"
+  },
+  {
+   "route": "POST /workdesktop/api/v1/system-switch",
+   "engine": "process",
+   "reason": "底部状态栏三个能力开关（实时回复 / 响应功能 / 向量检索）的状态置位"
+  },
+  {
+   "route": "GET /workdesktop/api/v1/file",
+   "engine": "store",
+   "reason": "只读：把消息里的图片取出来给详情页显示（用户第 7 条）。**只允许 Inflow 下的文件**，且拒绝路径穿越，读不到知识库其它位置"
+  },
+  {
+   "route": "GET /workdesktop/api/v1/detail/:type/:id",
+   "engine": "store",
+   "reason": "只读：详情浮层取单条事件的完整内容（结构化字段/原始消息/相关上下文/可执行操作）；登记以便守卫核对方法"
+  },
+  {
+   "route": "GET /workdesktop/api/v1/doc",
+   "engine": "store",
+   "reason": "只读：驾驶舱知识图谱的**文档节点穿透**（用户第 8.1 条：每个节点都能点击穿透到知识点内容/文档）。只允许 Work/ 与 Research/ 下的**纯文本正文**（_meta/、Other/ 明确排除），解析成绝对路径后**再核一次**在允许目录之内（挡 .. 穿越），并按 20000 字截断 —— 这个通道是给\"点一下看看是什么\"用的，不是下载全文。"
+  }
+ ]
 }

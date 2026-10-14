@@ -213,6 +213,44 @@ export function handler(req, res) {
       return true;
     }
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // ★★ 2026-10-14 加：`GET /doc?p=<知识库相对路径>` —— 给**驾驶舱知识图谱**的文档节点穿透用。
+    //   用户第 8.1 条：「每个节点都能够点击穿透到具体的**知识点内容/文档**。」
+    //   图谱里的 `doc` 节点指向 `Work/…`、`Research/…` 下的正文，浏览器取不到 ⇒ 需要这一条。
+    //
+    //   ⚠️ 这条路**比 `/file` 更要小心**：`/file` 只放开 `Other/Inflow` 一个目录，
+    //      而这里要读的是**整个知识库的正文**。所以四条限制一条都不能少：
+    //        一、只允许 `Work/` 与 `Research/` 两个顶层目录（**不是整个知识库**）——
+    //            `_meta/`、`Other/` 这些**明确排除**（里面有登记表、密钥线索、运行态文件）；
+    //        二、只允许**纯文本类**扩展名（正文）；二进制一律不给；
+    //        三、解析成绝对路径之后**再核一次**它在允许目录之内（挡 `..` 穿越）；
+    //        四、**截断**（文件很长时只回前一段 —— 这个通道是给"点一下看看是什么"用的，
+    //            不是给下载全文用的；回整份会把浮层和响应都撑爆）。
+    const docm = new RegExp(`^${API_PREFIX}/doc$`).exec(p);
+    if (docm) {
+      if (!isRegistered('GET', `${API_PREFIX}/doc`)) return json(res, 404, { error: '文档路径未登记（先去 write-routes.json 登记）' });
+      const rel = String(u.searchParams.get('p') ?? '').replace(/\\/g, '/').replace(/^\/+/, '');
+      if (rel === '') return json(res, 400, { error: '缺少参数 p（形如 Work/客户/Output/某文档.md）' });
+      const ALLOW_TOP = ['Work', 'Research'];
+      const TEXT_EXT = new Set(['.md', '.txt', '.html', '.csv', '.json', '.jsonl', '.yml', '.yaml', '.tsv']);
+      const top = rel.split('/')[0];
+      if (!ALLOW_TOP.includes(top)) return json(res, 403, { error: `只允许读 ${ALLOW_TOP.join(' / ')} 下的正文（这一条是 ${top}）` });
+      if (!TEXT_EXT.has(path.extname(rel).toLowerCase())) return json(res, 403, { error: `这类扩展名不给（只给纯文本正文）：${path.extname(rel)}` });
+      const abs = path.resolve(ROOT, rel);
+      // ★ 解析之后再核一次（`Work/../_meta/x` 这种要在这一步被挡住）
+      const okTop = ALLOW_TOP.some((t2) => {
+        const base = path.join(ROOT, t2);
+        return abs === base || abs.startsWith(base + path.sep);
+      });
+      if (!okTop) return json(res, 403, { error: '解析之后的路径不在允许目录之内（路径穿越已挡住）' });
+      if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return json(res, 404, { error: `文件不在：${rel}` });
+      const LIMIT = 20000;
+      let text = fs.readFileSync(abs, 'utf8');
+      const truncated = text.length > LIMIT;
+      if (truncated) text = text.slice(0, LIMIT);
+      return json(res, 200, { ok: true, path: rel, text, truncated, bytes: fs.statSync(abs).size });
+    }
+
     // 详情浮层数据：结构化内容 + 原始消息 + 相关上下文 + 可执行操作
     // 路径必须先登记（write-routes.json 里有这条 GET）—— 读路径也守同一条纪律，别偷偷开洞
     const d = new RegExp(`^${API_PREFIX}/detail/([a-z]+)/([A-Za-z0-9_]+)$`).exec(p);

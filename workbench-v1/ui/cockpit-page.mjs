@@ -72,7 +72,19 @@ export function statsBlock(s) {
   return h + '</div>';
 }
 
-/** 图谱块：用极简 SVG 画力导向结果的替代——圆形布局 + 直线（**可点击穿透**由链接承担） */
+/**
+ * 图谱块：圆形布局 + 直线（**可点击穿透**）。
+ *
+ * ★★ 2026-10-14 改（用户第 8.1 条原话）：
+ *   「每个节点都能够**点击穿透到具体的知识点内容/文档**。知识点之间的关系以不同的连线呈现。」
+ *   原来节点只是 `<circle>` + `<title>`（悬浮提示）—— **点不动**。
+ *
+ * 穿透的目标按节点种类给（**能开的才做成链接，开不了的如实标出来**）：
+ *   · `message` / `note` / `todo` / `schedule` ⇒ 打开**详情浮层**（那条事件本身）
+ *   · `doc`（带 `path`）⇒ **打开文档正文**（走 `GET /v1/doc?p=…`，只允许 Work/Research 下的文本）
+ *   · `sender` ⇒ 这类节点**没有可打开的单篇内容**，如实标注"发信人节点（不可穿透）"，
+ *     不给一个点了没反应的圆点（本项目为此返工过多轮）
+ */
 export function graphBlock(g) {
   // ★ 空图也要写清边的来源口径 —— 那是**常设声明**，不能因为"现在没数据"就消失
   const provenance = '<div class="cap" style="margin-top:8px;color:var(--c-mute);font-size:12px">' + esc(g.note) + '</div>';
@@ -85,19 +97,48 @@ export function graphBlock(g) {
     const r = n.kind === 'sender' ? R * 0.45 : n.kind === 'doc' ? R * 1.25 : R;
     pos[n.id] = [cx + Math.cos(a) * r, cy + Math.sin(a) * r];
   });
-  let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;border:1px solid var(--c-hairline);border-radius:8px">';
+  let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;border:1px solid var(--c-hairline);border-radius:8px" data-graph="1">';
+  // ★ 连线**按种类给不同颜色与虚实**（用户："知识点之间的关系以不同的连线呈现"）。
+  //   原来所有边都是同一条灰线 —— 看不出"同一发信人"和"召回命中"是两种不同的关系。
+  const EDGE_STYLE = {
+    from: { stroke: 'var(--c-accent-blue)', dash: '' },            // 同一发信人
+    recall: { stroke: 'var(--c-accent-purple)', dash: '4 3' },     // 分析引擎召回命中
+    same: { stroke: 'var(--c-mute)', dash: '2 4' },
+  };
   for (const e of g.edges) {
     const a = pos[e.from]; const b = pos[e.to];
     if (!a || !b) continue;
-    svg += '<line x1="' + a[0].toFixed(1) + '" y1="' + a[1].toFixed(1) + '" x2="' + b[0].toFixed(1) + '" y2="' + b[1].toFixed(1) + '" stroke="var(--c-hairline)" stroke-width="1"><title>' + esc(e.kind + '：' + e.why) + '</title></line>';
+    const s = EDGE_STYLE[e.kind] ?? { stroke: 'var(--c-hairline)', dash: '' };
+    svg += '<line x1="' + a[0].toFixed(1) + '" y1="' + a[1].toFixed(1) + '" x2="' + b[0].toFixed(1) + '" y2="' + b[1].toFixed(1) + '" stroke="' + s.stroke + '" stroke-width="1"' + (s.dash ? ' stroke-dasharray="' + s.dash + '"' : '') + '><title>' + esc(e.kind + '：' + e.why) + '</title></line>';
   }
+  // 事件类节点的种类 → 详情接口的类型名（复数，路由只认复数）
+  const TYPE_OF = { message: 'messages', note: 'notes', todo: 'todos', schedule: 'schedules' };
   for (const n of g.nodes) {
     const p = pos[n.id];
     const color = byKind[n.kind] || 'var(--c-body-mid)';
-    svg += '<circle cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) + '" r="' + (n.kind === 'doc' ? 5 : 7) + '" fill="' + color + '"><title>' + esc(n.kind + '：' + n.label) + '</title></circle>';
+    const r = n.kind === 'doc' ? 5 : 7;
+    const common = 'cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) + '" r="' + r + '" fill="' + color + '"';
+    const evType = TYPE_OF[n.kind];
+    if (evType) {
+      // 可穿透：事件节点 ⇒ 详情浮层
+      svg += '<circle ' + common + ' class="g-node" data-g-open="' + esc(evType + ':' + n.id) + '" style="cursor:pointer"><title>' + esc(n.kind + '：' + n.label + '（点开看详情）') + '</title></circle>';
+    } else if (n.kind === 'doc' && n.path) {
+      // 可穿透：文档节点 ⇒ 打开正文
+      svg += '<circle ' + common + ' class="g-node" data-g-doc="' + esc(n.path) + '" style="cursor:pointer"><title>' + esc('文档：' + n.label + '（点开看正文）') + '</title></circle>';
+    } else {
+      // 不可穿透：**如实标出来**，不给一个点了没反应的圆点
+      svg += '<circle ' + common + ' class="g-node g-node-flat"><title>' + esc(n.kind + '：' + n.label + '（' + (n.kind === 'sender' ? '发信人节点，没有可打开的单篇内容' : '这一种节点还没有穿透目标') + '）') + '</title></circle>';
+    }
   }
   svg += '</svg>';
-  return svg + '<div class="cap" style="margin-top:8px;color:var(--c-mute);font-size:12px">' + esc(g.note) + '　节点 ' + g.counts.nodes + ' · 边 ' + g.counts.edges + ' · 构成 ' + esc(JSON.stringify(g.counts.byKind)) + '</div>';
+  // ★ 图例（连线与节点各是什么）—— 用户要求"以不同的连线呈现"，那就得说明哪种线是什么
+  const legend = '<div class="cap" style="margin-top:8px;color:var(--c-mute);font-size:12px">'
+    + '连线：<span style="color:var(--c-accent-blue)">实线=同一发信人</span> · '
+    + '<span style="color:var(--c-accent-purple)">虚线=分析引擎召回命中</span>　'
+    + '节点：<span style="color:var(--c-accent-blue)">消息</span> · <span style="color:var(--c-accent-purple)">笔记</span> · <span style="color:var(--c-accent-orange)">待办</span> · <span style="color:var(--c-accent-green)">日程</span> · <span style="color:var(--c-ink)">发信人</span> · <span style="color:var(--c-mute)">文档</span>'
+    + '<br>点节点可穿透：消息/笔记/待办/日程 ⇒ 打开详情；文档 ⇒ 打开正文；发信人节点没有可打开的单篇内容（如实标出，不给点了没反应的圆点）</div>';
+  return svg + legend
+    + '<div class="cap" style="margin-top:8px;color:var(--c-mute);font-size:12px">' + esc(g.note) + '　节点 ' + g.counts.nodes + ' · 边 ' + g.counts.edges + ' · 构成 ' + esc(JSON.stringify(g.counts.byKind)) + '</div>';
 }
 
 /** 趋势块：按日柱状（纯 SVG，无外部依赖） */
@@ -223,6 +264,75 @@ export function cockpitClientScript() {
   L.push('        .catch(function(e){ if (msg) msg.textContent = "请求失败：" + e.message; btn.disabled = false; });');
   L.push('    });');
   L.push('  })(btns[i]);');
+  // ══════════════════════════════════════════════════════════════════════════
+  // ★★ 2026-10-14 加（用户第 8.1 条）：「每个节点都能够**点击穿透到具体的知识点内容/文档**。」
+  //
+  //   节点上带了两类目标（见 `graphBlock`）：
+  //     · `data-g-open="messages:xxx"` ⇒ 打开那条事件的**详情浮层**
+  //     · `data-g-doc="Work/…/x.md"`  ⇒ 打开**文档正文**（`GET /v1/doc?p=…`）
+  //
+  //   为什么详情用浮层而不是跳页：驾驶舱是**看全局**的地方，跳走就丢了位置；
+  //   而且别的页面（总览）早就是就地开浮层的做法，这里跟它保持一致。
+  //
+  //   ⚠️ 浮层里**只放这一段文本**，不做完整的"详情页"（那套在四个功能页上已经有了）。
+  //     这里要的是"点一下能看见那条到底是什么" —— 够用就停。
+  L.push('  function overlay(title, bodyText){');
+  L.push('    var old = document.getElementById("ckp-ov"); if (old) old.parentNode.removeChild(old);');
+  L.push('    var mask = document.createElement("div"); mask.id = "ckp-ov";');
+  L.push('    mask.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:24px";');
+  L.push('    var box = document.createElement("div");');
+  L.push('    box.style.cssText = "background:var(--c-canvas,#fff);color:var(--c-ink,#111);max-width:760px;max-height:80vh;overflow:auto;border-radius:10px;padding:18px 20px;box-shadow:0 12px 40px rgba(0,0,0,.3)";');
+  L.push('    var h = document.createElement("div"); h.textContent = title;');
+  L.push('    h.style.cssText = "font-weight:600;margin-bottom:10px;font-size:15px";');
+  L.push('    var b = document.createElement("pre"); b.textContent = bodyText;');
+  L.push('    b.style.cssText = "white-space:pre-wrap;word-break:break-word;font:13px/1.7 ui-monospace,Menlo,Consolas,monospace;margin:0";');
+  L.push('    var x = document.createElement("button"); x.textContent = "关闭";');
+  L.push('    x.style.cssText = "margin-top:14px;padding:5px 14px;cursor:pointer";');
+  L.push('    x.addEventListener("click", function(){ mask.parentNode.removeChild(mask) });');
+  L.push('    mask.addEventListener("click", function(ev){ if (ev.target === mask) mask.parentNode.removeChild(mask) });');
+  L.push('    box.appendChild(h); box.appendChild(b); box.appendChild(x); mask.appendChild(box); document.body.appendChild(mask);');
+  L.push('  }');
+  L.push('  var nodes = document.querySelectorAll("[data-g-open]");');
+  L.push('  for (var n1 = 0; n1 < nodes.length; n1++) (function(c){');
+  L.push('    c.addEventListener("click", function(){');
+  L.push('      var spec = String(c.getAttribute("data-g-open")).split(":");');
+  L.push('      var type = spec[0]; var id = spec.slice(1).join(":");');
+  L.push('      overlay("载入中…", "正在取详情…");');
+  L.push('      fetch(API + "/detail/" + type + "/" + encodeURIComponent(id))');
+  L.push('        .then(function(r){ return r.json(); })');
+  L.push('        .then(function(d){');
+  L.push('          if (d && d.error) { overlay("取详情失败", String(d.error)); return; }');
+  L.push('          var s = d.structured || {}; var o = d.original || {};');
+  L.push('          var lines = [];');
+  L.push('          lines.push("类型：" + type);');
+  L.push('          if (o.sender) lines.push("发信人：" + o.sender);');
+  L.push('          if (s.topic) lines.push("主题：" + s.topic);');
+  L.push('          if (s.due) lines.push("截止：" + s.due);');
+  L.push('          if (s.start) lines.push("时间：" + s.start + (s.end ? (" ~ " + s.end) : ""));');
+  L.push('          if (s.date) lines.push("日期：" + s.date);');
+  L.push('          lines.push("");');
+  //          ★ 正文里同样**不显示图片链接**（与四个功能页同一条规矩），只留「［图片消息］」
+  L.push('          var body = String(s.raw || s.content_md || s.detail || s.summary || "").replace(/\\[(图片|视频|语音|文件)消息\\]\\(mediaId=[^)\\s]*\\)?/g, "［$1消息］").replace(/mediaId=[^)\\s]*/g, "").trim();');
+  L.push('          lines.push(body || "（这条没有正文）");');
+  L.push('          if (d.contextSummary) { lines.push(""); lines.push("相关上下文：" + d.contextSummary); }');
+  L.push('          else if (d.contextSummaryPending) { lines.push(""); lines.push("相关上下文：正在概括（稍后再点一次就能看到）"); }');
+  L.push('          else if (d.contextSummaryError) { lines.push(""); lines.push("相关上下文：" + d.contextSummaryError); }');
+  L.push('          overlay((s.topic || body || id).slice(0, 60), lines.join("\\n"));');
+  L.push('        })');
+  L.push('        .catch(function(e){ overlay("取详情失败", String(e.message || e)); });');
+  L.push('    });');
+  L.push('  })(nodes[n1]);');
+  L.push('  var docs = document.querySelectorAll("[data-g-doc]");');
+  L.push('  for (var n2 = 0; n2 < docs.length; n2++) (function(c){');
+  L.push('    c.addEventListener("click", function(){');
+  L.push('      var p = c.getAttribute("data-g-doc");');
+  L.push('      overlay("载入中…", "正在取文档…");');
+  L.push('      fetch(API + "/doc?p=" + encodeURIComponent(p))');
+  L.push('        .then(function(r){ return r.json(); })');
+  L.push('        .then(function(d){ if (d && d.error) { overlay("打不开这份文档", String(d.error) + "\\n\\n" + p); return; } overlay(p.split("/").pop(), String(d.text || "（空文件）") + (d.truncated ? "\\n\\n…（文件较长，只显示了前一段）" : "")); })');
+  L.push('        .catch(function(e){ overlay("打不开这份文档", String(e.message || e) + "\\n\\n" + p); });');
+  L.push('    });');
+  L.push('  })(docs[n2]);');
   L.push('})();');
   L.push('</script>');
   return L.join('\n');

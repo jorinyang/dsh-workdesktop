@@ -70,6 +70,12 @@ export function stylesheet() {
   s.push('.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--s-lg); margin-bottom: var(--s-xl); }');
   s.push('.card { background: var(--c-canvas); border: 1px solid var(--c-hairline); border-radius: ' + RADIUS.md + 'px; padding: var(--s-lg); }');
   s.push('.card.featured { box-shadow: var(--shadow-card); }');
+  // ★★ 2026-10-14 加（用户第 4 条）：总览的数字卡可点跳转。
+  //   `a.card` 默认带下划线、蓝色、行内显示 —— 三条都要按 `div.card` 的观感盖掉，
+  //   否则同一个 `.stats` 里点得动的卡和点不动的卡看起来是两种东西。
+  s.push('a.card { text-decoration: none; color: inherit; display: block; cursor: pointer; transition: box-shadow .12s ease, transform .12s ease; }');
+  s.push('a.card:hover { box-shadow: var(--shadow-lifted); transform: translateY(-1px); }');
+  s.push('a.card:focus-visible { outline: 2px solid var(--c-accent-blue); outline-offset: 2px; }');
   s.push('.card .num { font-size: 28px; font-weight: var(--w-strong); color: var(--c-ink); line-height: 1.2; }');
   s.push('.card .cap { font-size: 13px; color: var(--c-mute); margin-top: var(--s-xs); }');
   s.push('.section { margin-top: var(--s-xl); }');
@@ -127,10 +133,23 @@ export function stylesheet() {
   s.push('.pager input, .pager select { font: inherit; font-size: 13px; padding: 2px 4px; border: 1px solid var(--c-hairline); border-radius: 4px; background: transparent; color: var(--c-ink); }');
   s.push('.pager .pg-jump { width: 56px; text-align: center; }');
   s.push('.pager .grow { flex: 1; }');
-  // 笔记列表单独滚动（用户第 5 条后半句）：**只在列表内出滚动条，整页不出垂直滚动条**。
-  //   做法：给笔记页的列表容器一个最大高度 + overflow-y。为什么只给笔记页：
-  //   用户只点了笔记这一页（别的页先按同样规则留出接口，不擅自改它们的呈现）。
-  s.push('.list-scroll { max-height: 52vh; overflow-y: auto; }');
+  // ★★ 2026-10-14 改（用户第 3 条原话）：
+  //   「**不仅是笔记列表，消息列表、待办列表和日程列表的滚动条都要在列表中展示，而不是在页面中展示**，
+  //     尤其是在切换了每页显示数量之后，还有日程页面本身的高度是有限的，
+  //     超过页面最大高度的日程列表，应该在列表中出现垂直滚动条，**要保证有效信息展现在一个页面**。」
+  //
+  //   原来只有笔记页带 `list-scroll`（那时用户只点了笔记那一页）—— 现在四个列表都要。
+  //   做法两条，缺一不可：
+  //     一、列表容器 `max-height` + `overflow-y:auto` ⇒ 滚动条长在**列表**里；
+  //     二、列表**自己**再 `scrollbar-gutter: stable`（见下一条）—— 免得"从 10 条切到 100 条"时
+  //        因为滚动条出现/消失导致整页宽度跳一下。
+  //   ⚠️ `max-height` 用 `vh` 而不是固定像素：面板高度随窗口变，固定像素在高窗口下会留一大片空。
+  s.push('.list-scroll { max-height: 52vh; overflow-y: auto; scrollbar-gutter: stable; }');
+  // ★ 第 3 条后半句："**要保证有效信息展现在一个页面**" —— 列表之外的部分（统计卡、页签、
+  //   新增表单、分页条）也要收紧一点，否则一屏里列表只剩一条的高度，等于没分页。
+  s.push('.section { margin-top: var(--s-lg); }');
+  s.push('.section h2 { font-size: 14px; margin: 0 0 var(--s-xs); }');
+  s.push('.stats { margin-top: var(--s-md); }');
   // 底部状态栏（横向一行）
   s.push('.statusbar { position: fixed; bottom: 0; left: 0; right: 0; display: flex; flex-direction: row; align-items: center; gap: var(--s-lg); padding: var(--s-sm) var(--s-3xl); background: var(--c-canvas); border-top: 1px solid var(--c-hairline); font-size: 12px; color: var(--c-body-mid); }');
   s.push('.statusbar .dot { display: inline-block; width: 6px; height: 6px; border-radius: 9999px; background: var(--c-accent-green); margin-right: 6px; }');
@@ -353,10 +372,31 @@ export function pager(pageKey) {
     + '</nav>';
 }
 
+/**
+ * 数字卡组。
+ * @param {Array} pairs 每项 `[标签, 数字, 跳转目标]`
+ *   第三个字段：
+ *     · **字符串** = 点击跳到那个页面（用户第 4 条：总览上面的数字卡点一下要去对应页面）
+ *     · `true` = 只是"重点卡"（高亮），**没有**跳转 —— 与字符串区分开，
+ *       免得"给了个目标但拼错了"变成一张能点却没反应的空卡
+ *     · 不给 = 普通卡，不可点
+ *   ★ 2026-10-14 改：原来第三个字段是布尔（`featured` 高亮），
+ *     而用户这次要的是"点它跳到对应页面" ⇒ 一个字段承担两件事会混，
+ *     所以**改成"给字符串=可点且高亮，给 true=只高亮不可点，不给=普通"**，
+ *     原来的四处调用（消息/待办/日程/笔记页）本来就没给第三个字段，不受影响。
+ */
 function statCards(pairs) {
   let html = '';
   for (const p of pairs) {
-    html += '<div class="card' + (p[2] ? ' featured' : '') + '"><div class="num">' + esc(p[1]) + '</div><div class="cap">' + esc(p[0]) + '</div></div>';
+    const target = typeof p[2] === 'string' ? p[2] : null;
+    const featured = target !== null || p[2] === true;
+    const cls = 'card' + (featured ? ' featured' : '') + (target ? ' card-go' : '');
+    const inner = '<div class="num">' + esc(p[1]) + '</div><div class="cap">' + esc(p[0]) + '</div>';
+    html += target
+      // ★ 用 `<a href>` 而不是 div+onclick：**不靠脚本也能跳**（页面在 iframe 里、
+      //   脚本万一没跑，链接照样工作）；client.mjs 不用为它加任何绑定。
+      ? '<a class="' + cls + '" href="./' + esc(target) + '.html" title="点这里打开「' + esc(p[0]) + '」对应的页面">' + inner + '</a>'
+      : '<div class="' + cls + '">' + inner + '</div>';
   }
   return html;
 }
@@ -427,7 +467,18 @@ function listBlock(title, rows, cls, o) {
 export function pageOverview(snap) {
   const o = (snap && snap.overview) || overview();
   const st = o.stats;
-  const cards = statCards([['待完成待办', st.todosOpen, true], ['待处理信息', st.messagesPending, true], ['近 7 日日程', st.schedules7d, true], ['近一周笔记', st.notes7d, true]]);
+  // ★★ 2026-10-14 改（用户第 4 条原话）：
+  //   「今日总览最上方的数字展示模块，显示的待办、待处理消息、日程和笔记的数量，
+  //     该展示模块**点击之后应该会跳转到对应的页面去**，另外，展示的顺序调整一下，
+  //     应该是**消息、待办、日程、笔记**这样的顺序。」
+  //   原来顺序是（待办 / 消息 / 日程 / 笔记）—— 用户要的是消息打头。
+  //   第四项（"是否有跳转"）由 `statCards` 的第三个字段承担：给了就是链接。
+  const cards = statCards([
+    ['待处理消息', st.messagesPending, 'messages'],
+    ['待完成待办', st.todosOpen, 'todos'],
+    ['近 7 日日程', st.schedules7d, 'schedules'],
+    ['近一周笔记', st.notes7d, 'notes'],
+  ]);
   // ★ 三类提醒的行也带 id + 目标页（需求 3.3.2 原话："点击可跳转到对应的页面并打开详情页"）
   const rem = function (r) { return { id: r.id, go: r.kind, col1: r.at ? fmtTime(Date.parse(r.at)) : '', col2: r.title, col3: r.note }; };
   const up = o.reminders.upcoming.map(rem);
@@ -475,6 +526,7 @@ export function pageMessages(snap) {
   return '<div class="stats">' + cards + '</div>' + inlineForm('messages')
     + listBlock('消息列表', rows, '', {
       pageKey: 'messages',
+      scroll: true,
       tabs: tabs,
       head: ['日期', '时间', '来源', '发信人', '信息内容'],
     });
@@ -500,7 +552,7 @@ export function pageTodos(snap) {
     };
   });
   return '<div class="stats">' + cards + '</div>' + inlineForm('todos')
-    + listBlock('待办列表', rows, '', { pageKey: 'todos', head: ['截止时间', '来源', '执行人', '待办标题'] });
+    + listBlock('待办列表', rows, '', { pageKey: 'todos', scroll: true, head: ['截止时间', '来源', '执行人', '待办标题'] });
 }
 
 export function pageSchedules(snap) {
@@ -525,13 +577,20 @@ export function pageSchedules(snap) {
     const d1 = new Date(t0); d1.setHours(0, 0, 0, 0);
     const st = (Number.isFinite(t0) && d1.getTime() === d0) ? 'today'
       : ((Number.isFinite(t0) && t0 >= d0 && t0 <= d0 + 7 * 86400000) ? 'next7' : 'all');
+    // ★★ 2026-10-14 改（用户第 2 条原话）：
+    //   「开始时间与截止时间中间的间隔过大，我希望是**开始时间到截止时间，中间用一个"-"连接**。」
+    //   原来把开始、截止拆成**两列**（各占一个 flex 格）—— 两格之间被 `gap` 撑开，
+    //   看起来像两个不相干的字段，那正是用户说的"间隔过大"。
+    //   ⇒ 合成**一格**：`09:00-10:30`。表头相应从五列变四列
+    //     （日期 / 起止时间 / 来源 / 日程主题）—— 用户要的是"中间一个连字符"，不是"两列挨近点"。
+    const startT = s.slice(11, 16); const endT = e.slice(11, 16);
+    const span = startT ? (endT ? startT + '-' + endT : startT) : '—';
     return {
       id: r.id,
       col1: s.slice(0, 10),                                  // 日期
-      col2: s.slice(11, 16),                                 // 开始时间
-      col3: e.slice(11, 16) || '—',                          // 截止时间
-      col4: r.source && r.source.label,                      // 来源
-      col5: r.topic + (r.place ? ' · ' + r.place : ''),      // 日程主题（地点跟在后面，便于一眼看全）
+      col2: span,                                            // 起止时间（一个连字符连接）
+      col3: r.source && r.source.label,                      // 来源
+      col4: r.topic + (r.place ? ' · ' + r.place : ''),      // 日程主题（地点跟在后面，便于一眼看全）
       state: st,
     };
   });
@@ -543,8 +602,9 @@ export function pageSchedules(snap) {
   return '<div class="stats">' + cards + '</div>' + heatBlock(hm) + inlineForm('schedules')
     + listBlock('日程列表', rows, '', {
       pageKey: 'schedules',
+      scroll: true,
       tabs: schedTabs,
-      head: ['日期', '开始时间', '截止时间', '来源', '日程主题'],
+      head: ['日期', '起止时间', '来源', '日程主题'],
     });
 }
 
