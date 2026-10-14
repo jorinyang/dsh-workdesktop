@@ -71,15 +71,35 @@ export function convert(content, hooks = NO_HOOK, ctx = {}) {
     return { ok: true, modality, text: stripDownloadHint(content), fileRef: null, why: null, mediaId };
   }
 
-  // 语音：必须先转写；转不出来就不算成功
+  // 语音：先看**平台是不是已经把转写放在正文里了**；没有才去调 ASR。
+  //
+  // ★★ 2026-10-14 修（**这一条把 149 条已经拿到的转写全丢了**）：
+  //   实测（钉钉原始事件流 10338 行里的 198 条语音）：
+  //     · **149 条**的 content 是「转写正文 + `[语音消息](mediaId=…)` + 下载提示」—— 标记**在正文后面**；
+  //     · 49 条的标记在**开头**（系统消息/通话类），确实没有转写。
+  //   而原来的逻辑是：一认出 `[语音消息]` 就**判 voice ⇒ 调 ASR hook**，
+  //   hook 没接线 ⇒ `ok:false` ⇒ **整条进 deferred**，
+  //   ⇒ **正文里那段转写跟着一起被丢掉**（它明明已经在手上了）。
+  //   后果：198 条语音一条都没进库，而其中 149 条**根本不需要转写**。
+  //
+  //   判据：**转写文本在标记之前**（`i > 0` 且有非空内容）⇒ 直接用，`by:'platform'`（平台自带，不花钱、不依赖外接）。
+  //   ⚠️ 为什么用"标记之前"而不是"有没有中文"：标记之后的下载提示里也有中文，
+  //     按"有没有中文"判会把那句提示当成转写 —— 那是编数据。
   if (modality === 'voice') {
-    if (!mediaId) return { ok: false, modality, text: null, fileRef: null, why: '语音消息没有 mediaId ⇒ 无法转写', mediaId: null };
-    if (typeof h.asr !== 'function') return { ok: false, modality, text: null, fileRef: null, why: '语音转写通道未接线（ASR hook 为空）⇒ 本条留在队列，不伪装成已转写', mediaId };
+    const s = String(content ?? '');
+    const i = s.indexOf('[语音消息]') >= 0 ? s.indexOf('[语音消息]') : s.search(/\[(语音|音频)\]/);
+    const pre = i > 0 ? s.slice(0, i).trim() : '';
+    if (pre.length >= 2) {
+      return { ok: true, modality, text: pre, fileRef: null, why: null, mediaId, by: 'platform' };
+    }
+    // 到这儿说明**确实没有转写**（标记在开头）⇒ 才需要 ASR
+    if (!mediaId) return { ok: false, modality, text: null, fileRef: null, why: '语音消息没有 mediaId ⇒ 无法转写', mediaId: null, by: 'none' };
+    if (typeof h.asr !== 'function') return { ok: false, modality, text: null, fileRef: null, why: '本条没有平台自带转写，且 ASR 通道未接线（hook 为空）⇒ 留在队列，不伪装成已转写', mediaId, by: 'none' };
     const r = h.asr(mediaId, ctx);
     if (!r || r.ok !== true || typeof r.text !== 'string' || r.text.trim() === '') {
-      return { ok: false, modality, text: null, fileRef: null, why: `转写失败：${r?.why ?? '未返回文本'}`, mediaId };
+      return { ok: false, modality, text: null, fileRef: null, why: `转写失败：${r?.why ?? '未返回文本'}`, mediaId, by: 'asr' };
     }
-    return { ok: true, modality, text: r.text, fileRef: null, why: null, mediaId };
+    return { ok: true, modality, text: r.text, fileRef: null, why: null, mediaId, by: 'asr' };
   }
 
   // 图片 / 视频：转成文件（模态变 file）
@@ -136,6 +156,26 @@ export function selfTest() {
   chk('MOD-11', 'ASR 接线且返回文本 ⇒ ok + text', okAsr.ok === true && okAsr.text === '帮我看一下这个合同' && okAsr.modality === 'voice');
   const emptyAsr = convert('[语音消息](mediaId=abc==)', { asr: () => ({ ok: true, text: '   ' }) });
   chk('MOD-12', '★ ASR 返回空文本 ⇒ 仍判失败（防空数据冒充成功）', emptyAsr.ok === false, JSON.stringify(emptyAsr));
+
+  // ★★ 2026-10-14 加：**平台自带转写优先，不调 ASR**。
+  //   实测依据：钉钉 198 条语音里 149 条的 content 是「转写正文 + 标记 + 下载提示」。
+  //   加这一条之前，它们全被判 voice、去调未接线的 ASR、然后**连正文一起丢进 deferred**。
+  const REAL_VOICE_WITH_TEXT = '我想试试能不能直接发给自己[语音消息](mediaId=@lR_PJxEH90bnNu0AALAHp2goIbVm3AqZqUDJX1AA) 注意：如需下载使用dws chat message download-media命令下载';
+  const pv = convert(REAL_VOICE_WITH_TEXT);   // ⚠️ **不注入 ASR**：就是要证明"不需要 ASR"
+  chk('MOD-14', '★★ 平台自带转写 ⇒ 直接用它，**不调 ASR**（未接线也能成功）',
+    pv.ok === true && pv.modality === 'voice' && pv.text === '我想试试能不能直接发给自己' && pv.by === 'platform',
+    JSON.stringify(pv));
+  chk('MOD-15', '★ 平台转写里**不含**那句下载提示（标记之后的内容不算转写）',
+    !String(pv.text ?? '').includes('注意：如需下载') && !String(pv.text ?? '').includes('mediaId'),
+    String(pv.text));
+  // 负向对照：标记在**开头**（真没有转写）⇒ 仍必须去调 ASR / 如实失败，不许把空串当转写
+  const pvNone = convert('[语音消息](mediaId=abc==)');
+  chk('MOD-16', '★ 负向对照：标记在开头（确实没转写）⇒ 仍然 ok:false（不许蒙一个文本出来）',
+    pvNone.ok === false && pvNone.by === 'none', JSON.stringify(pvNone));
+  // 负向对照：标记之后有中文**不算**转写（防空串/提示被当成正文）
+  const pvAfter = convert('[语音消息](mediaId=abc==) 这是标记之后的说明文字');
+  chk('MOD-17', '★ 负向对照：标记**之后**的文字不算转写（防把说明当成正文）',
+    pvAfter.ok === false, JSON.stringify(pvAfter));
 
   // 图片下载成功 ⇒ 模态变 file 且有 fileRef
   const okDl = convert(REAL_IMAGE, { download: () => ({ ok: true, path: 'Other/Inflow/文件/2026-10/x.png' }) });

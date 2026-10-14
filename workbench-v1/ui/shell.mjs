@@ -632,7 +632,20 @@ export function pageTodos(snap) {
       // ★★ 2026-10-14 加（用户原话）：「待办列表下需要增加 tab，将
       //   **全部 / 今日 / 本周 / 待定 / 转日程 / 已完成** 做分类」。
       tabs: TODO_TABS,
-      head: ['截止时间', '来源', '执行人', '待办标题'],
+      // ★★ 2026-10-14 修（**表头与数据错位**）：
+      //   原来写 `['截止时间', '来源', '执行人', '待办标题']`，而数据是
+      //     col2 = `r.executor`（执行人）· col3 = `r.source.label`（来源）
+      //   ⇒ **第 2 格表头写「来源」、数据是「执行人」**，两格正好对调。
+      //
+      //   判"哪边错"的依据（不是感觉，是四页一致性）：
+      //     消息页 head 第 3 格 = 来源，数据 col3 = `r.channel ?? r.source` ✅
+      //     日程页 head 第 3 格 = 来源，数据 col3 = `r.source.label`        ✅
+      //     笔记页 head 第 4 格 = 来源，数据 col4 = `r.source.label`        ✅
+      //     ⇒ **`col3 = 来源` 是四页一致的约定**，只有待办的表头破了它。
+      //   而且本函数上方那段注释（592 行起）当时就写了"col3=来源 · col2=执行人" ——
+      //   **数据与注释是一致的，唯独 head 那一行漏改**。所以改表头，不改取数。
+      //   ⚠️ 下次改列序：**head 与 col 必须一起改**，而且要先确认四页的列序约定是不是还一致。
+      head: ['截止时间', '执行人', '来源', '待办标题'],
     });
 }
 
@@ -803,7 +816,11 @@ export function selfTest() {
     //   原来这里是消息形态（id/at/source/summary）⇒ 渲染层按会话取 `day`/`count`/`time` 都取不到，
     //   `SH-18` 当场变红。夹具跟着被改的东西走 —— 否则检查会一直守着已经不存在的形状。
     messages: { counts: { pending: 2, toTodo: 1, toSchedule: 0, toNote: 1, replied: 3, total: 7 }, tab: 'all', list: [{ id: '2026-10-12__cid:demo', day: '2026-10-12', time: '00:39', at: Date.parse('2026-10-12T00:39:00+08:00'), channel: '钉钉', sender: '曹元庭', count: 3, lastSummary: '一句话概括', state: 'pending' }] },
-    todos: { counts: { today: 2, week: 1, undecided: 1, done: 4 }, list: [{ id: 'td_2', dueLabel: '已逾期 3 天', executor: '我', topic: '逾期的活', detail: '细节', overdue: true }] },
+    // ★ 2026-10-14 给待办夹具补 `source` 与**可区分的** `executor`：
+    //   原来只有 `executor: '我'`、**没有 source**（渲染成 undefined），
+    //   于是"表头与数据错位"这类错**没有任何值可以拿去反查** —— 检查也就无从下手。
+    //   现在执行人 `张三`（不与其它列撞名）、来源 `钉钉`（真实来源形态）。
+    todos: { counts: { today: 2, week: 1, undecided: 1, done: 4 }, list: [{ id: 'td_2', dueLabel: '已逾期 3 天', executor: '张三', source: { label: '钉钉' }, topic: '逾期的活', detail: '细节', overdue: true }] },
     schedules: { counts: { today: 1, next7: 2, done30: 3 }, list: [{ id: 'sch_2', start: '2026-10-12T14:00', topic: '评审', place: '线上', participants: ['我', '张伟'] }] },
     notes: { counts: { total: 9, thisMonth: 4, tags: 7 }, list: [{ id: 'note_1', date: '2026-10-05', topic: 'A', tags: ['采集'] }] },
   };
@@ -887,6 +904,55 @@ export function selfTest() {
     const h = renderPage('notes', { snap: { notes: { counts: { total: 1, thisMonth: 1, tags: 0 }, list: [{ date: '2026-10-05', topic: 'A', tags: [] }] } } });
     return h.indexOf('<li data-id=') < 0 && h.indexOf('<li>') >= 0;
   })());
+
+  // ★★ 2026-10-14 加（**表头与数据必须逐格对得上**）：
+  //   为什么单独立一条：待办页曾经 head 写 `['截止时间','来源','执行人','待办标题']`
+  //   而数据是 `col2=执行人 · col3=来源` ⇒ **第 2 格表头写「来源」、数据是「执行人」**，
+  //   两格正好对调，而**四页的其它三页都是 col3=来源**。这类错位只能靠人眼看出来。
+  //   判据：每页渲染出来，**表头格数 == 数据格数**；且**同一页里不许有表头文字重复**
+  //   （重复通常意味着某一格被写了两遍、另一格空了）。
+  //   ⚠️ 这条只管"格数与重复"，**管不了"哪一格该是什么"** —— 语义那层靠本文件里
+  //     各页 head 与 col 相邻书写、以及改列序时一起改（见 pageTodos 里那段注释）。
+  // ★★ 2026-10-14 加（**表头与数据必须"语义对得上"，不只是格数相等**）：
+  //   起因：待办页曾经 head 写 `['截止时间','来源','执行人','待办标题']`、
+  //   而数据是 `col2=执行人 · col3=来源` ⇒ **第 2 格表头写「来源」、数据是「执行人」**。
+  //
+  //   ⚠️ **第一版这条检查写成了"格数相等 + 列名不重复" —— 那是个摆设**：
+  //     我把表头改回错位版做负向验证，它**照样过**（两边都是 4 格，格数当然相等）。
+  //     这正是本项目反复防的"恒真检查"。**一条抓不到目标 bug 的检查比没有更坏**，因为它给的是虚假的安心。
+  //
+  //   ⇒ 改成**拿夹具里已知的值反查它落在哪一格**：夹具写死
+  //     待办 `executor:'张三'` / `source.label:'钉钉'`，于是可以断言
+  //     "「张三」那一格的表头必须是「执行人」、「钉钉」那一格必须是「来源」"。
+  //     表头一旦与数据对调，这两个断言必红。
+  //   ⚠️ 这条依赖夹具里的值**有区分度**（原来是 `executor:'我'`、且没有 source ⇒ 没法反查）。
+  {
+    const bad = [];
+    const rowsOf = (html) => {
+      const row = /<li data-id="[^"]*"[^>]*>([\s\S]*?)<\/li>/.exec(html);
+      return row ? [...row[1].matchAll(/<span[^>]*>([\s\S]*?)<\/span>/g)].map((x) => x[1].replace(/<[^>]+>/g, '').trim()) : [];
+    };
+    const headOf = (html) => {
+      const head = /<li class="jl-head">([\s\S]*?)<\/li>/.exec(html);
+      return head ? [...head[1].matchAll(/<span>([^<]*)<\/span>/g)].map((x) => x[1]) : [];
+    };
+    // ① 待办：执行人 / 来源 必须落在各自的列名下面
+    const todoHtml = renderPage('todos', { snap: snap });
+    const th = headOf(todoHtml); const tr = rowsOf(todoHtml);
+    const iExec = tr.indexOf('张三'); const iSrc = tr.indexOf('钉钉');
+    if (iExec < 0) bad.push('待办:数据里找不到执行人「张三」');
+    else if (th[iExec] !== '执行人') bad.push(`待办:执行人值在第 ${iExec + 1} 格，而那一格表头是「${th[iExec]}」`);
+    if (iSrc < 0) bad.push('待办:数据里找不到来源「钉钉」');
+    else if (th[iSrc] !== '来源') bad.push(`待办:来源值在第 ${iSrc + 1} 格，而那一格表头是「${th[iSrc]}」`);
+    // ② 消息页：来源 / 发信人 同理（夹具里 channel='钉钉'、sender='曹元庭'）
+    const msgHtml2 = renderPage('messages', { snap: snap });
+    const mh = headOf(msgHtml2); const mr = rowsOf(msgHtml2);
+    const iCh = mr.indexOf('钉钉'); const iWho = mr.indexOf('曹元庭');
+    if (iCh >= 0 && mh[iCh] !== '来源') bad.push(`消息:来源值在第 ${iCh + 1} 格，而那一格表头是「${mh[iCh]}」`);
+    if (iWho >= 0 && mh[iWho] !== '发信人') bad.push(`消息:发信人值在第 ${iWho + 1} 格，而那一格表头是「${mh[iWho]}」`);
+    chk('SH-35', '★★ 表头与数据**语义**对得上（拿夹具已知值反查它落在哪一列）—— 防"表头与数据对调"',
+      bad.length === 0, bad.join(' | ') || `待办：执行人@${iExec + 1}/来源@${iSrc + 1} 消息：来源@${iCh + 1}/发信人@${iWho + 1}`);
+  }
 
   // ★ SH-30/31：日程密度热力图（需求 3.3.5）—— 左：当月每天热力；右：动态分析
   const schHtml = renderPage('schedules', { snap: snap, api: '/x' });
