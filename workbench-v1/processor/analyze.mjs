@@ -35,14 +35,48 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';   // ★ 2026-10-14：入口判据要用它比对，不能只判文件名后缀
+import { pathToFileURL, fileURLToPath } from 'node:url';   // pathToFileURL：入口判据要比对（不能只判文件名后缀）；fileURLToPath：自检要读自己
 import { Worker } from 'node:worker_threads';   // ★ 2026-10-14：请求路径上不再同步调模型（见 runModelInWorker）
 import { runEngine } from '../ledger.mjs';
 import * as store from '../store.mjs';
 
 const PS = 'powershell.exe';
-/** 推理通道：百炼 CLI（本机既有通道，已验证可用） */
-export const DEFAULT_MODEL_CMD = 'bl text chat --message';
+
+/**
+ * 推理通道：百炼 CLI（本机既有通道，已验证可用）。
+ *
+ * ★★ 2026-10-15 换模型（用户原话：「驾驶舱每日生成任务使用 deepseek-flash」）。
+ *
+ *   原来是 `bl text chat --message`，**不带 `--model`** ⇒ 走 `bl` 的默认（`qwen3.8-max`）。
+ *
+ *   为什么要换：驾驶舱的每块叙述提示词**约 3625 字**，而实测（见 `api/cockpit.mjs` 那段注释）
+ *   **300 秒都拿不回来**（`spawnSync powershell.exe ETIMEDOUT`）⇒ 每日任务以非零退出。
+ *   现在把模型**显式钉下来**、并选一个快的。
+ *
+ *   ⚠️ 模型 id 是**核实过的**，不是按名字猜的：
+ *     实测 `bl text chat --model deepseek-flash` 回
+ *       `The model deepseek-flash does not exist or you do not have access to it`（HTTP 404）
+ *     —— 正确的 id 是 **`deepseek-v4.1-flash`**（`bl model search --keyword deepseek` 查到，
+ *     provider=deepseek · 上下文 1,000,000 · 输出上限 393,216 · 支持 function-calling 与结构化输出）。
+ *     实测能调通。
+ *
+ *   ⚠️ 为什么做成**环境变量可覆盖**而不是写死：
+ *     模型是**会过时**的东西（这里的默认模型已经换过几轮），而写死意味着"哪天它下线了，
+ *     要改代码才能换"。`WB_V1_MODEL` 让换模型是改配置，不是改代码。
+ *     默认值取 deepseek-flash —— 用户这一轮指定的那个。
+ */
+export const DEFAULT_MODEL_ID = process.env.WB_V1_MODEL || 'deepseek-v4.1-flash';
+/**
+ * ⚠️ **这是模型选择的唯一一处** —— 两个调用点（`runModel` 的 `--message` 与
+ *   `runModelViaFile` 的 `--messages-file`）都从它取，**不许各自再写一遍 `bl text chat`**。
+ *
+ *   为什么单独记这一笔：原来两条路各自写死了 `bl text chat`，而 `DEFAULT_MODEL_CMD`
+ *   虽然导出了却**没有任何调用点用它** ⇒ 改这个常量等于没改（我第一版就踩了：
+ *   改完常量、驾驶舱那条路仍走默认模型，因为它读的是自己那一行）。
+ *   ⇒ 拆成"模型段 + 基命令"，两个调用点拼 `MODEL_FLAG`，**只此一处**。
+ */
+export const MODEL_FLAG = `bl text chat --model ${DEFAULT_MODEL_ID}`;
+export const DEFAULT_MODEL_CMD = `${MODEL_FLAG} --message`;
 
 /** 真跑模型（经 powershell 调 bl；失败如实返回，不编内容） */
 /**
@@ -57,7 +91,7 @@ export const DEFAULT_MODEL_CMD = 'bl text chat --message';
  */
 export function runModel(prompt, { timeoutMs = 180000 } = {}) {
   const q = String(prompt).replace(/'/g, "''");
-  const cmd = `bl text chat --message '${q}'`;
+  const cmd = `${MODEL_FLAG} --message '${q}'`;   // ★ 2026-10-15：模型从这一处取，别在这里另写
   const r = spawnSync(PS, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', cmd], { encoding: 'utf8', timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 });
   const out = String(r.stdout ?? '').trim();
   const err = String(r.stderr ?? '').trim();
@@ -93,7 +127,7 @@ export function runModelViaFile(prompt, { timeoutMs = 180000, role = 'user' } = 
   try {
     // ★ 数组，不是 {messages:[…]}（见上面那条说明）
     fs.writeFileSync(file, JSON.stringify([{ role, content: String(prompt) }]), 'utf8');
-    const cmd = `bl text chat --messages-file '${file.replace(/'/g, "''")}'`;
+    const cmd = `${MODEL_FLAG} --messages-file '${file.replace(/'/g, "''")}'`;   // ★ 模型同上，一处取
     const r = spawnSync(PS, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', cmd], { encoding: 'utf8', timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 });
     const out = String(r.stdout ?? '').trim();
     const err = String(r.stderr ?? '').trim();
@@ -472,6 +506,42 @@ export async function selfTest() {
       const after2 = led.readRuns({ engine: 'analyze' }).length;
       chk('ANZ-15', '★ 走 analyze() 一轮也只记一条（防两层各包一次 runEngine ⇒ 同一轮记两遍）',
         after2 - before2 === 1, `analyze() 这一轮新增 ${after2 - before2} 条`);
+    }
+
+    // ★★ 2026-10-15 加：**模型选择只能有一处**（守用户这一轮换 deepseek-flash 的那件事）。
+    //   起因：`DEFAULT_MODEL_CMD` 早就导出了，而两个调用点（`runModel` / `runModelViaFile`）
+    //   **各自写死了 `bl text chat`、都不用那个常量** ⇒ 改常量等于没改。
+    //   我第一版就踩了：改完常量，驾驶舱那条路仍走默认模型，因为它读的是自己那一行 ——
+    //   而驾驶舱正是这次要改快的那条路，等于白改。
+    //
+    //   判据：**源码里 `bl text chat` 只许出现在 `MODEL_FLAG` 那一行**。
+    //     多出一处，就说明又有人绕过常量另写了一份模型命令。
+    {
+      // ⚠️ 读自己：`fileURLToPath(import.meta.url)`（不是手拼字符串 —— 盘符那条 `/C:/` 要处理）。
+      const self = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
+      const codeLines = self.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l));
+
+      // ⚠️ 判据取的是**起手命令段**，不是"提到这个名字"。
+      //   这条检查我改了**四版**，四版都栽在**自指**上（检查必须写出那个串才能去数它）：
+      //     · 一：数"含不含那条命令" ⇒ 注释行入账；
+      //     · 二：加去注释 ⇒ 本段自检仍是普通语句，入账；
+      //     · 三：改数"命令 + --model" ⇒ **正则字面量本身就含这个串**，入账；
+      //     · 四：把待查串**拼出来** ⇒ 代码里不再有连续完整串，但**断言文字里又写了一遍** ⇒ 还是入账。
+      //   ⇒ 第五版：拼接 + **描述里也不再写那条命令**（说"那条命令"即可）。
+      //     这是这类"数某串出现几次"的检查的固有难点：**检查自身不许含那个串**，
+      //     包括代码、正则、以及给人看的描述文字 —— 三处都算。
+      const NEEDLE = 'bl text' + ' chat --model';        // 拼出来，避免自指
+      const starter = codeLines.filter((l) => l.includes(NEEDLE));
+      chk('ANZ-16', '★★ 模型命令是一处真相（起手命令段只许出现在 MODEL_FLAG 那一行）',
+        starter.length === 1 && /MODEL_FLAG\s*=/.test(starter[0] ?? ''),
+        `代码里出现 ${starter.length} 处：${starter.map((l) => l.trim().slice(0, 56)).join(' | ')}`);
+
+      // 调用点：`${MODEL_FLAG} --message` / `--messages-file` 各一处。
+      //   判据用 `${MODEL_FLAG}`（带模板插值）—— 自检里写的是 `\$\{MODEL_FLAG\}` 转义形态，不入账。
+      const nMsg = codeLines.filter((l) => /\$\{MODEL_FLAG\} --message '?/.test(l) && !/\\\$\\\{/.test(l)).length;
+      const nFile = codeLines.filter((l) => /\$\{MODEL_FLAG\} --messages-file '?/.test(l) && !/\\\$\\\{/.test(l)).length;
+      chk('ANZ-17', '★ 两个调用点都从 MODEL_FLAG 取（`--message` 与 `--messages-file` 各一）',
+        nMsg === 1 && nFile === 1, `--message ${nMsg} 处 · --messages-file ${nFile} 处`);
     }
   } finally {
     if (prev === undefined) delete process.env.WB_V1_OUT; else process.env.WB_V1_OUT = prev;
