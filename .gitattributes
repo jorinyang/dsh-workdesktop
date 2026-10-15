@@ -1,0 +1,35 @@
+# 行尾符规范化 —— 2026-10-15 固定下来（用户裁定：「库外发布仓库的行尾符规范化需要固定下来」）
+#
+# 来由：仓库里有少数 .js 是 CRLF、其余全是 LF，于是每次同步都会混进上千行"只差行尾"的 diff
+#   —— 实测一次提交 1634 行里真实内容改动只有 36 行，review 时根本看不出改了什么。
+#
+# 本仓的既有约定本来就是 LF（.mjs 120 / .py 48 / .json 18 / .cs 10 / .ps1 10 / .md 8 … 全是 LF），
+# 所以这里把"**文本一律 LF**"写死：git 在提交时归一、检出时按 LF 写回。
+# 二进制类型显式声明，别让 git 去猜（猜错的代价是文件被"改坏"）。
+* text=auto eol=lf
+
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.bmp   binary
+
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.eot   binary
+
+*.zip   binary
+*.7z    binary
+*.gz    binary
+*.tar   binary
+*.exe   binary
+*.dll   binary
+*.node  binary
+*.pdf   binary
+*.mp3   binary
+*.mp4   binary
+*.wav   binary
