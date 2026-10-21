@@ -121,13 +121,31 @@ export function runModel(prompt, { timeoutMs = 180000 } = {}) {
  *
  * ⚠️ 临时文件写在 `os.tmpdir()`，**不写知识库**（那是一次性输入，不是产物）。
  */
-export function runModelViaFile(prompt, { timeoutMs = 180000, role = 'user' } = {}) {
+/**
+ * 调模型 —— 提示词写文件，走 `--messages-file`。
+ *
+ * ★★ 2026-10-21 加 `maxTokens`：**这一条是"模型明明在跑却返回空"的根因**。
+ *
+ *   实测（用 `--output json` 照出来的原始回执，2026-10-12 那天 28 个会话、提示词 2027 字）：
+ *     `"finish_reason": "length", "content": "", "reasoning_content": "我们需要回答用户。需要整理…"`
+ *   —— 模型把输出额度**全花在推理上**，正文一个字都没轮到 ⇒ `content` 是空串 ⇒ 上层判定"模型无输出"。
+ *   而 `bl` 的默认 `--max-tokens` 是 4096，推理一长就没正文了。
+ *
+ *   同一段提示词对照：默认额度 ⇒ 输出 0 字（50~90 秒）；`--max-tokens 32768` ⇒ **2501 字合法 JSON**。
+ *
+ *   ⚠️ 为什么以前没暴露：短提示词推理也短，4096 够用；**一长就不够**，
+ *     而表现是"exit=0 但没输出"，看着像模型或网络故障，实际是额度分配。
+ *   ⇒ 调用方按需给 `maxTokens`；不给就维持原行为（不改变已有调用方）。
+ */
+export function runModelViaFile(prompt, { timeoutMs = 180000, role = 'user', maxTokens = null } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-model-'));
   const file = path.join(dir, 'messages.json');
   try {
     // ★ 数组，不是 {messages:[…]}（见上面那条说明）
     fs.writeFileSync(file, JSON.stringify([{ role, content: String(prompt) }]), 'utf8');
-    const cmd = `${MODEL_FLAG} --messages-file '${file.replace(/'/g, "''")}'`;   // ★ 模型同上，一处取
+    // ★ 模型同上，一处取；额度由调用方决定（推理型模型要留足，否则正文被挤成空串）
+    const cmd = `${MODEL_FLAG} --messages-file '${file.replace(/'/g, "''")}'`
+      + (Number.isFinite(maxTokens) && maxTokens > 0 ? ` --max-tokens ${Math.floor(maxTokens)}` : '');
     const r = spawnSync(PS, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', cmd], { encoding: 'utf8', timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 });
     const out = String(r.stdout ?? '').trim();
     const err = String(r.stderr ?? '').trim();
@@ -151,13 +169,13 @@ export function runModelViaFile(prompt, { timeoutMs = 180000, role = 'user' } = 
  * ⚠️ 重试的是**同一段提示词**；"减料重试"是调用方的事（见 `cockpit.mjs#narrative`）——
  *   两者治的不是同一个病：这里治"偶发"，那里治"内容让它想太久"。
  */
-export function runModelWithRetry(prompt, { timeoutMs = 180000, retries = 1, viaFile = false } = {}) {
+export function runModelWithRetry(prompt, { timeoutMs = 180000, retries = 1, viaFile = false, maxTokens = null } = {}) {
   // ★ 2026-10-14：`viaFile` 让**多行提示词**走文件那条路（见 `runModelViaFile` 的说明）。
   //   驾驶舱的提示词是多行的，必须开它；单行短提示词的调用方走原来那条就行。
   const call = viaFile ? runModelViaFile : runModel;
-  let last = call(prompt, { timeoutMs });
+  let last = call(prompt, maxTokens ? { timeoutMs, maxTokens } : { timeoutMs });
   for (let i = 0; i < retries && last.ok !== true; i += 1) {
-    last = call(prompt, { timeoutMs });
+    last = call(prompt, maxTokens ? { timeoutMs, maxTokens } : { timeoutMs });
     if (last.ok === true) return { ...last, retried: i + 1 };
   }
   return last;

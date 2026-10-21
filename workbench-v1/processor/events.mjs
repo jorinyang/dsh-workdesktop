@@ -521,14 +521,20 @@ export async function clusterDay({ day = null, now = Date.now(), modelFn = null,
   const prompt = buildClusterPrompt({ day: targetDay, items });
   const callOnce = async (p) => {
     if (modelFn) return modelFn(p);
-    // ★ 2026-10-21 实测后改：**不走 `runModelInWorker`**。
-    //   真机跑今天这一轮，worker 那条路 94.8 秒后回 `模型无输出`（空答复），
-    //   而同一台机器上 `runModelViaFile` 4.1 秒就正常返回。
-    //   ⇒ 这里直接走 `runModelViaFile`（多行提示词必须走文件，不能用 `--message`）。
-    //   ⚠️ 它**不占线程池**，会按住事件循环一两分钟 —— 对"每小时一轮的后台任务"可以接受；
-    //     若哪天要在请求路径上跑，必须改回 worker。
-    const { runModelViaFile } = await import('./analyze.mjs');
-    return runModelViaFile(p, { timeoutMs: 240000 });
+    // ★★ 2026-10-21 实测定位（两次真跑都失败之后才找到的）：
+    //   `bl text chat` 对同一段提示词**会偶发返回空**（同内容第 1 次 23.7 秒正常、第 2 次 44.5 秒空）。
+    //   实测对照（同一台机、同一段 585 字提示词）：
+    //     · `runModelViaFile`（**裸调，不重试**）⇒ `ok=false · 模型无输出`，49 秒
+    //     · `runModelWithRetry`（重试 1 次）⇒ `ok=true`，396 字合法 JSON，41 秒
+    //   ⇒ **必须用带重试的那个**。上一轮为绕开 worker 改成裸调，正好把重试丢了，
+    //     于是"模型偶发不回"被当成了"模型调不通"。这类错会把人引去查提示词和模型，
+    //     而真正的原因只是少了一层重试。
+    const { runModelWithRetry } = await import('./analyze.mjs');
+    // ★★ 2026-10-21：**必须给足输出额度**（`maxTokens`）。
+    //   实测根因（`--output json` 照出来的）：模型把额度全花在 `reasoning_content`，
+    //   `content` 是空串、`finish_reason: "length"` ⇒ 上层只看到"模型无输出"。
+    //   默认 4096 对 20+ 个会话的提示词不够；32768 实测回来 2501 字合法 JSON。
+    return runModelWithRetry(p, { timeoutMs: 300000, retries: 2, viaFile: true, maxTokens: 32768 });
   };
 
   let reply;
@@ -718,6 +724,19 @@ export async function selfTest() {
     const r = await clusterDay({ day: '2026-10-21', convs: FX, modelFn: fake, save: false });
     chk('EVT-J1', '★ 聚类成功：模型只点了一组，**漏掉的那个会话也各自成件**（不消失）',
       r.ok === true && r.events === 2 && r.clusters === 1, `事件 ${r.events} · 分件 ${r.clusters}`);
+  }
+
+  // EVT-K 守住"聚类必须走带重试的那条路"（2026-10-21 实测踩到）
+  {
+    const self = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
+    const code = self.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l));
+    const NEEDLE = 'runModel' + 'WithRetry';
+    const BARE = 'runModel' + 'ViaFile';
+    const usesRetry = code.some((l) => l.includes(NEEDLE) && l.includes('retries'));
+    // 负向：不许在调模型那段里裸调 ViaFile（本轮就是这么丢的重试）
+    const bareCall = code.some((l) => l.includes(`${BARE}(p`) || l.includes(`${BARE}(prompt`));
+    chk('EVT-K1', '★★ 聚类调模型必须带重试（`bl` 会偶发返回空；裸调会把"偶发不回"误判成"调不通"）',
+      usesRetry && !bareCall, `带重试=${usesRetry} · 裸调=${bareCall}`);
   }
 
   const pass = out.filter((x) => x.ok).length;
