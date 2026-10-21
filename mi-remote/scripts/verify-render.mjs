@@ -201,7 +201,15 @@ const registeredShortcuts = []
 const STUB_LINK = {
   ok: true,
   link: {
-    remote: { ok: false, state: 'missing', devices: [], howto: '配对方法：长按菜单+主页。' },
+    remote: {
+      ok: false, state: 'missing', devices: [], howto: '配对方法：长按菜单+主页。',
+      /*
+       * 采集器 / 引擎的开关读的就是这一段（2026-10-21 加）。
+       * 两个都给 true：这是"正常在跑"的形态，好断言两个开关都是勾上的、
+       * 而且**不该**冒出"只开了一个"的耦合提示。
+       */
+      bridge: { collector: true, engine: true, collectorPid: 4242, enginePid: 4343, filter: 'frida:9999' },
+    },
     sayall: { ok: false, state: 'missing', howto: '装无线麦 SayAll Windows 版。' },
     cable: { ok: false, state: 'missing', devices: [], howto: '装 VB-CABLE 并重启。' },
     wetype: { ok: true, state: 'ready', howto: '语音设置选 CABLE Output。' },
@@ -209,8 +217,7 @@ const STUB_LINK = {
   voiceEndpoints: { uuActive: true },
 }
 
-const STUB_VOICE = {
-  ok: true,
+const STUB_VOICE = {  ok: true,
   current: { id: 'dev-speaker', name: '麦克风 (Wireless Stereo Headset)', state: 'active', active: true, isDefault: true, isRemoteMic: false, source: 'other', sourceLabel: '其他输入' },
   devices: [
     { id: 'dev-uu', name: '麦克风阵列 (UU远程虚拟音频设备)', state: 'active', active: true, isDefault: false, isRemoteMic: true, source: 'uuremote', sourceLabel: 'UU远程' },
@@ -219,6 +226,23 @@ const STUB_VOICE = {
   remoteDevices: [{ id: 'dev-uu', name: '麦克风阵列 (UU远程虚拟音频设备)', state: 'active', active: true, isDefault: false, isRemoteMic: true, source: 'uuremote', sourceLabel: 'UU远程' }],
   suggest: { id: 'dev-uu', name: '麦克风阵列 (UU远程虚拟音频设备)', state: 'active', active: true, isDefault: false, isRemoteMic: true, source: 'uuremote', sourceLabel: 'UU远程' },
   savedPrevious: null,
+}
+
+/*
+ * `/bridge` 的桩（2026-10-21 加）。
+ *
+ * 面板用它读 `remoteOwner` —— 遥控器整台归谁。**桩里给 'dsh'**，
+ * 因为那是默认值、也是"引擎在跑"的正常形态；"让给 SayAll"那种形态
+ * 由断言里直接读源码特征来守（见下面「遥控器归属」那几条），
+ * 渲染冒烟只验当前形态不崩、开关在、方向对。
+ */
+const STUB_BRIDGE = {
+  ok: true,
+  remoteOwner: 'dsh',
+  voiceOwner: 'sayall',
+  children: { collector: { running: true, pid: 4242, count: 2 }, engine: { running: true, pid: 4343, count: 2 } },
+  run: { pid: 4343, filter: 'frida:9999' },
+  autoStart: { enabled: true, tries: 1, ok: true, error: null, at: 1 },
 }
 
 const STUB_MAPPING = {
@@ -259,6 +283,12 @@ const sandbox = {
     const pick = String(url).includes('/link') ? STUB_LINK
       : String(url).includes('/voice/status') ? STUB_VOICE
       : String(url).includes('/mapping') ? STUB_MAPPING
+      /*
+       * `/bridge`：面板从这里读 `remoteOwner`（遥控器整台归谁，2026-10-21 加）。
+       * 注意要放在 `/bridge/power` 之后也能匹配 —— 两处都含 `/bridge`，
+       * 但渲染冒烟里不会真的去 POST 开关，所以共用一个桩没问题。
+       */
+      : String(url).includes('/bridge') ? STUB_BRIDGE
       : { ok: false, error: 'unexpected-url' }
     return Promise.resolve({ status: 200, text: () => Promise.resolve(JSON.stringify(pick)) })
   },
@@ -396,9 +426,17 @@ if (tabType !== undefined) {
   check('  Tab kind 与 workdesktop 那一行引用的字符串一致', tabType.options.kind === 'dsh-mi-remote:panel', String(tabType.options.kind))
   check('  title=遥控器', tabType.options.title() === '遥控器')
   const guide = Array.isArray(tabType.options.guide) ? tabType.options.guide[0] : null
-  // 用户 2026-10-08 裁定：右栏指南卡排在**驾驶舱（31）之后、坐标系（32）之前** ⇒ 31.5。
-  // 官方按 order 升序排且允许小数，所以能插进相邻整数之间。
-  check('  指南卡 order=31.5（驾驶舱 31 之后、坐标系 32 之前）', guide !== null && guide.order === 31.5, String(guide && guide.order))
+  /*
+   * 指南卡顺序：**2026-10-15 用户裁定改成末位 36**，取代 2026-10-08 那次
+   * 「驾驶舱(31) 之后、坐标系(32) 之前 ⇒ 31.5」。
+   *   现行：工作台 31 → 驾驶舱 32 → 坐标系 33 → 工程图 34 → 建模中心 35 → **遥控器 36**
+   * 六个入口各占一个互不相同的整数位（并列会让顺序退化成"看注册先后"）。
+   *
+   * ⚠️ 这条断言原来还写着 31.5 —— **代码改了、尺子没改**，所以它一直红。
+   * 改这里之前先看 `lib/client.js` 里 `order: 36` 上方那段注释，来由都记在那儿。
+   */
+  check('  指南卡 order=36（末位：工作台31→驾驶舱32→坐标系33→工程图34→建模中心35→遥控器36）',
+    guide !== null && guide.order === 36, String(guide && guide.order))
   // 不提供 icon 时官方在卡上画方块占位符 —— 用户报的「图标还没换」就是这个，守住它。
   check('  指南卡提供了图标组件（缺了官方画方块占位符）', guide !== null && typeof guide.icon === 'function',
     guide === null ? '没有 guide' : typeof guide.icon)
@@ -631,6 +669,119 @@ if (tabType !== undefined) {
     check('UU远程路径标签在', texts.includes('UU远程'))
     check('OK 单击显示 Enter', texts.includes('Enter'))
     check('微信输入法在链路卡上', texts.includes('微信输入法'))
+
+    /*
+     * ── 采集器 / 引擎的开关（2026-10-21 用户要求）────────────────────────────
+     *
+     * 「为采集器和引擎配置开关功能，可以点击开启/关闭」
+     *
+     * 桩里 `bridge` 两个都是 true（正常在跑的形态），所以该断言：
+     *   · 两个开关都在，且都是**勾上**的；
+     *   · 都显示「运行中」，并带出 PID；
+     *   · **不该**出现"只开了一个"的耦合提示。
+     * 「只开一个」那种状态靠真机验（见交付说明），这里只守住不误报。
+     */
+    const findByProp = (node, key, value, out = []) => {
+      if (node === null || node === undefined || typeof node !== 'object') return out
+      if (Array.isArray(node)) { for (const item of node) findByProp(item, key, value, out); return out }
+      const props = node.props
+      if (props !== undefined && props !== null && props[key] === value) out.push(node)
+      if (props !== undefined && props !== null) {
+        for (const key2 of Object.keys(props)) {
+          const child = props[key2]
+          if (child !== null && typeof child === 'object') findByProp(child, key, value, out)
+        }
+      }
+      return out
+    }
+    const collectorSwitch = findByProp(tree, 'data-dsmr-switch', 'collector')
+    const engineSwitch = findByProp(tree, 'data-dsmr-switch', 'engine')
+    check('采集器有开关', collectorSwitch.length > 0, String(collectorSwitch.length))
+    check('引擎有开关', engineSwitch.length > 0, String(engineSwitch.length))
+
+    const switchInput = (nodes) => {
+      const found = []
+      const walk = (node) => {
+        if (node === null || node === undefined || typeof node !== 'object') return
+        if (Array.isArray(node)) { for (const item of node) walk(item); return }
+        const props = node.props
+        if (props === undefined || props === null) return
+        if (props.type === 'checkbox' && props['data-dsmr-switch-input'] !== undefined) found.push(props)
+        for (const key of Object.keys(props)) {
+          const child = props[key]
+          if (child !== null && typeof child === 'object') walk(child)
+        }
+      }
+      for (const node of nodes) walk(node)
+      return found
+    }
+    const collectorInput = switchInput(collectorSwitch)
+    const engineInput = switchInput(engineSwitch)
+    check('  采集器开关是个 checkbox', collectorInput.length === 1, String(collectorInput.length))
+    check('  引擎开关是个 checkbox', engineInput.length === 1, String(engineInput.length))
+    check('  桩里两个都在跑 ⇒ 两个开关都勾上',
+      collectorInput[0]?.checked === true && engineInput[0]?.checked === true,
+      JSON.stringify([collectorInput[0]?.checked, engineInput[0]?.checked]))
+    check('  显示运行中 + PID', texts.includes('运行中') && texts.includes('PID 4242') && texts.includes('PID 4343'))
+    check('  两个都开时不该报"只开了一个"', findByProp(tree, 'data-dsmr-couple', 'collector-only').length === 0
+      && findByProp(tree, 'data-dsmr-couple', 'engine-only').length === 0)
+
+    /*
+     * ── 遥控器整台归谁（2026-10-21）──────────────────────────────────────────
+     *
+     * 桩里 `remoteOwner='dsh'` ⇒ 开关该是**勾上**的、显示「DSH 用」、
+     * 而且**不该**出现"整台让给 SayAll"那句提示。
+     * 「让给 SayAll」那种形态要靠真机验（见交付说明），这里守的是不误报、方向对。
+     */
+    const ownerSwitch = findByProp(tree, 'data-dsmr-owner-switch', 'remote')
+    check('遥控器归属开关在', ownerSwitch.length === 1, String(ownerSwitch.length))
+    const ownerInput = (() => {
+      const found = []
+      const walk = (node) => {
+        if (node === null || node === undefined || typeof node !== 'object') return
+        if (Array.isArray(node)) { for (const item of node) walk(item); return }
+        const props = node.props
+        if (props === undefined || props === null) return
+        if (props.type === 'checkbox' && props['data-dsmr-owner-input'] !== undefined) found.push(props)
+        for (const key of Object.keys(props)) {
+          const child = props[key]
+          if (child !== null && typeof child === 'object') walk(child)
+        }
+      }
+      for (const node of ownerSwitch) walk(node)
+      return found
+    })()
+    check('  归属开关是个 checkbox', ownerInput.length === 1, String(ownerInput.length))
+    check('  桩里 remoteOwner=dsh ⇒ 勾上（DSH 用）', ownerInput[0]?.checked === true, String(ownerInput[0]?.checked))
+    check('  显示「DSH 用」', texts.includes('DSH 用'))
+    check('  归 DSH 时不该出现"整台让给 SayAll"的提示',
+      findByProp(tree, 'data-dsmr-owner-hint', 'sayall').length === 0)
+    // 开关走的是 /remote/owner —— 拼错的话点下去什么也不会发生
+    check('  归属开关调用的是 /remote/owner',
+      readFileSync(CLIENT_PATH, 'utf8').includes("post('/remote/owner'"))
+    /*
+     * 宿主侧的关键约束（读源码守，因为渲染桩碰不到宿主逻辑）：
+     *   ① 遥控器归 SayAll 时**一个进程都不起**（引擎、采集器都不 attach）；
+     *   ② 手动点引擎/采集器开关时**拒绝**并说明原因；
+     *   ③ 采集器的"不改写"标志对 remoteOwner='sayall' 同样生效（双保险：即便起了也不改）。
+     *
+     * ⚠️ ① 的判据 2026-10-21 改过：原先是"不启引擎、采集器留着只观察"，
+     * 实测发现**两个 Frida 钩子挂在同一个 IOCTL 上，只要还挂着就在抢** ——
+     * 采集器 hooked 成功但 keys.jsonl 只有空报告，停掉它之后 SayAll 才拿得到按键。
+     * 所以现在守的是"早退、什么都不起"（`mode: 'hands-off'`）。
+     */
+    const hostSource = readFileSync(join(HERE, 'lib', 'index.js'), 'utf8')
+    check('  宿主：SayAll 模式下 ensureBridgeRunning 早退（mode=hands-off，一个进程都不起）',
+      hostSource.includes("mode: 'hands-off'"))
+    check('  宿主：SayAll 模式下拒绝手动开引擎',
+      hostSource.includes("error: 'remote-owned-by-sayall'"))
+    check('  宿主：切到 SayAll 时采集器也一起收掉（killStrayCollectors）',
+      /await killStrayEngines\(\)\s*\n\s*await killStrayCollectors\(\)/.test(hostSource))
+    check('  宿主：remoteOwner=sayall 时采集器也不改写（双保险）',
+      /voiceOwner\(\) === 'sayall' \|\| remoteOwner\(\) === 'sayall'/.test(hostSource))
+    // 开关的点击走 /bridge/power —— 路由拼错的话开关点下去什么也不会发生
+    check('  开关调用的是 /bridge/power（不是总闸 /bridge/stop）',
+      readFileSync(CLIENT_PATH, 'utf8').includes("post('/bridge/power'"))
 
     /*
      * ── 快捷键命令：注册成了什么样 ────────────────────────────────────────────

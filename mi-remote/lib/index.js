@@ -475,7 +475,12 @@ export async function linkStatus(force) {
   const voice = runScript('audio-device.ps1', ['status'])
   const battery = readBatteryCached()
   const hid = readRemoteHidState()
-  linkCache.inflight = Promise.all([probe, voice, battery, hid]).then(([probeResult, voiceResult, batteryLevel, hidState]) => {
+  /*
+   * 链路两段的真实状态（扫进程，2 秒缓存）。塞进同一个 Promise.all：
+   * 面板每 10 秒读一次 `/link`，多等这一项不会加长整体耗时（其它几项本来就慢）。
+   */
+  const childrenPromise = bridgeChildrenStateCached()
+  linkCache.inflight = Promise.all([probe, voice, battery, hid, childrenPromise]).then(([probeResult, voiceResult, batteryLevel, hidState, children]) => {
     linkCache.inflight = null
 
     const devices = Array.isArray(voiceResult.devices) ? voiceResult.devices : []
@@ -496,11 +501,20 @@ export async function linkStatus(force) {
            * 按键链路的两段是否活着 —— 面板上要如实显示，别让人以为"绿了就一定在收键"。
            * collector = Frida 采集器（Python，挂在蓝牙驱动宿主上读 HID 报告）
            * engine    = read 模式的引擎（读采集器写的 JSON 行 → 判定 → 注入）
+           *
+           * ⚠️ 2026-10-21 改：原来只看进程句柄，会骗人 ——
+           *   · `/bridge/auto` 的"复用采集器"分支**不给句柄**（collectorChild 仍是 null），
+           *     于是采集器明明在跑、这里却报 false；
+           *   · dsh 重启后上一轮起的进程可能还活着（Windows 上父子不连坐），句柄也是 null。
+           * 现在统一走 `bridgeChildrenStateCached()`（扫真实进程，2 秒缓存）：
+           * 开关读的和这张卡显示的必须是**同一个事实**，否则开关点了没反应、卡片却绿着。
            */
           bridge: {
-            collector: collectorChild !== null && collectorChild.killed !== true,
-            engine: runChild !== null && runChild.killed !== true,
+            collector: children.collector.running,
+            engine: children.engine.running,
             filter: runFilter,
+            collectorPid: children.collector.pid,
+            enginePid: children.engine.pid,
           },
           /*
            * HID 通道状态。被禁用时上面那些全都"正常"，但按键一个都进不来 ——
@@ -635,7 +649,14 @@ const COLLECTOR = resolve(HERE, '..', 'engine', 'rc003-tap.py')
  */
 function collectorArgs(python, hostPid, keysFile) {
   const argv = [COLLECTOR, String(hostPid), keysFile]
-  if (voiceOwner() === 'sayall') argv.push('--sayall-owns-voice')
+  /*
+   * `--sayall-owns-voice` 的实际含义是「**一个字节都不要改写**」，不只是语音键。
+   * 所以两种情形都要带上它：
+   *   · `voiceOwner === 'sayall'` —— 语音通道归 SayAll；
+   *   · `remoteOwner === 'sayall'` —— 整台遥控器归 SayAll（更强的"放手"）。
+   * 参数名带 voice 是历史原因（它最早只为语音做），**别被名字骗了**。
+   */
+  if (voiceOwner() === 'sayall' || remoteOwner() === 'sayall') argv.push('--sayall-owns-voice')
   return argv
 }
 
@@ -672,6 +693,34 @@ function findRunningCollector() {
 function voiceOwner() {
   const saved = readBridgeState()
   return saved !== null && saved !== undefined && saved.voiceOwner === 'dsh' ? 'dsh' : 'sayall'
+}
+
+/**
+ * 遥控器的**整机**归属：'dsh' | 'sayall'（2026-10-21 用户要求）。
+ *
+ * 和 `voiceOwner` 的区别（别混）：
+ *   · `voiceOwner` 只管**语音键那一个通道**（ATVV），
+ *   · `remoteOwner` 管**整个遥控器**——所有按键算谁的。
+ *
+ * 为什么需要它：用户实测「SayAll 在抓遥控器按键，但除语音键之外都被 DSH 占了、抓不到」。
+ * 根因不在改写（当时 `voiceOwner='sayall'`，采集器一个字节都没改），而在**引擎还在注入** ——
+ * 遥控器每按一下，DSH 就往系统里打一串快捷键，SayAll 那边等于在跟一堆注入事件抢。
+ *
+ *   `'sayall'` ⇒ **引擎不跑**（DSH 一个键都不注入）+ 采集器不改写 ⇒ SayAll 独占整台遥控器。
+ *   `'dsh'`    ⇒ 正常：采集器改写 + 引擎注入，遥控器是 DSH 的输入设备。
+ *
+ * ⚠️ 与 `voiceOwner` 冲突时的优先级：**`remoteOwner='sayall'` 赢**。
+ *    道理很简单——"整台给 SayAll"本来就包含语音通道；反过来只把语音给 SayAll 才需要单独设。
+ *    这条优先级写在 `collectorArgs` 与 `ensureBridgeRunning` 里，改的时候两处一起看。
+ */
+function remoteOwner() {
+  const saved = readBridgeState()
+  return saved !== null && saved !== undefined && saved.remoteOwner === 'sayall' ? 'sayall' : 'dsh'
+}
+
+/** DSH 到底该不该碰这台遥控器（不该碰 = 采集器不改写、引擎不注入）。 */
+function dshOwnsRemote() {
+  return remoteOwner() !== 'sayall'
 }
 
 /**
@@ -771,13 +820,42 @@ function findPython() {
   return null
 }
 
-/** 找出承载遥控器的 WUDFHost.exe。按创建时间取最新那个 —— 遥控器是最近连上的那个。 */
+/**
+ * 找出**真正承载遥控器**的 WUDFHost.exe。
+ *
+ * ⚠️⚠️ 判据 2026-10-21 改过 —— 原来按"创建时间取最新"，那是**错的**。
+ *
+ * 原实现：`Sort-Object CreationDate -Descending | Select-Object -First 1`。
+ * 本机三个 WUDFHost（8608 / 9932 / 11200）**都是 10/15 13:45 创建、相差不到 1 秒**，
+ * 于是"最新"选中了 11200 —— 而它根本不是管遥控器的那个：
+ *
+ *   PID 8608   装了 microsoft.bluetooth.profiles.hidovergatt.dll  ← ★ HID over GATT，真正管遥控器
+ *   PID 9932   只有 WUDFx.dll
+ *   PID 11200  只有 WUDFx02000.dll（在忙别的设备，读计数一直很高，很有迷惑性）
+ *
+ * 后果：采集器往 11200 挂钩子，`hooked` 成功、界面全绿，但**那个 IOCTL 永不被调用** ——
+ * 用户按一堆键，`keys.jsonl` 里一条真实报告都没有。这一条查了很久。
+ *
+ * 现在按**模块**判：带 `hidovergatt` 的才是 BLE HID 宿主。
+ * 模块拿不到（权限/保护进程）就退回"最新"，不至于完全不可用。
+ */
 function findRemoteHostPid() {
   return new Promise((resolvePromise) => {
-    const ps = 'Get-CimInstance Win32_Process -Filter "Name=\'WUDFHost.exe\'" | ' +
-      'Sort-Object CreationDate -Descending | Select-Object -First 1 -ExpandProperty ProcessId'
+    const ps = [
+      '$rows = @(Get-Process WUDFHost -ErrorAction SilentlyContinue | ForEach-Object {',
+      '  $mods = @(); try { $mods = @($_.Modules) } catch { $mods = @() }',
+      '  [pscustomobject]@{',
+      '    pid = $_.Id;',
+      '    created = $_.StartTime;',
+      "    hid = [bool](@($mods | Where-Object { $_.ModuleName -match 'hidovergatt' }).Count -gt 0)",
+      '  }',
+      '})',
+      '$hit = @($rows | Where-Object { $_.hid })',
+      'if ($hit.Count -gt 0) { ($hit | Sort-Object created -Descending | Select-Object -First 1).pid }',
+      'elseif ($rows.Count -gt 0) { ($rows | Sort-Object created -Descending | Select-Object -First 1).pid }',
+    ].join(' ')
     execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps],
-      { windowsHide: true, timeout: 20000, encoding: 'utf8' }, (error, stdout) => {
+      { windowsHide: true, timeout: 25000, encoding: 'utf8' }, (error, stdout) => {
         if (error) { resolvePromise(null); return }
         const pid = Number(String(stdout || '').trim())
         resolvePromise(Number.isInteger(pid) && pid > 0 ? pid : null)
@@ -1228,12 +1306,42 @@ async function ensureBridgeRunning() {
   await killStrayEngines()
   runChild = null
 
+  /*
+   * ★ 遥控器整台让给 SayAll 时，**连采集器都不起**，直接返回。
+   *
+   * 2026-10-21 实测纠正：原来这里只跳过引擎、照旧起采集器（只观察不改写），
+   * 以为"不改写就等于让开"——**错**。两个 Frida 钩子挂在同一个 IOCTL 上，
+   * 只要还挂着就在抢；证据是采集器 `hooked` 成功但 `keys.jsonl` 一条真实报告都没有，
+   * 而场上 9 个 frida-helper、停掉 DSH 那份后降到 6 个。
+   *
+   * 所以这里**必须早退**，一个进程都不起。切回 DSH 时 `/remote/owner` 会重新走
+   * 正常的拉起流程（它调的就是这个函数）。
+   */
+  if (dshOwnsRemote() !== true) {
+    return {
+      ok: true, mode: 'hands-off', remoteOwner: remoteOwner(),
+      engineSuppressed: true, collectorSuppressed: true,
+      collectorPid: null, enginePid: null,
+      note: '遥控器归 SayAll：DSH 不 attach、不注入，一个进程都不起',
+    }
+  }
+
   // ④ 采集器：已经在跑且模式一致就复用，不动它
-  const wantOwns = voiceOwner() === 'sayall'
+  /*
+   * `wantOwns` 要与 `collectorArgs` 同口径 —— 那边只要 voiceOwner 或 remoteOwner
+   * 有一个是 sayall 就带 `--sayall-owns-voice`。不同口径会让"复用"判断永远不等、
+   * 每次 /bridge/auto 都把采集器重建一遍。
+   */
+  const wantOwns = voiceOwner() === 'sayall' || remoteOwner() === 'sayall'
   const existing = await findRunningCollector()
   if (enginePick === null) enginePick = await pickEngine()
   if (existing !== null && existing.sayallOwns === wantOwns) {
-    if (runChild === null || runChild.killed === true) {
+    /*
+     * ⚠️ 遥控器归 SayAll 时**不启引擎** —— 这是"整台给 SayAll"的核心：
+     * DSH 一个键都不注入，SayAll 才能独占。否则上面那些开关设了等于没设
+     * （下次自动启动或面板挂载又会把引擎拉起来）。
+     */
+    if (dshOwnsRemote() && (runChild === null || runChild.killed === true)) {
       runChild = spawnEngine(['read', '--config', mappingPath(), '--file', keysPath(),
         '--verbose', '--out', runLogPath()], () => { runChild = null })
     }
@@ -1242,6 +1350,8 @@ async function ensureBridgeRunning() {
       engineImpl: enginePick.kind, engineIntegrity: enginePick.level,
       collectorPid: existing.pid, enginePid: runChild === null ? null : runChild.pid,
       voiceOwner: voiceOwner(),
+      remoteOwner: remoteOwner(),
+      engineSuppressed: dshOwnsRemote() !== true,
     }
   }
 
@@ -1262,16 +1372,23 @@ async function ensureBridgeRunning() {
   collectorChild = spawnCollector(python, hostPid, keysFile)
   collectorChild.on('error', () => { collectorChild = null })
   await delay(1200)   // 等采集器把 hook 装上并写出 ready 行
-  runChild = spawnEngine(['read', '--config', mappingPath(), '--file', keysFile,
-    '--verbose', '--out', runLogPath()], () => { runChild = null })
+  // 遥控器归 SayAll 时只起采集器（观察），引擎不启 —— 见上面 ④ 的说明
+  if (dshOwnsRemote()) {
+    runChild = spawnEngine(['read', '--config', mappingPath(), '--file', keysFile,
+      '--verbose', '--out', runLogPath()], () => { runChild = null })
+  } else {
+    runChild = null
+  }
   runFilter = 'frida:' + String(hostPid)
   writeBridgeState({ ...readBridgeState(), filter: runFilter, startedAt: Date.now(), mode: 'read' })
   return {
-    ok: runChild !== null, mode: 'read', hostPid, python,
+    ok: true, mode: 'read', hostPid, python,
     engineImpl: enginePick === null ? 'keybridge' : enginePick.kind,
     engineIntegrity: enginePick === null ? null : enginePick.level,
     collectorPid: collectorChild === null ? null : collectorChild.pid,
     enginePid: runChild === null ? null : runChild.pid,
+    remoteOwner: remoteOwner(),
+    engineSuppressed: dshOwnsRemote() !== true,
   }
 }
 
@@ -1330,6 +1447,199 @@ function scheduleAutoStart(ctx) {
   const first = setTimeout(() => { void attempt() }, AUTO_START_FIRST_DELAY_MS)
   if (first && typeof first.unref === 'function') first.unref()
   void ctx
+}
+
+/**
+ * 扫一遍场上真实的链路进程（采集器 / 引擎），回 pid 列表。
+ *
+ * 为什么不看 `collectorChild` / `runChild` 那两个句柄：
+ *   · 采集器可能是**上一次 dsh 起的**（`/bridge/auto` 的"复用"分支就不会给句柄，
+ *     见 `findRunningCollector` 那段），句柄 null 但进程在跑；
+ *   · Windows 上父进程死了子进程不跟着死，孤儿很常见。
+ * 面板上的开关必须反映**真实在不在跑**，否则用户点"关"没反应、点"开"又说已经在跑。
+ *
+ * 返回 `{ collector: [pid…], engine: [pid…] }`。查询失败一律当空数组（不抛）。
+ */
+function scanPipelineProcesses() {
+  return new Promise((resolvePromise) => {
+    /*
+     * ⚠️ 名单必须覆盖**每一种引擎实现** —— 2026-10-11 的教训：漏了 python 版引擎，
+     * 结果攒到 4 个引擎同时注入。加新引擎实现时，这里和 killStrayEngines 一起改。
+     */
+    const ps = 'Get-CimInstance Win32_Process | Where-Object { ' +
+      '($_.Name -eq \'KeyBridge.exe\' -and $_.CommandLine -match \'read\') -or ' +
+      '($_.Name -eq \'python.exe\' -and ($_.CommandLine -match \'rc003-tap\' -or $_.CommandLine -match \'read-engine\')) } | ' +
+      'ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; line = $_.CommandLine } } | ConvertTo-Json -Compress'
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps],
+      { windowsHide: true, timeout: 20000, maxBuffer: 4 * 1024 * 1024 },
+      (error, stdout) => {
+        const out = { collector: [], engine: [] }
+        if (error) { resolvePromise(out); return }
+        const text = String(stdout || '').trim()
+        if (text === '') { resolvePromise(out); return }
+        let rows
+        try {
+          const parsed = JSON.parse(text)
+          rows = Array.isArray(parsed) ? parsed : [parsed]
+        } catch (parseError) { resolvePromise(out); return }
+        for (const row of rows) {
+          if (row === null || row === undefined) continue
+          const line = String(row.line || '')
+          const pid = Number(row.pid)
+          if (!Number.isFinite(pid)) continue
+          if (line.indexOf('rc003-tap') >= 0) out.collector.push(pid)
+          else if (line.indexOf('read-engine') >= 0 || /KeyBridge\.exe/i.test(line)) out.engine.push(pid)
+        }
+        resolvePromise(out)
+      })
+  })
+}
+
+/** 只收**采集器**（不动引擎）。开关"关"那一档要用它。 */
+function killStrayCollectors() {
+  return new Promise((resolvePromise) => {
+    const ps = 'Get-CimInstance Win32_Process | Where-Object { ' +
+      '$_.Name -eq \'python.exe\' -and $_.CommandLine -match \'rc003-tap\' } | ' +
+      'ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }'
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps],
+      { windowsHide: true, timeout: 20000 }, () => resolvePromise())
+  })
+}
+
+/**
+ * 采集器 / 引擎此刻到底在不在跑（一次扫描，两个布尔 + pid）。
+ * 给面板的开关读状态用。
+ *
+ * 带 **2 秒缓存**：面板每 10 秒轮询一次 `/link`，如果每次都去扫全进程表
+ * （起一个 powershell、枚举 Win32_Process），既慢又没必要 —— 开关状态
+ * 差两秒完全够用。缓存只作用于"读"，写（`setChildPower`）之后会主动清掉。
+ */
+let childrenCache = { at: 0, value: null }
+async function bridgeChildrenState() {
+  const scanned = await scanPipelineProcesses()
+  const collectorHandleAlive = collectorChild !== null && collectorChild !== undefined && collectorChild.killed !== true
+  const engineHandleAlive = runChild !== null && runChild !== undefined && runChild.killed !== true
+  const value = {
+    collector: {
+      running: collectorHandleAlive || scanned.collector.length > 0,
+      pid: scanned.collector.length > 0 ? scanned.collector[0]
+        : (collectorHandleAlive ? collectorChild.pid : null),
+      count: scanned.collector.length,
+    },
+    engine: {
+      running: engineHandleAlive || scanned.engine.length > 0,
+      pid: scanned.engine.length > 0 ? scanned.engine[0]
+        : (engineHandleAlive ? runChild.pid : null),
+      count: scanned.engine.length,
+    },
+  }
+  // 顺手刷新缓存：这样开关"写完立刻读"不会拿到两秒前的旧值。
+  childrenCache = { at: Date.now(), value }
+  return value
+}
+
+/** 带 2 秒缓存的那份（给高频读取用）。见 `childrenCache` 的说明。 */
+const CHILDREN_CACHE_MS = 2000
+async function bridgeChildrenStateCached() {
+  if (childrenCache.value !== null && Date.now() - childrenCache.at < CHILDREN_CACHE_MS) {
+    return childrenCache.value
+  }
+  const value = await bridgeChildrenState()
+  childrenCache = { at: Date.now(), value }
+  return value
+}
+
+/**
+ * 采集器或引擎单独开 / 关。`which` 取 `'collector'` 或 `'engine'`。
+ *
+ * 为什么允许单独开关（而不是只做一个总闸）：
+ *   · 单独重启引擎是**真实有用的工况** —— 改了映射方案要重载，但不想重新挂 Frida
+ *     （重挂要 1.2 秒且偶尔要重试），只换引擎最快；
+ *   · 但两个单独关掉都会让遥控器失效，所以面板上会给出耦合提示，
+ *     见 `bridgeChildrenState` 的调用方。**开关各管各的，不做隐式联动** ——
+ *     "点了个开关，另一个也动了"是最容易让人困惑的行为。
+ */
+async function setChildPower(which, on) {
+  if (which !== 'engine' && which !== 'collector') {
+    return { ok: false, error: 'bad-which', which }
+  }
+  const before = await bridgeChildrenState()
+
+  if (which === 'engine') {
+    if (on !== true) {
+      await killStrayEngines()
+      runChild = null
+      const after = await bridgeChildrenState()
+      return { ok: true, which, running: after.engine.running, changed: before.engine.running }
+    }
+    if (before.engine.running) {
+      return { ok: true, which, running: true, reused: true, pid: before.engine.pid }
+    }
+    /*
+     * 遥控器整台给了 SayAll 时**拒绝开引擎** —— 否则这个开关会把"让给 SayAll"
+     * 悄悄破坏掉：用户点一下引擎开关，DSH 又开始抢按键，而面板上那个
+     * 「遥控器归属」还显示着 SayAll，两边自相矛盾。
+     * 想开引擎就先把归属切回 DSH（错误信息里直接告诉他）。
+     */
+    if (dshOwnsRemote() !== true) {
+      return {
+        ok: false, which, running: false, error: 'remote-owned-by-sayall',
+        hint: '遥控器当前归 SayAll 使用（「遥控器归属」= SayAll）。要 DSH 用，先把归属切回 DSH。',
+      }
+    }
+    // 起引擎前先保证映射文件在（引擎读不到配置会直接退出）
+    if (existsSync(mappingPath()) !== true) {
+      const seeded = writeMapping(defaultMapping())
+      if (seeded.ok !== true) return { ok: false, which, error: 'seed-mapping-failed', detail: seeded.error }
+    }
+    runChild = spawnEngine(['read', '--config', mappingPath(), '--file', keysPath(),
+      '--verbose', '--out', runLogPath()], () => { runChild = null })
+    if (runChild === null) {
+      return { ok: false, which, error: 'engine-missing', hint: '找不到引擎可执行文件（engine/KeyBridge.exe）' }
+    }
+    await delay(400)
+    const after = await bridgeChildrenState()
+    return { ok: true, which, running: after.engine.running, reused: false, pid: after.engine.pid }
+  }
+
+  // which === 'collector'
+  if (on !== true) {
+    await killStrayCollectors()
+    collectorChild = null
+    const after = await bridgeChildrenState()
+    return { ok: true, which, running: after.collector.running, changed: before.collector.running }
+  }
+  if (before.collector.running) {
+    return { ok: true, which, running: true, reused: true, pid: before.collector.pid }
+  }
+  /*
+   * 遥控器整台给了 SayAll 时**拒绝起采集器** —— 理由同引擎那条：
+   * 采集器一 attach 就占住那个 IOCTL，SayAll 立刻收不到按键（2026-10-21 实测）。
+   * 想用 DSH 就先把归属切回 DSH。
+   */
+  if (dshOwnsRemote() !== true) {
+    return {
+      ok: false, which, running: false, error: 'remote-owned-by-sayall',
+      hint: '遥控器当前归 SayAll 使用。采集器一挂上钩子 SayAll 就收不到按键，所以这里不让开。要 DSH 用，先把归属切回 DSH。',
+    }
+  }
+  const python = findPython()
+  if (python === null) {
+    return { ok: false, which, error: 'python-not-found', hint: 'Frida 采集器要 Python，装一个或把路径写进设置' }
+  }
+  const hostPid = await findRemoteHostPid()
+  if (hostPid === null) {
+    return { ok: false, which, error: 'wudfhost-not-found', hint: '没找到承载遥控器的 WUDFHost.exe，先确认遥控器已连上' }
+  }
+  const keysFile = keysPath()
+  try { rmSync(keysFile, { force: true }) } catch (error) { /* 不存在就算了 */ }
+  collectorChild = spawnCollector(python, hostPid, keysFile)
+  collectorChild.on('error', () => { collectorChild = null })
+  await delay(1200)   // 等采集器把 hook 装上并写出 ready 行
+  runFilter = 'frida:' + String(hostPid)
+  writeBridgeState({ ...readBridgeState(), filter: runFilter, startedAt: Date.now(), mode: 'read' })
+  const after = await bridgeChildrenState()
+  return { ok: true, which, running: after.collector.running, reused: false, pid: after.collector.pid }
 }
 
 export function apply(ctx) {
@@ -1446,6 +1756,84 @@ export function apply(ctx) {
           })
           return
         }
+        /*
+         * 遥控器整台归谁：'dsh' | 'sayall'（2026-10-21 用户要求）。
+         *
+         * 用户原话：「无线麦 sayall 正在抓取小米遥控器上的按键，但是除了语音键之外，
+         *            其他的都被 dsh 的遥控器占用了，抓取不到……能否做一个类似于
+         *            语音输入路径的语音独占那样的切换功能？」
+         *
+         * **根因不在改写，在注入。** 当时 `voiceOwner` 已经是 'sayall'，采集器带着
+         * `--sayall-owns-voice`，一个字节都没改写；但引擎还在跑，每按一下就往系统里
+         * 打一串快捷键 —— SayAll 那边等于在跟一堆注入事件抢同一台遥控器。
+         *
+         *   sayall —— **把引擎停掉**（DSH 一个键都不注入）+ 采集器保持只观察 ⇒ 整台让出去。
+         *   dsh    —— 恢复：采集器按当前语音归属重启，引擎拉起来。
+         */
+        if (path === '/remote/owner' && method === 'POST') {
+          const body = await readBody(req)
+          const want = body !== null && body !== undefined && body.owner === 'sayall' ? 'sayall' : 'dsh'
+          writeBridgeState({ ...readBridgeState(), remoteOwner: want })
+
+          if (want === 'sayall') {
+            /*
+             * ⚠️ **采集器也必须停掉**，不能只"只观察不改写" —— 2026-10-21 实测纠正。
+             *
+             * 我最初以为 `--sayall-owns-voice`（只观察、不改写）就等于让开。**错的。**
+             * 证据：切到 sayall 后 DSH 采集器注入成功（`hooked @ 0x7fff…`）、引擎已停，
+             * 但 `keys.jsonl` 里只有一条**空报告** —— 用户按了一堆键，一条都没进来；
+             * 同时场上挂着 **9 个 `frida-helper`**（SayAll 自己也在 attach WUDFHost）。
+             * 停掉 DSH 采集器之后 frida-helper **9 → 6**，说明 DSH 那份会话确实还占着钩子。
+             *
+             * 结论：**两个 Frida 钩子打在同一个 IOCTL（0x80018483）上，只要还挂着就在抢**，
+             * "不改写"不等于"不打扰"。想让 SayAll 拿到按键，DSH 必须**完全不 attach**。
+             */
+            await killStrayEngines()
+            await killStrayCollectors()
+            runChild = null
+            collectorChild = null
+            sendJson(res, 200, {
+              ok: true, remoteOwner: 'sayall', collectorPid: null, enginePid: null,
+              note: '遥控器整台让给 SayAll：引擎与采集器都已停，DSH 完全不碰这台设备',
+            })
+            return
+          }
+
+          /*
+           * 采集器的模式跟着变：`--sayall-owns-voice` 的取舍见 `collectorArgs`。
+           * 已经在跑且模式一致就复用（`/bridge/auto` 那套判断），避免每切一次都重挂。
+           */
+          const wantOwns = voiceOwner() === 'sayall' || want === 'sayall'
+          const existing = await findRunningCollector()
+          let collectorPid = existing === null ? null : existing.pid
+          if (existing === null || existing.sayallOwns !== wantOwns) {
+            await killStrayPipeline()
+            collectorChild = null
+            const python = findPython()
+            const hostPid = python === null ? null : await findRemoteHostPid()
+            if (python !== null && hostPid !== null) {
+              collectorChild = spawnCollector(python, hostPid, keysPath())
+              collectorChild.on('error', () => { collectorChild = null })
+              collectorPid = collectorChild.pid
+            }
+          }
+
+          // 切回 DSH 时把引擎拉起来（用统一入口，别在这里另写一套）
+          let enginePid = null
+          if (want === 'dsh') {
+            const ensured = await ensureBridgeRunning()
+            enginePid = ensured !== null && ensured !== undefined && ensured.enginePid !== undefined
+              ? ensured.enginePid : null
+          }
+
+          sendJson(res, 200, {
+            ok: true, remoteOwner: want, collectorPid, enginePid,
+            note: want === 'sayall'
+              ? '遥控器整台让给 SayAll：引擎已停（DSH 不注入），采集器只观察不改写'
+              : '遥控器归 DSH：采集器按当前语音归属重启，引擎已拉起',
+          })
+          return
+        }
         if (path === '/mapping' && method === 'GET') {
           sendJson(res, 200, { ok: true, mapping: readMapping(), buttons: BUTTONS, slots: SLOTS, presets: DSH_PRESETS })
           return
@@ -1495,6 +1883,12 @@ export function apply(ctx) {
          */
         if (path === '/bridge' && method === 'GET') {
           const savedBridge = readBridgeState()
+          /*
+           * `children` 是给面板开关读的**真实**运行状态（扫进程，不是看句柄）。
+           * 和上面的 `run` 不同：`run` 只反映"这个 dsh 进程起的那个引擎"，
+           * 采集器被复用时它是 null，孤儿进程也看不见 —— 拿它驱动开关会骗人。
+           */
+          const children = await bridgeChildrenStateCached()
           sendJson(res, 200, {
             ok: true,
             engine: existsSync(ENGINE),
@@ -1502,6 +1896,10 @@ export function apply(ctx) {
             enabled: savedBridge.enabled !== false,
             learn: learnChild === null ? null : { pid: learnChild.pid, file: learnFilePath() },
             run: runChild === null ? null : { pid: runChild.pid, filter: runFilter },
+            children,
+            /* 遥控器整台归谁（'dsh' | 'sayall'）—— 面板那个「遥控器归属」开关读它 */
+            remoteOwner: remoteOwner(),
+            voiceOwner: voiceOwner(),
             saved: savedBridge,
             /*
              * DSH 启动时那次自动拉起的结果。
@@ -1629,8 +2027,7 @@ export function apply(ctx) {
           sendJson(res, 200, { ok: runChild !== null, pid: runChild === null ? null : runChild.pid, filter })
           return
         }
-        if (path === '/bridge/stop' && method === 'POST') {
-          // 采集器要一起停：它和 read 模式的引擎是配对的，只停引擎的话 Frida 还挂在驱动宿主上。
+        if (path === '/bridge/stop' && method === 'POST') {          // 采集器要一起停：它和 read 模式的引擎是配对的，只停引擎的话 Frida 还挂在驱动宿主上。
           for (const child of [learnChild, runChild, collectorChild]) {
             if (child === null || child === undefined) continue
             try { child.kill() } catch (error) { /* 已退出 */ }
@@ -1645,6 +2042,22 @@ export function apply(ctx) {
         if (path === '/bridge/vkeys' && method === 'POST') {
           const body = await readBody(req)
           sendJson(res, 200, writeVKeys(body === null ? null : body.vkeys))
+          return
+        }
+        /*
+         * 采集器 / 引擎的**单独开关**（2026-10-21 用户要求：
+         * 「为采集器和引擎配置开关功能，可以点击开启/关闭」）。
+         *
+         * 入参 `{ which: 'collector'|'engine', on: true|false }`。
+         * 为什么不复用 `/bridge/stop`：那条是**总闸**（三个子件一起停），
+         * 而开关需要"只停一个"；也只停采集器要单独收 Frida 进程。
+         * 具体行为与耦合说明见 `setChildPower`。
+         */
+        if (path === '/bridge/power' && method === 'POST') {
+          const body = await readBody(req)
+          const which = String((body && body.which) || '')
+          const on = body !== null && body !== undefined && body.on === true
+          sendJson(res, 200, await setChildPower(which, on))
           return
         }
         /*

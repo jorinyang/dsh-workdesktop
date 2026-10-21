@@ -66,8 +66,14 @@ const tmpSource = tmpFiles.filter((n) => SOURCE_EXT.test(n))
 check('tmp/ 里没有源码残留（运行时暂存除外）', tmpSource.length === 0,
   tmpSource.join(' ') || ('有 ' + tmpFiles.length + ' 个暂存文件，无源码'))
 const engineRoot = fs.readdirSync(p('engine'))
-check('engine/ 根目录只有运行时件',
-  engineRoot.every((n) => ['diag', 'build.ps1', 'inject.py', 'KeyBridge.cs', 'KeyBridge.exe', 'rc003-tap.py', 'read-engine.py'].includes(n)),
+/*
+ * `__pycache__` 是**运行时产物**：Python 版引擎一跑，解释器就在同目录写出 .pyc。
+ * 它已经进了 `.gitignore`，所以克隆体没有、作者本机有 —— 那是对的，不该判红。
+ * 这条断言真正要守的是"源码别散落在 engine/ 根目录"（该在 engine/diag/ 里）。
+ */
+const RUNTIME_NOISE = ['__pycache__']
+check('engine/ 根目录只有运行时件（不算 __pycache__ 这类运行时产物）',
+  engineRoot.every((n) => ['diag', 'build.ps1', 'inject.py', 'KeyBridge.cs', 'KeyBridge.exe', 'rc003-tap.py', 'read-engine.py'].concat(RUNTIME_NOISE).includes(n)),
   engineRoot.join(' '))
 
 // ── 三、体积 ──

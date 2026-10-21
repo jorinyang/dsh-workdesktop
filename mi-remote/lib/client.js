@@ -587,6 +587,15 @@ window.__ModuleLoader__.load({
     function LinkSection() {
       const [state, load] = usePoll('/link', 10000)
       const [voiceState] = usePoll('/voice/status', 8000)
+      /*
+       * `/bridge` 也轮询：主要是为了拿 `remoteOwner`（遥控器整台归谁）。
+       *
+       * 为什么不学「语音独占」那个开关存 localStorage：那只是**界面缓存**，
+       * 宿主那边的真相它并不知道 —— 换个浏览器、清了缓存，显示的就跟实际不一致。
+       * 这个开关决定"引擎跑不跑"，显示错了代价很大（以为让给 SayAll 了、实际还在抢）。
+       * `/bridge` 里的 children 有 2 秒缓存，轮询 6 秒不会造成负担。
+       */
+      const [bridgeState, reloadBridge] = usePoll('/bridge', 6000)
       const data = state.data
       /*
        * 状态列的内容与顺序照用户 2026-10-11 指定：
@@ -631,18 +640,11 @@ window.__ModuleLoader__.load({
       const [btDevices, setBtDevices] = React.useState(null)
       const [btNote, setBtNote] = React.useState(null)
 
-      /** 把按键链路拉起来（采集器 + 引擎）。 */
-      const fixBridge = async () => {
-        setFixKind('bridge'); setFixMsg(null)
-        const result = await post('/bridge/auto', {})
-        if (result === null || result === undefined || result.ok !== true) {
-          setFixMsg('没起来：' + String((result && (result.hint || result.error)) || '未知原因'))
-        } else {
-          setFixMsg(result.reused === true ? '引擎已在运行' : '已启动')
-        }
-        setFixKind(null)
-        load()
-      }
+      /*
+       * 原来这里有个 `fixBridge`（"未运行时点一下把链路拉起来"）。
+       * 2026-10-21 用户要求改成**开关**之后它就没有调用方了 —— 删掉。
+       * 如果以后要"一键全部拉起"，接口是现成的：`POST /bridge/auto`。
+       */
 
       /** 让 VB-CABLE 回到可用状态。 */
       const fixCable = async () => {
@@ -691,6 +693,98 @@ window.__ModuleLoader__.load({
           setBtNote('没连上：' + String((result && (result.hint || result.status || result.error)) || '未知原因'))
         }
         setFixKind(null)
+      }
+
+      /*
+       * ── 采集器 / 引擎的开关（2026-10-21 用户要求）────────────────────────────
+       *
+       * 「为采集器和引擎配置开关功能，可以点击开启/关闭」
+       *
+       * 两个开关**各管各的，不做隐式联动** —— 点一个另一个也跟着动是最容易让人困惑的。
+       * 但它们是一对（采集器写 keys.jsonl、引擎读它注入），只开一个是没用的，
+       * 所以下面用 `data-dsmr-couple` 把这种情况如实标出来，而不是偷偷帮你打开另一个。
+       *
+       * 状态来自 `/link` 的 `remote.bridge`（宿主那边改成扫**真实进程**了）——
+       * 只看进程句柄会骗人：采集器被"复用"时句柄是空的，却其实在跑。
+       */
+      const [childBusy, setChildBusy] = React.useState(null)
+      const [childMsg, setChildMsg] = React.useState(null)
+
+      const toggleChild = async (which, on) => {
+        setChildBusy(which); setChildMsg(null)
+        const name = which === 'collector' ? '采集器' : '引擎'
+        const result = await post('/bridge/power', { which, on })
+        if (result === null || result === undefined || result.ok !== true) {
+          setChildMsg(name + '没切换成功：' + String((result && (result.hint || result.error)) || '未知原因'))
+        } else if (result.running === on) {
+          setChildMsg(name + (on ? '已开启' : '已关闭'))
+        } else {
+          // 请求成功但状态没变到期望值 —— 如实说，别假装成功
+          setChildMsg(name + '状态没变（当前' + (result.running ? '运行中' : '未运行') + '）')
+        }
+        setChildBusy(null)
+        load()
+      }
+
+      /*
+       * ── 遥控器整台归谁：「DSH 用」/「SayAll 用」（2026-10-21 用户要求）──────
+       *
+       * 用户原话：「无线麦 sayall 正在抓取小米遥控器上的按键，但是除了语音键之外，
+       *            其他的都被 dsh 的遥控器占用了，抓取不到……能否做一个类似于
+       *            语音输入路径的语音独占那样的切换功能？」
+       *
+       * 说清一件事：**被占用的不是 HID 报告，是注入。**
+       * 当时 `voiceOwner` 已经是 sayall、采集器一个字节都没改写，但引擎还在跑 ——
+       * 遥控器每按一下，DSH 就往系统里打一串快捷键，SayAll 等于在跟一堆注入事件抢。
+       * 所以这个开关的核心动作是**把引擎停掉**，而不是改采集器的改写行为
+       * （当然采集器也会跟着按 sayall 模式重启，两件事都做才对）。
+       */
+      const [ownerBusy, setOwnerBusy] = React.useState(false)
+      const [ownerMsg, setOwnerMsg] = React.useState(null)
+      const remoteOwnerNow = bridgeState !== null && bridgeState.data !== null
+        && bridgeState.data !== undefined && bridgeState.data.remoteOwner === 'sayall' ? 'sayall' : 'dsh'
+
+      const setRemoteOwner = async (owner) => {
+        setOwnerBusy(true); setOwnerMsg(null)
+        const result = await post('/remote/owner', { owner })
+        if (result === null || result === undefined || result.ok !== true) {
+          setOwnerMsg('没切换成功：' + String((result && (result.hint || result.error)) || '未知原因'))
+        } else {
+          setOwnerMsg(owner === 'sayall'
+            ? '已让给 SayAll：引擎停了，DSH 不再抢按键'
+            : '已归 DSH：引擎已拉起')
+        }
+        setOwnerBusy(false)
+        load()
+        reloadBridge()
+      }
+
+      /**
+       * 一行"开关"：复选框 + 名字 + 当前状态 + PID。
+       * `seg` 是 `/link` 里 `remote.bridge` 那一段（`{collector, engine, collectorPid, enginePid}`）。
+       */
+      const childSwitch = (label, which, seg) => {
+        const running = seg !== null && seg !== undefined && seg[which] === true
+        const pid = seg !== null && seg !== undefined ? seg[which + 'Pid'] : null
+        const busy = childBusy === which
+        return h('label', {
+          className: 'dsmr-switchrow',
+          key: 'switch-' + which,
+          'data-dsmr-switch': which,
+          'data-on': running ? '1' : '0',
+        },
+        h('input', {
+          type: 'checkbox',
+          checked: running,
+          disabled: busy,
+          'data-dsmr-switch-input': which,
+          onChange: (event) => { void toggleChild(which, event.target.checked) },
+        }),
+        h('span', null, label + (busy ? '（处理中…）' : '')),
+        h('span', { className: 'dsmr-kv-v', 'data-on': running ? '1' : '0' },
+          running ? '运行中' : '未运行'),
+        pid === null || pid === undefined ? null
+          : h('span', { className: 'dsmr-devstate' }, 'PID ' + String(pid)))
       }
 
       /**
@@ -752,14 +846,58 @@ window.__ModuleLoader__.load({
                     busy ? '处理中…'
                       : seg.ok === true ? t('ready')
                         : seg.state === 'installed-not-running' ? t('installedNotRunning') : t('missing'))),
-                /* 遥控器：设备名 / 电量 / 按键链路两段（后两行未运行时点了就启动） */
+                /* 遥控器：设备名 / 电量 / 采集器与引擎的**开关**（2026-10-21） */
                 row.key === 'remote' ? h('div', { className: 'dsmr-kvlist' },
                   kv('设备', rdevice === null ? null : rdevice.name),
                   kv('电量', battery === null || battery === undefined ? '未读取' : String(battery) + '%'),
-                  kv('采集器', bridge === null ? '—' : (bridge.collector === true ? '运行中' : '未运行'),
-                    'collector', bridge !== null && bridge.collector !== true ? fixBridge : null),
-                  kv('引擎', bridge === null ? '—' : (bridge.engine === true ? '运行中' : '未运行'),
-                    'engine', bridge !== null && bridge.engine !== true ? fixBridge : null)) : null,
+                  childSwitch('采集器', 'collector', bridge),
+                  childSwitch('引擎', 'engine', bridge),
+                  /*
+                   * 遥控器整台归谁。开关语义取"**DSH 会不会用它**"——
+                   * 勾上 = DSH 用（引擎注入）；取消 = 整台让给 SayAll（引擎停）。
+                   * 用正向语义而不是"让给 SayAll"，因为取消勾选是"关掉某个能力"的自然动作。
+                   */
+                  h('label', {
+                    className: 'dsmr-switchrow',
+                    key: 'switch-remote-owner',
+                    'data-dsmr-owner-switch': 'remote',
+                    'data-on': remoteOwnerNow === 'dsh' ? '1' : '0',
+                    title: '取消勾选 = 整台遥控器让给 SayAll（DSH 停引擎、不注入任何键）',
+                  },
+                  h('input', {
+                    type: 'checkbox',
+                    checked: remoteOwnerNow === 'dsh',
+                    disabled: ownerBusy,
+                    'data-dsmr-owner-input': 'remote',
+                    onChange: (event) => { void setRemoteOwner(event.target.checked ? 'dsh' : 'sayall') },
+                  }),
+                  h('span', null, 'DSH 使用遥控器' + (ownerBusy ? '（切换中…）' : '')),
+                  h('span', { className: 'dsmr-kv-v', 'data-on': remoteOwnerNow === 'dsh' ? '1' : '0' },
+                    remoteOwnerNow === 'dsh' ? 'DSH 用' : 'SayAll 用')),
+                  /*
+                   * 让给 SayAll 时把后果说明白：引擎是停的，所以上面那个引擎开关会是"未运行"，
+                   * 那不是坏了，是这个设置的结果。不给这句会让人以为引擎自己挂了。
+                   */
+                  remoteOwnerNow === 'sayall'
+                    ? h('div', { className: 'dsmr-note dsmr-tiny', 'data-dsmr-owner-hint': 'sayall' },
+                      '整台让给 SayAll：引擎已停，DSH 不注入任何键。想用 DSH 就把它勾回来。')
+                    : null,
+                  ownerMsg === null ? null
+                    : h('div', { className: 'dsmr-note dsmr-tiny', 'data-dsmr-owner-msg': '1' }, ownerMsg),
+                  /*
+                   * 只开一个时如实标注：两个是一对，单个开着遥控器不会有效果。
+                   * **不偷偷帮你打开另一个** —— 但也不能让你对着一个"有绿有灰"的界面猜。
+                   */
+                  bridge !== null && bridge !== undefined && bridge.collector === true && bridge.engine !== true
+                    ? h('div', { className: 'dsmr-note dsmr-tiny', 'data-dsmr-couple': 'collector-only' },
+                      '引擎关了 → 按键不会生效')
+                    : null,
+                  bridge !== null && bridge !== undefined && bridge.engine === true && bridge.collector !== true
+                    ? h('div', { className: 'dsmr-note dsmr-tiny', 'data-dsmr-couple': 'engine-only' },
+                      '采集器关了 → 引擎收不到按键')
+                    : null,
+                  childMsg === null ? null
+                    : h('div', { className: 'dsmr-note dsmr-tiny', 'data-dsmr-childmsg': '1' }, childMsg)) : null,
                 /* VB-CABLE：设备名 / 方向 / 状态 / 序号 */
                 row.key === 'cable' ? h('div', { className: 'dsmr-kvlist' },
                   kv('设备', dev === null ? null : dev.name),
@@ -2284,14 +2422,16 @@ window.__ModuleLoader__.load({
           title: () => PANEL_TITLE,
           guide: [{
             id: 'mi-remote',
-            // ★★ 2026-10-15 改 31.5 → 36：右侧栏指南页的统一顺序为
+            // ★★ 2026-10-15 改 31.5 → 36（用户裁定）：右侧栏指南页的统一顺序为
             //   **工作台 31 → 驾驶舱 32 → 坐标系 33 → 工程图 34 → 建模中心 35 → 遥控器 36**。
-            //   旧值 31.5 = 「驾驶舱之后、坐标系之前」，已被取代 —— 遥控器现在排在**末位**。
+            //   旧值 31.5 = 「驾驶舱之后、坐标系之前」（2026-10-08 那次裁定），已被本次取代 ——
+            //   遥控器现在排在**末位**。
             // 官方按 order 升序排（tab-registry 的 guideEntries.sort），order 允许小数；
             // 现在六个入口各占一个互不相同的整数位（不许并列：并列会让顺序变成"看注册先后"）。
             // ⚠️ 这条只对**右侧栏指南页**成立：那里的每张卡是各自独立的注册。
             //    左侧栏底部那几行是 workdesktop **一个组件内部**渲染的，
-            //    跨插件无法插进它们中间 —— 两边必须同序。
+            //    跨插件无法插进它们中间 —— 它那边的顺序在 workdesktop 的 WORKSPACES 数组里，
+            //    两处必须同序（现已同为「工作台→驾驶舱→坐标系→工程图→建模中心→遥控器」）。
             order: 36,
             title: () => PANEL_TITLE,
             description: () => (zh

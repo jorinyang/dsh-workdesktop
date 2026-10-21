@@ -77,7 +77,9 @@ window.__ModuleLoader__.load({
           kind: PANEL_ID,
           title: () => '建模中心',
           guide: [{
-            id: 'modeling', order: 41,
+            // ★ 2026-10-15 改 41 → 35（按用户裁定的统一顺序：
+            //   工作台 31 → 驾驶舱 32 → 坐标系 33 → 工程图 34 → **建模中心 35** → 遥控器 36）。
+            id: 'modeling', order: 35,
             title: () => '建模中心',
             description: () => '数据/服务架构与方法论建模（五层画布）',
             // 指南页入口卡上的图标（官方 IconProps：{size, className}）——没给的话官方画方块占位符。
