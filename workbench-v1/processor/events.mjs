@@ -351,6 +351,14 @@ export function buildEvents({ day = null, now = Date.now(), withCache = true, li
 
   const events = groups.slice(0, limit).map((g) => {
     const ev = makeEvent({ day: targetDay, convs: g, msgsById, minutes: [], docsByEvent, contextByEvent, clustered });
+    // ★ 事件级上下文（第二层聚类顺带产出的那句"这件事在讲什么"）优先于会话级拼接。
+    //   规范 3.4：事件级总结**由聚类时产出**，不单独立层 —— 所以它只从缓存里来。
+    const evCtx = cache?.contextByEvent?.[ev.id];
+    if (evCtx) ev.context = [{ at: cache.generatedAt ?? null, text: String(evCtx), level: 'event' }];
+    // 标题：模型给了就用模型的（它知道整件事在讲什么），没给就用会话名拼
+    const asg = (cache?.assignments ?? []).find((a) => a.eventKey === ev.id);
+    if (asg && asg.title) ev.title = asg.title;
+    if (asg && asg.relation && asg.relation !== 'none') ev.relation = asg.relation;
     return ev;
   });
 
@@ -400,6 +408,168 @@ export function recentDays({ limit = 14, now = Date.now() } = {}) {
   const rows = store.list({ type: 'message' }) ?? [];
   const days = [...new Set(rows.map((e) => dayOf(e._at)))].sort().reverse();
   return days.slice(0, limit);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 第二层：每小时聚类（规范第八节）
+//
+// 输入：当天 0:00 到现在的**全部会话**（会话级上下文总结有就读，没有就用会话摘要——
+//   实测 2026-10-21 那份缓存是**空的**（0 条），所以必须有这条退路，否则第二层永远没法跑）。
+// 输出：**每件事** —— 标题 + 含哪几个会话 + 一句话上下文。
+//
+// 为什么让模型**一次同时给"分件"和"上下文"**：
+//   规范 3.4 说"事件级总结由聚类时顺带产出，不单独立层" —— 拆两次调用既慢一倍，
+//   又会出现"分件说这是一件事、总结却按另一批会话写"的不一致。
+// ══════════════════════════════════════════════════════════════════════════════
+
+/** 把当天会话压成给模型看的清单（键用 C1…Cn，短、好引用，也省 token） */
+export function buildClusterItems(convs, { maxSamples = 2 } = {}) {
+  return (convs ?? []).map((c, i) => ({
+    key: `C${i + 1}`,
+    convId: c.id,
+    time: c.time ?? '',
+    channel: c.channel ?? '',
+    sender: c.sender ?? '',
+    count: c.count ?? 0,
+    summary: String(c.lastSummary ?? '').slice(0, 160),
+    samples: sampleLines(c.samples ?? [], maxSamples).map((s) => `${s.time} ${s.sender}：${s.text}`),
+  }));
+}
+
+export function buildClusterPrompt({ day, items }) {
+  const lines = [];
+  lines.push('你在帮我把一天的聊天记录整理成「事件」。');
+  lines.push('');
+  lines.push('**事件的判定（必须照这个来）**：');
+  lines.push('一、同一件事可能分散在**不同会话**里 —— 比如先在内部单聊里定了对外说法，再去客户群里讲；');
+  lines.push('   这种要合成一件事，**并标出哪一段是「前因」、哪一段是「对外」**。');
+  lines.push('二、跨过午夜（晚上 23 点聊到次日 1 点）算同一件，归**开始那天**。');
+  lines.push('三、**明确指向不同客户/不同项目**的两段，绝不许合并。');
+  lines.push('四、**没有把握就单独成件**。宁可多一件，不要把两件事糊成一件。');
+  lines.push('');
+  lines.push(`**要处理的会话（${day}）**：`);
+  for (const it of items) {
+    lines.push(`${it.key}｜${it.time}｜${it.channel}｜${it.sender}｜${it.count} 条｜${it.summary}`);
+    for (const s of it.samples) lines.push(`    · ${s}`);
+  }
+  lines.push('');
+  lines.push('**输出格式**：只输出一个 JSON 数组，不要解释、不要代码围栏。每一项形如');
+  lines.push('{"keys":["C1","C3"],"title":"不超过 18 字的标题","context":"不超过 80 字的这件事在讲什么","relation":"none|同源|因果|承接"}');
+  lines.push('要求：**每个 C 恰好出现一次**；数组按时间先后排；title 用中文写事，不要写成人名堆砌。');
+  return lines.join('\n');
+}
+
+/** 解析模型回执 —— 容错但**不编**：解析不出来就返回 null（调用方退回一层） */
+export function parseClusterReply(text) {
+  const s = String(text ?? '');
+  const i = s.indexOf('[');
+  const j = s.lastIndexOf(']');
+  if (i < 0 || j <= i) return null;
+  let arr;
+  try { arr = JSON.parse(s.slice(i, j + 1)) } catch { return null }
+  if (!Array.isArray(arr) || !arr.length) return null;
+  const out = [];
+  for (const x of arr) {
+    if (!x || typeof x !== 'object') return null;
+    const keys = Array.isArray(x.keys) ? x.keys.map((k) => String(k)) : null;
+    if (!keys || !keys.length) return null;
+    out.push({
+      keys,
+      title: String(x.title ?? '').trim().slice(0, 40),
+      context: String(x.context ?? '').trim().slice(0, 200),
+      relation: String(x.relation ?? 'none'),
+    });
+  }
+  return out;
+}
+
+/**
+ * 跑一轮当天聚类，写进缓存。
+ *
+ * @param {{day?:string, now?:number, modelFn?:Function|null, save?:boolean}} o
+ * @returns {Promise<{ok:boolean, day:string, events:number, why:string|null, clusters:number}>}
+ */
+export async function clusterDay({ day = null, now = Date.now(), modelFn = null, save = true, convs: convsIn = null } = {}) {
+  const targetDay = day || dayOf(now);
+  // ⚠️ `convs` 可注入：自检要用**固定的会话夹具**，不能依赖"这台机器今天恰好有会话"。
+  //   实测踩到：全套里前面的组把输出目录指到临时位置 ⇒ 那天 0 个会话 ⇒
+  //   `clusterDay` 在调模型**之前**就退出了，于是"模型抛错要退回一层"那条根本走不到，
+  //   单独跑能过、全套里变红。**检查不能依赖外部状态**。
+  let convs;
+  if (Array.isArray(convsIn)) {
+    convs = convsIn;
+  } else {
+    const cv = conversations({ tab: 'all', day: targetDay, limit: 1000, now });
+    convs = (cv.list ?? []).filter((c) => String(c.day ?? '') === targetDay);
+  }
+  if (!convs.length) {
+    const doc = { day: targetDay, generatedAt: now, clusterOk: false, why: '这一天没有会话', assignments: [], docsByEvent: {} };
+    if (save) saveDay(targetDay, doc);
+    return { ok: false, day: targetDay, events: 0, clusters: 0, why: doc.why };
+  }
+
+  // 会话级上下文（有就带上，作为"第三层"输入；没有就靠摘要 —— 见顶部注释）
+  let ctxCache = {};
+  try { ctxCache = (await import('./conv-context.mjs')).loadCache() ?? {} } catch { ctxCache = {} }
+  const items = buildClusterItems(convs.map((c) => {
+    const got = ctxCache[c.id];
+    const ctxText = got && got.ok === true ? String(got.text ?? '') : '';
+    // 上下文比摘要更能说明"这在讲什么"，有就拼到摘要前面（截断，控制 token）
+    return { ...c, lastSummary: (ctxText ? `【上下文】${ctxText.slice(0, 120)}｜` : '') + String(c.lastSummary ?? '') };
+  }));
+
+  const prompt = buildClusterPrompt({ day: targetDay, items });
+  const callOnce = async (p) => {
+    if (modelFn) return modelFn(p);
+    // ★ 2026-10-21 实测后改：**不走 `runModelInWorker`**。
+    //   真机跑今天这一轮，worker 那条路 94.8 秒后回 `模型无输出`（空答复），
+    //   而同一台机器上 `runModelViaFile` 4.1 秒就正常返回。
+    //   ⇒ 这里直接走 `runModelViaFile`（多行提示词必须走文件，不能用 `--message`）。
+    //   ⚠️ 它**不占线程池**，会按住事件循环一两分钟 —— 对"每小时一轮的后台任务"可以接受；
+    //     若哪天要在请求路径上跑，必须改回 worker。
+    const { runModelViaFile } = await import('./analyze.mjs');
+    return runModelViaFile(p, { timeoutMs: 240000 });
+  };
+
+  let reply;
+  try { reply = await callOnce(prompt) } catch (e) { reply = { ok: false, why: String(e?.message ?? e) } }
+  const parsed = reply && reply.ok === true ? parseClusterReply(reply.text) : null;
+
+  if (!parsed) {
+    // ★ 规范 8.2：模型没答 ⇒ **退回一层**并如实标记，不编事件
+    const why = reply && reply.ok === false ? `模型调用失败：${String(reply.why ?? '').slice(0, 120)}` : '模型回执解析不出 JSON ⇒ 退回一层（不编事件）';
+    const doc = { day: targetDay, generatedAt: now, clusterOk: false, why, assignments: [], docsByEvent: {} };
+    if (save) saveDay(targetDay, doc);
+    return { ok: false, day: targetDay, events: convs.length, clusters: 0, why };
+  }
+
+  // 键 → 会话；**校验每个 C 恰好用一次**，重复/未知键一律丢弃（不静默改结果）
+  const byKey = new Map(items.map((it) => [it.key, it]));
+  const used = new Set();
+  const assignments = [];
+  const contextByEvent = {};
+  for (const p of parsed) {
+    const ids = [];
+    for (const k of p.keys) {
+      const it = byKey.get(k);
+      if (!it || used.has(k)) continue;
+      used.add(k); ids.push(it.convId);
+    }
+    if (!ids.length) continue;
+    const evId = eventIdOf(targetDay, ids);
+    assignments.push({ eventKey: evId, convIds: ids, title: p.title || null, relation: p.relation });
+    if (p.context) contextByEvent[evId] = p.context;
+  }
+  // 模型漏掉的会话 ⇒ 各自单成一件（**不许消失**：宁可多一件，也不能让消息没地方去）
+  for (const it of items) {
+    if (used.has(it.key)) continue;
+    const evId = eventIdOf(targetDay, [it.convId]);
+    assignments.push({ eventKey: evId, convIds: [it.convId], title: null, relation: 'none' });
+  }
+
+  const doc = { day: targetDay, generatedAt: now, clusterOk: true, why: null, assignments, contextByEvent, docsByEvent: {} };
+  if (save) saveDay(targetDay, doc);
+  return { ok: true, day: targetDay, events: assignments.length, clusters: parsed.length, why: null };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -495,6 +665,61 @@ export async function selfTest() {
     chk('EVT-F1', '★ 负向：乱写的 id ⇒ 返回 null（不抛错、不返回空壳）', eventById('乱写') === null, '');
   }
 
+  // ── 第二层：聚类（2026-10-21 加）────────────────────────────────────────────
+
+  // EVT-G 提示词：必须把"同一件事可能跨会话""跨午夜""不同客户不许合"这三条写进去
+  {
+    const items = buildClusterItems([
+      { id: 'a', time: '09:00', channel: '钉钉', sender: '甲', count: 3, lastSummary: '内部定口径', samples: [] },
+      { id: 'b', time: '10:00', channel: '钉钉', sender: '乙', count: 2, lastSummary: '客户群对外', samples: [] },
+    ]);
+    const p = buildClusterPrompt({ day: '2026-10-21', items });
+    chk('EVT-G1', '★ 聚类提示词带上三条硬规矩（跨会话同源 / 跨午夜 / 不同客户不许合）',
+      p.includes('不同会话') && p.includes('跨过午夜') && p.includes('绝不许合并'), '');
+    chk('EVT-G2', '★ 提示词给每个会话一个短键（C1/C2），并要求每个键恰好用一次',
+      p.includes('C1｜') && p.includes('C2｜') && p.includes('每个 C 恰好出现一次'), '');
+    chk('EVT-G3', '★ 提示词要求输出 JSON 数组（便于解析，不靠自然语言猜）',
+      p.includes('只输出一个 JSON 数组') && p.includes('"keys"'), '');
+  }
+
+  // EVT-H 回执解析：容忍代码围栏 / 前后废话；**解析不出返回 null**
+  {
+    const ok = parseClusterReply('好的，结果如下：\n```json\n[{"keys":["C1","C2"],"title":"方案对齐","context":"内部定了口径再去客户群说"}]\n```\n以上。');
+    chk('EVT-H1', '★ 回执带代码围栏与前后废话也能解析', !!ok && ok.length === 1 && ok[0].keys.length === 2 && ok[0].title === '方案对齐',
+      JSON.stringify(ok).slice(0, 100));
+    chk('EVT-H2', '★ 负向：不是 JSON / 空数组 ⇒ 返回 null（不编事件）',
+      parseClusterReply('模型说它不知道怎么分') === null && parseClusterReply('[]') === null && parseClusterReply('') === null, '');
+    chk('EVT-H3', '★ 负向：数组里缺 keys ⇒ 返回 null（形状不对就不认）',
+      parseClusterReply('[{"title":"只有标题"}]') === null, '');
+  }
+
+  // EVT-I 聚类失败 ⇒ 退回一层且**标记未聚类**（规范 8.2 的核心）
+  // ⚠️ 用**注入的会话夹具**，不依赖真实数据（见 `clusterDay` 里 `convs` 参数的注释）。
+  {
+    const FX = [
+      { id: '2026-10-21__cid:fx1', day: '2026-10-21', time: '09:00', channel: '钉钉', sender: '甲', count: 2, lastSummary: '内部定口径', state: 'pending', ids: ['m1'] },
+      { id: '2026-10-21__cid:fx2', day: '2026-10-21', time: '10:00', channel: '钉钉', sender: '乙', count: 2, lastSummary: '客户群对外', state: 'pending', ids: ['m2'] },
+    ];
+    const bad = await clusterDay({ day: '2026-10-21', convs: FX, modelFn: async () => ({ ok: true, text: '我不知道' }), save: false });
+    chk('EVT-I1', '★★ 模型回执解析不出 ⇒ clusterOk=false 且写明原因（不编事件）',
+      bad.ok === false && typeof bad.why === 'string' && bad.why.length > 0, String(bad.why).slice(0, 80));
+    const thrown = await clusterDay({ day: '2026-10-21', convs: FX, modelFn: async () => { throw new Error('模型超时') }, save: false });
+    chk('EVT-I2', '★ 模型抛错也退回一层（不让异常冒到调用方）',
+      thrown.ok === false && /模型调用失败/.test(String(thrown.why)), String(thrown.why).slice(0, 80));
+  }
+
+  // EVT-J 聚类成功：分件与"漏掉的会话各自成件"
+  {
+    const FX = [
+      { id: '2026-10-21__cid:fx1', day: '2026-10-21', time: '09:00', channel: '钉钉', sender: '甲', count: 2, lastSummary: '内部定口径', state: 'pending', ids: ['m1'] },
+      { id: '2026-10-21__cid:fx2', day: '2026-10-21', time: '10:00', channel: '钉钉', sender: '乙', count: 2, lastSummary: '客户群对外', state: 'pending', ids: ['m2'] },
+    ];
+    const fake = async () => ({ ok: true, text: '[{"keys":["C1"],"title":"聚类标题","context":"这件事在讲什么"}]' });
+    const r = await clusterDay({ day: '2026-10-21', convs: FX, modelFn: fake, save: false });
+    chk('EVT-J1', '★ 聚类成功：模型只点了一组，**漏掉的那个会话也各自成件**（不消失）',
+      r.ok === true && r.events === 2 && r.clusters === 1, `事件 ${r.events} · 分件 ${r.clusters}`);
+  }
+
   const pass = out.filter((x) => x.ok).length;
   return { pass, fail: out.length - pass, details: out };
 }
@@ -510,6 +735,14 @@ if (__isMain) {
     process.exit(r.fail === 0 ? 0 : 1);
   }
   const day = argv.find((a) => /^\d{4}-\d{2}-\d{2}$/.test(a)) ?? dayOf(Date.now());
+  // ★ 2026-10-21 加：`--enrich` = 跑第二层（每小时那一轮就调这个）
+  if (argv.includes('--enrich')) {
+    const r = await clusterDay({ day, save: true });
+    console.log(r.ok
+      ? `  聚类成功：${day} · ${r.events} 件（模型分出 ${r.clusters} 组）`
+      : `  聚类未成：${day} · ${r.why}`);
+    process.exit(r.ok ? 0 : 1);
+  }
   const r = buildEvents({ day, withCache: !argv.includes('--no-cache') });
   console.log(`\n# ${day} · ${r.counts.events} 件 · 会话 ${r.counts.convs} · 消息 ${r.counts.messages} · 带文档 ${r.counts.withDocs} · 带听记 ${r.counts.withMinutes}`);
   if (r.why) console.log(`  （${r.why}）`);
