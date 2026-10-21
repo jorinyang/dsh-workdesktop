@@ -663,9 +663,9 @@ await test('C-16c 没有可落的会话面时不许假装打开（openTab 抛 �
 await test('C-16d 点名要开的那一套不能丢（那一栏是这一刻才挂载、收不到那条事件）', () => {
   const ctx = { get: () => ({ openTab: () => { } }) }
   assert.equal(T.takePendingSetName(), '', '起手不该欠着名字')
-  assert.equal(T.openCard(ctx, '中艺 · 场景坐标系'), true)
+  assert.equal(T.openCard(ctx, '示例组织丙 · 场景坐标系'), true)
   // 卡片挂载时取走这个名字（否则它会停在空白/上一次那套）
-  assert.equal(T.takePendingSetName(), '中艺 · 场景坐标系')
+  assert.equal(T.takePendingSetName(), '示例组织丙 · 场景坐标系')
   // 取过一次就清空，不会反复覆盖用户后来手选的那套
   assert.equal(T.takePendingSetName(), '')
   assert.equal(T.openCard(ctx), true)

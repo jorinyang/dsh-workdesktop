@@ -7,8 +7,8 @@
 与官方那两张卡同一形状语法）；tab 标题条与左侧栏那几处仍是单色 `currentColor` 那枚。
 
 参考实现：
-[项目价值坐标（2D）](https://gzzhike.cn/web-spa/zhongyi-value-map/index.html) ·
-[场景坐标系（3D）](https://gzzhike.cn/web-spa/zhongyi-coord3d/scene.html)
+[项目价值坐标（2D）](https://example.com/web-spa/zhongyi-value-map/index.html) ·
+[场景坐标系（3D）](https://example.com/web-spa/zhongyi-coord3d/scene.html)
 —— 三轴 0–5、点云、点击看点、选中画**坐标盒**（三条阶梯 + 三条闭合棱，全红虚线）这套
 视觉语言直接沿用；3D 由自绘投影实现（不引 three.js，卡片里不带 1.3MB 依赖）。
 
