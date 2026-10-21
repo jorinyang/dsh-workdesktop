@@ -52,26 +52,46 @@ export async function renderAll({ api = '/workdesktop/api/v1' } = {}) {
   //   实测：面板里看到的是"消息列表 · 暂无"，而库里明明有几百条 —— 看着像没数据。
   //   ⇒ 这里读一次会话聚合交给渲染层。**只喂消息页**（另外三页的静态渲染本来就有数据路径）。
   let messagesSnap = null;
+  // ★★ 2026-10-21 改：消息页已升级为**事件页**，快照改喂事件聚合。
+  //   `pageMessages`（旧的会话列表渲染器）保留不动，但不再是 `messages` 这个 key 的渲染器。
+  //   ⚠️ 快照仍要放在 `snap` 这一层（`renderPage` 读的是 `opt.snap.events`）——
+  //     第一版曾把快照传成 `opt.messages`（外面少包一层）⇒ 页面显示"暂无"、而统计卡有数，自相矛盾。
+  let eventsSnap = null;
+  try {
+    const ev = await import('../processor/events.mjs');
+    const day = null;                       // null = 今天
+    const r = ev.buildEvents({ day });
+    eventsSnap = { events: r.events, counts: r.counts, day: r.day, why: r.why, clustered: r.clustered, days: ev.recentDays({ limit: 14 }) };
+  } catch (e) {
+    console.log(`注意：事件聚合读不到（事件页将为空）：${String(e && e.message).slice(0, 120)}`);
+  }
+  // 旧的会话快照仍算一份：`/pages/messages` 那条路由还在（回退用），页面也能随时切回旧渲染器
   try {
     const { conversations } = await import('../processor/conversations.mjs');
     const cv = conversations({ tab: 'all' });
     // 形状与接口一致（`pageMessages` 认 `counts` / `list`）
     messagesSnap = { counts: cv.counts, list: cv.list, tab: cv.tab, view: 'conversations' };
   } catch (e) {
-    console.log(`注意：会话聚合读不到（消息页将为空）：${String(e && e.message).slice(0, 120)}`);
+    console.log(`注意：会话聚合读不到（回退渲染器将为空）：${String(e && e.message).slice(0, 120)}`);
   }
   const written = [];
   for (const p of PAGE_DEFS) {
     const f = path.join(OUT, `${p.key}.html`);
     // api 注入 ⇒ 页面可点（详情浮层/新增）；不起服务时页面仍能静态看，只是按钮点了会报"取详情失败"
-    // ⚠️ 快照要放在 **`snap` 这一层**（`renderPage` 读的是 `opt.snap.messages`）。
+    // ⚠️ 快照要放在 **`snap` 这一层**（`renderPage` 读的是 `opt.snap.*`）。
     //   第一版我传成了 `opt.messages`（外面少包一层）⇒ 渲染层取不到 ⇒ 消息页显示"暂无"，
     //   而统计卡却是有数的（那条路走的是另一份数据）—— **页面自相矛盾**，正是这次要修的那类。
-    const snap = p.key === 'messages' && messagesSnap ? { messages: messagesSnap } : undefined;
+    //   ★ 2026-10-21：`messages` 这个 key 现在渲染的是**事件页**，所以喂事件快照；
+    //     会话快照一并带上（旧渲染器若被切回来仍能用）。
+    //     ⚠️ `days` 要放在 **snap 顶层** —— `pageEvents` 读 `snap.days` 画日期切换条，
+    //       塞进 `snap.events` 里面它读不到（那样的表现是"日期条消失"，不报错，很难发现）。
+    const snap = p.key === 'messages' && eventsSnap
+      ? { events: eventsSnap, days: eventsSnap.days, messages: messagesSnap }
+      : undefined;
     fs.writeFileSync(f, renderPage(p.key, { switches, status, statusDetail, api, snap }), 'utf8');
     written.push(f);
   }
-  return { written, switches, switchesOk: ok, updatedAt, why: why ?? null, probes, api, conversations: messagesSnap?.counts ?? null };
+  return { written, switches, switchesOk: ok, updatedAt, why: why ?? null, probes, api, conversations: messagesSnap?.counts ?? null, events: eventsSnap?.counts ?? null };
 }
 
 const __isMain = (() => { try { const entry = process.argv[1]; return !!entry && import.meta.url === pathToFileURL(entry).href } catch { return false } })();

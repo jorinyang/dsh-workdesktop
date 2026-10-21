@@ -37,6 +37,10 @@ import { summarizeContext, ctxSummaryCached } from './context-summary.mjs';
 //   会话聚合是**纯函数**（无 IO），静态 import 进来 —— 读路由那条 if 链是同步的，
 //   在那里写 `await import()` 会直接语法错（本文件已有一次同样教训）。
 import { conversations as conversationsOf, one as conversationOne, channelName as channelNameOf } from '../processor/conversations.mjs';
+// ★★ 2026-10-21 加：**事件聚合**（页面层再上一层视角：一堆会话算不算"同一件事"）。
+//   规范：`Research/Output/个人工作台/02-规范与标准/SPEC_事件聚合规范.md`
+//   第一层是纯函数、没有 IO ⇒ 静态 import 即可（与 conversations 同理，不走动态 import）。
+import * as eventsApi from '../processor/events.mjs';
 import { loadCache as loadConvCache, convKey as convCacheKey, fingerprint as convFingerprint } from '../processor/conv-context.mjs';
 // ★ 2026-10-14 加（用户第 5.1 / 6.1 条）：**把一段话收成"一句话"** —— 消息转待办/转日程的标题用它。
 //   原来那两处的标题是 `summary ?? raw` 再截 80 字，而 `summary` 本身就是原文截断
@@ -445,8 +449,16 @@ export function handler(req, res) {
           view: 'conversations',
         });
       }
+      // ★★ 2026-10-21 加：**事件页**（消息页升级后的那一层）。
+      //   与 `messages` 并列、不替换 —— 旧的路由留着（页面万一出问题还能退回会话列表）。
+      //   数据全来自 `processor/events.mjs#buildEvents()`：第一层是纯函数，
+      //   第二层（每小时聚类）若该天缓存里有结果就一并生效，没有就如实标 `clustered:false`。
+      if (key === 'events') {
+        const day = u.searchParams.get('day') || null;
+        return json(res, 200, eventsApi.buildEvents({ day }));
+      }
       const fn = pages[key === 'overview' ? 'overview' : key];
-      if (typeof fn !== 'function') return json(res, 404, { error: `没有这个页面数据：${key}`, available: ['overview', 'messages', 'todos', 'schedules', 'notes'] });
+      if (typeof fn !== 'function') return json(res, 404, { error: `没有这个页面数据：${key}`, available: ['overview', 'messages', 'events', 'todos', 'schedules', 'notes'] });
       const data = fn();
       // ★ 日程页额外带**密度热力图**（需求 3.3.5）：左侧月历热力 + 右侧动态分析。
       //   放在这里而不是塞进 `schedules()`，是因为它在语义上是"日程页的第二块"，不是日程列表的一部分。

@@ -23,7 +23,9 @@ export const APP_NAME = '工作台';
 
 export const PAGE_DEFS = Object.freeze([
   { key: 'overview', label: '今日总览' },
-  { key: 'messages', label: '消息' },
+  // ★★ 2026-10-21（用户原话）：「工作台前端页面-消息页面我想升级为事件页面」。
+  //   nav 上写「事件」；key 仍是 `messages`（文件名与面板路由不动，见文件末 PAGES 的注释）。
+  { key: 'messages', label: '事件' },
   { key: 'todos', label: '待办' },
   { key: 'schedules', label: '日程' },
   { key: 'notes', label: '笔记' },
@@ -133,6 +135,46 @@ export function stylesheet() {
   //   样式上：小一号、字色淡、**没有下边框拖尾**（它是标题不是数据），
   //   并且 `user-select: none`（列名不该被当内容选中、也避免被复制走）。
   s.push('.list .jl-head { color: var(--c-mute); font-size: 12px; padding-bottom: var(--s-xs); border-bottom: 1px solid var(--c-hairline); user-select: none; }');
+
+  // ══ 事件卡片（2026-10-21 加：消息页升级成事件页）══════════════════════════════
+  //   为什么用原生 `<details>`：折叠/展开**不需要一行 JS** —— 静态页也能点开。
+  //   页面在面板里是"服务端渲染好的静态文件"，少一处 JS 就少一处"点了没反应"的可能
+  //   （本项目在列表点击上栽过一次：监听没绑上，连报错都没有）。
+  s.push('.evt-cards { display: flex; flex-direction: column; gap: var(--s-sm); }');
+  s.push('.evt { border: 1px solid var(--c-hairline); border-radius: var(--r-md); background: var(--c-surface); }');
+  s.push('.evt > summary { cursor: pointer; padding: var(--s-sm) var(--s-md); display: flex; gap: var(--s-md); align-items: baseline; flex-wrap: wrap; }');
+  s.push('.evt > summary::-webkit-details-marker { display: none; }');
+  s.push('.evt > summary::before { content: "▸"; color: var(--c-mute); font-size: 12px; margin-right: 2px; }');
+  s.push('.evt[open] > summary::before { content: "▾"; }');
+  s.push('.evt .evt-time { color: var(--c-mute); font-size: 13px; min-width: 106px; font-variant-numeric: tabular-nums; }');
+  s.push('.evt .evt-title { font-size: 14px; font-weight: var(--w-medium); color: var(--c-ink); flex: 1; min-width: 180px; }');
+  s.push('.evt .evt-badges { color: var(--c-mute); font-size: 12px; display: flex; gap: var(--s-sm); flex: none; }');
+  s.push('.evt .evt-badges b { color: var(--c-body-mid); font-weight: var(--w-medium); }');
+  s.push('.evt .evt-body { border-top: 1px solid var(--c-hairline); padding: var(--s-sm) var(--s-md) var(--s-md); display: flex; flex-direction: column; gap: var(--s-md); }');
+  s.push('.evt .evt-sec h3 { font-size: 12px; color: var(--c-mute); font-weight: var(--w-medium); margin: 0 0 var(--s-xs); letter-spacing: .02em; }');
+  s.push('.evt .evt-convs { list-style: none; padding: 0; margin: 0; }');
+  s.push('.evt .evt-convs > li { padding: var(--s-xs) 0; border-bottom: 1px dashed var(--c-hairline); cursor: pointer; }');
+  s.push('.evt .evt-convs > li:last-child { border-bottom: 0; }');
+  s.push('.evt .evt-convs > li:hover { background: var(--c-hover, rgba(0,0,0,.02)); }');
+  s.push('.evt .evt-convs .ec-head { display: flex; gap: var(--s-sm); font-size: 13px; align-items: baseline; }');
+  s.push('.evt .evt-convs .ec-head .ec-n { color: var(--c-mute); font-size: 12px; }');
+  s.push('.evt .evt-convs .ec-s { font-size: 12px; color: var(--c-body-mid); padding-left: var(--s-md); line-height: 1.6; }');
+  s.push('.evt .evt-convs .ec-s .ec-t { color: var(--c-mute); margin-right: 6px; font-variant-numeric: tabular-nums; }');
+  s.push('.evt .evt-ctx { font-size: 13px; color: var(--c-body-mid); line-height: 1.7; white-space: pre-wrap; }');
+  s.push('.evt .evt-ctx .evt-ctx-at { color: var(--c-mute); font-size: 12px; }');
+  s.push('.evt .evt-doc, .evt .evt-min { list-style: none; padding: 0; margin: 0; font-size: 13px; }');
+  s.push('.evt .evt-doc li, .evt .evt-min li { padding: 3px 0; display: flex; gap: var(--s-sm); align-items: baseline; }');
+  s.push('.evt .evt-doc .tag, .evt .evt-min .tag { flex: none; font-size: 11px; color: var(--c-mute); border: 1px solid var(--c-hairline); border-radius: 3px; padding: 0 4px; }');
+  s.push('.evt .evt-doc a, .evt .evt-min a { color: var(--c-primary); text-decoration: none; word-break: break-all; }');
+  s.push('.evt .evt-doc a:hover, .evt .evt-min a:hover { text-decoration: underline; }');
+  s.push('.evt .evt-empty { font-size: 12px; color: var(--c-mute); }');
+  s.push('.evt .evt-note { font-size: 12px; color: var(--c-mute); padding: 2px 0 var(--s-sm); }');
+  // 日期切换条（事件页顶部）：只列真有会话的那些天，当前日加粗
+  s.push('.evt-bar { display: flex; gap: var(--s-sm); align-items: baseline; flex-wrap: wrap; font-size: 13px; margin: 0 0 var(--s-sm); }');
+  s.push('.evt-bar .evt-bar-l { color: var(--c-mute); font-size: 12px; }');
+  s.push('.evt-bar a { color: var(--c-mute); text-decoration: none; padding: 1px 6px; border-radius: 3px; }');
+  s.push('.evt-bar a:hover { background: var(--c-hover, rgba(0,0,0,.04)); }');
+  s.push('.evt-bar b { color: var(--c-ink); font-weight: var(--w-medium); padding: 1px 6px; border-bottom: 2px solid var(--c-primary); }');
   s.push('.list .jl-head span { flex: none; }');
   // 表头前两格与数据行的 `.when` / `.who` 同宽（`li` 是 flex，靠 min-width 对齐）
   s.push('.list .jl-head span:nth-child(1) { min-width: 92px; }');
@@ -757,7 +799,123 @@ export function pageNotes(snap) {
     + listBlock('笔记列表', rows, '', { pageKey: 'notes', scroll: true, head: ['日期', '', '笔记概括', '来源'] });
 }
 
-export const PAGES = Object.freeze({ overview: pageOverview, messages: pageMessages, todos: pageTodos, schedules: pageSchedules, notes: pageNotes });
+/**
+ * **事件页**（2026-10-21：消息页升级成事件聚合页）。
+ *
+ * 规范：`Research/Output/个人工作台/02-规范与标准/SPEC_事件聚合规范.md`
+ *
+ * 四块内容按"读者先看什么"排：
+ *   ① 相关会话（带会话内的几条原文样例 —— 不是只有一个标题）
+ *   ② 相关上下文（会话级模型总结，已有的那个）
+ *   ③ 相关文档（**本地路径与线上链接分两列**，不假装它们配对 —— 规范 7.2）
+ *   ④ 相关听记（标题 + 时间 + 时长，点了跳原始地址）
+ *
+ * ⚠️ 折叠用原生 `<details>`：不依赖 JS。页面在面板里是服务端渲染好的静态文件，
+ *   少一处 JS 就少一处"点了没反应"的可能（这个项目在列表点击上栽过：监听没绑上、连报错都没有）。
+ *
+ * ⚠️ 会话行**不放在 `.jl-list` 里**：客户端脚本的主监听只取页面里**第一个** `.jl-list`，
+ *   多张卡片各带一个的话只有第一张能点。所以这里用 `.evt-convs`，由客户端另绑一条（见 client.mjs）。
+ */
+export function pageEvents(snap) {
+  const s = (snap && snap.events) || null;
+  const data = s || { events: [], counts: {}, day: '', why: '页面没有拿到事件数据（静态渲染时要由 preview.mjs 喂快照）', clustered: false };
+  const c = data.counts ?? {};
+  const cards = statCards([
+    ['事件', c.events ?? 0], ['会话', c.convs ?? 0], ['消息', c.messages ?? 0],
+    ['带文档', c.withDocs ?? 0], ['带听记', c.withMinutes ?? 0],
+  ]);
+
+  // 日期切换：**故意不做**（2026-10-21 实测后撤掉）。
+  //
+  //   原来这里有一排 `<a href="?day=YYYY-MM-DD">`。而面板里这条页面是**服务端渲染好的静态文件**
+  //   （`/workdesktop/api/yishu/messages` 直接读 `Other/data/workbench-v1/messages.html`）——
+  //   **查询串不会让它重渲染** ⇒ 那些链接点了毫无反应。
+  //   这正是这个项目反复栽的那类问题（列表点击没绑上、Tab 点了没反应），不留死控件。
+  //
+  //   要历史日期有两条路（都留给下一轮，不在这里硬塞）：
+  //     ① 接口已支持：`GET /pages/events?day=YYYY-MM-DD`（实测通过，见 `EVT-R5`）；
+  //     ② 页面上做客户端切换：把多天的卡片一起渲染进静态页、按 `data-day` 显隐。
+  //   现在如实说一句"这里只有今天"，比一个点不动的日期条诚实。
+  const dayBar = data.day
+    ? '<div class="evt-bar"><span class="evt-bar-l">日期</span><b aria-current="page">' + esc(data.day) + '</b>'
+      + '<span class="evt-bar-l">（历史日期走接口 /pages/events?day=，页面上还没做切换）</span></div>'
+    : '';
+
+  // 聚类状态如实说（规范 8.2）：没跑就说没跑，不装作已经聚好了
+  const note = data.why
+    ? '<div class="evt-note">' + esc(String(data.why)) + '</div>'
+    : '';
+
+  const cardsHtml = (data.events ?? []).map((ev) => {
+    // ── ① 相关会话 ──
+    const convs = (ev.conversations ?? []).map((cv) => {
+      const samples = (cv.samples ?? []).map((x) => '<div class="ec-s"><span class="ec-t">'
+        + esc(x.time) + '</span><span class="ec-who">' + esc(x.sender) + '：</span>' + esc(x.text) + '</div>').join('');
+      return '<li data-conv="1" data-id="' + esc(cv.id) + '" title="点开这条会话的完整内容（转待办 / 转日程 / 转笔记 都在里面）">'
+        + '<div class="ec-head"><span class="when">' + esc(cv.time) + '</span>'
+        + '<span class="who">' + esc(cv.channel) + ' · ' + esc(cv.sender) + '</span>'
+        + '<span class="ec-n">' + esc(String(cv.count ?? 0)) + ' 条</span></div>'
+        + samples
+        + '</li>';
+    }).join('');
+
+    // ── ② 相关上下文 ──
+    const ctx = (ev.context ?? []).length
+      ? ev.context.map((x) => '<div class="evt-ctx">'
+        + (x.at ? '<span class="evt-ctx-at">' + esc(String(x.at).slice(0, 16).replace('T', ' ')) + '</span> ' : '')
+        + esc(x.text) + '</div>').join('')
+      : '<div class="evt-empty">这条事件还没有上下文总结（会话级的每 15 分钟跑一轮，只算有变化的）</div>';
+
+    // ── ③ 相关文档（本地 / 线上分开） ──
+    const local = (ev.docs?.local ?? []);
+    const online = (ev.docs?.online ?? []);
+    const doc = (local.length || online.length)
+      ? '<ul class="evt-doc">'
+        + local.map((d) => '<li><span class="tag">本地</span><span>'
+          + esc(typeof d === 'string' ? d : String(d.path ?? '')) + '</span></li>').join('')
+        + online.map((u) => '<li><span class="tag">链接</span><a href="' + esc(u) + '" target="_blank" rel="noopener">'
+          + esc(u.length > 120 ? u.slice(0, 118) + '…' : u) + '</a></li>').join('')
+        + '</ul>'
+      : '<div class="evt-empty">这条事件里没有出现文档链接</div>';
+
+    // ── ④ 相关听记 ──
+    const mins = (ev.minutes ?? []);
+    const minHtml = mins.length
+      ? '<ul class="evt-min">' + mins.map((m) => '<li><span class="tag">听记</span>'
+        + (m.url
+          ? '<a href="' + esc(m.url) + '" target="_blank" rel="noopener">' + esc(m.topic) + '</a>'
+          : '<span>' + esc(m.topic) + '（没有跳转地址）</span>')
+        + '<span class="evt-ctx-at">' + esc([m.time, m.duration].filter(Boolean).join(' · ')) + '</span></li>').join('') + '</ul>'
+      : '<div class="evt-empty">这条事件附近没有听记</div>';
+
+    return '<details class="evt" data-event="' + esc(ev.id) + '">'
+      + '<summary><span class="evt-time">' + esc(ev.timeRange || '') + '</span>'
+      + '<span class="evt-title">' + esc(ev.title || '（无标题）') + '</span>'
+      + '<span class="evt-badges">'
+      + '<span>会话 <b>' + esc(String(ev.counts?.convs ?? 0)) + '</b></span>'
+      + '<span>文档 <b>' + esc(String(ev.counts?.docs ?? 0)) + '</b></span>'
+      + '<span>听记 <b>' + esc(String(ev.counts?.minutes ?? 0)) + '</b></span>'
+      + '</span></summary>'
+      + '<div class="evt-body">'
+      + '<section class="evt-sec"><h3>相关会话（' + esc(String((ev.conversations ?? []).length)) + '）</h3><ul class="evt-convs">' + convs + '</ul></section>'
+      + '<section class="evt-sec"><h3>相关上下文</h3>' + ctx + '</section>'
+      + '<section class="evt-sec"><h3>相关文档（本地 ' + esc(String(local.length)) + ' · 链接 ' + esc(String(online.length)) + '）</h3>' + doc + '</section>'
+      + '<section class="evt-sec"><h3>相关听记（' + esc(String(mins.length)) + '）</h3>' + minHtml + '</section>'
+      + '</div></details>';
+  }).join('');
+
+  const body = (data.events ?? []).length
+    ? '<div class="evt-cards">' + cardsHtml + '</div>'
+    : '<div class="evt-note">' + esc(String(data.why || '这一天没有事件')) + '</div>';
+
+  return '<div class="stats">' + cards + '</div>' + inlineForm('messages') + dayBar + note + body;
+}
+
+// ★★ 2026-10-21：`messages` 这个 key **保持不变**（文件名、导航链接、面板路由都还指着
+//   `messages.html` / `/pages/messages`），只把**渲染器**换成事件页 —— 这样万一事件页出问题，
+//   把 `pageEvents` 换回 `pageMessages` 就退回会话列表，不用动路由。
+//   `pageMessages` 保留导出（旧渲染器还在，可随时切回，也仍被自检引用）。
+export const PAGES = Object.freeze({ overview: pageOverview, messages: pageEvents, todos: pageTodos, schedules: pageSchedules, notes: pageNotes });
 
 /** 渲染整页：导航 + 内容 + 状态栏（三者在任何页面都在）
  *  opt.api 给了就注入客户端脚本（详情浮层 / 新增）—— 不接 API 时页面仍是纯静态可读的。 */
@@ -815,7 +973,34 @@ export function selfTest() {
     // ★★ 2026-10-14 改：夹具换成**会话形态**（用户把消息页改成会话列表了）。
     //   原来这里是消息形态（id/at/source/summary）⇒ 渲染层按会话取 `day`/`count`/`time` 都取不到，
     //   `SH-18` 当场变红。夹具跟着被改的东西走 —— 否则检查会一直守着已经不存在的形状。
+    // ★★ 2026-10-21 再改：消息页已升级为**事件页**，夹具补一份 `events`。
+    //   会话夹具 `messages` 仍留着：`pageMessages` 没删，随时能切回旧渲染器，它的自检还要用。
     messages: { counts: { pending: 2, toTodo: 1, toSchedule: 0, toNote: 1, replied: 3, total: 7 }, tab: 'all', list: [{ id: '2026-10-12__cid:demo', day: '2026-10-12', time: '00:39', at: Date.parse('2026-10-12T00:39:00+08:00'), channel: '钉钉', sender: '曹元庭', count: 3, lastSummary: '一句话概括', state: 'pending' }] },
+    events: {
+      day: '2026-10-12',
+      counts: { events: 1, convs: 1, messages: 3, pending: 1, withDocs: 1, withMinutes: 1 },
+      why: '这一天还没跑聚类（样例）',
+      clustered: false,
+      events: [{
+        id: 'evt_2026-10-12_2026-10-12__cid-demo',
+        day: '2026-10-12',
+        title: '曹元庭',
+        startAt: Date.parse('2026-10-12T09:00:00+08:00'),
+        endAt: Date.parse('2026-10-12T09:40:00+08:00'),
+        timeRange: '09:00–09:40',
+        conversations: [{
+          id: '2026-10-12__cid:demo', day: '2026-10-12', time: '09:00',
+          at: Date.parse('2026-10-12T09:00:00+08:00'), channel: '钉钉', sender: '曹元庭',
+          count: 3, lastSummary: '一句话概括', state: 'pending',
+          samples: [{ time: '09:00', sender: '曹元庭', text: '样例原文' }],
+        }],
+        context: [{ at: '2026-10-12T09:30:00+08:00', text: '样例上下文' }],
+        docs: { local: [], online: ['https://alidocs.dingtalk.com/i/nodes/demo'] },
+        minutes: [{ id: 'note_demo', topic: '样例听记', time: '2026-10-12 09:10', duration: '30 分钟', url: 'https://shanji.dingtalk.com/app/transcribes/demo' }],
+        counts: { convs: 1, messages: 3, docs: 1, minutes: 1 },
+        clustered: null, why: null,
+      }],
+    },
     // ★ 2026-10-14 给待办夹具补 `source` 与**可区分的** `executor`：
     //   原来只有 `executor: '我'`、**没有 source**（渲染成 undefined），
     //   于是"表头与数据错位"这类错**没有任何值可以拿去反查** —— 检查也就无从下手。
@@ -853,19 +1038,22 @@ export function selfTest() {
 
   chk('SH-16', '总览渲染出四个数字与三类提醒', home.indexOf('待完成待办') >= 0 && home.indexOf('重要日程') >= 0 && home.indexOf('逾期 / 临期任务') >= 0 && home.indexOf('长期未回复的信息') >= 0);
   chk('SH-17', '总览把逾期项标红（.overdue）', home.indexOf('class="overdue"') >= 0);
-  // ★★ 2026-10-14 改（用户原话：「消息列表应该改成**按照会话聚合的会话列表**」）：
-  //   这条原来守的是"消息页渲染出四个数与一句话概括"——那是**按条**的形态。
-  //   现在列表是**会话**，所以改守会话的形态：
-  //     ① 卡片上的五个数（含已转笔记）在；② 列名是用户点名的那六个字段（五列：日期/时间/来源/发信人/最新一条消息内容）；
-  //     ③ 行带 `data-conv`（客户端据此走会话详情，而不是逐条消息的详情）；
-  //     ④ 行首是**日期**（不是时间戳），且正文带条数前缀（"（N 条）"）。
-  chk('SH-18', '★★ 消息页是**会话列表**（列名＝用户点名的那几个 · 行可点进会话详情）', (function () {
+  // ★★ 2026-10-21 改（用户原话：「**消息页面我想升级为事件页面**，事件卡片内聚合相关会话
+  //   （以及会话内容）/ 相关上下文 / 相关文档 / 相关听记」）。
+  //   这条原来守的是"消息页是会话列表"（列名六个字段）—— 那是上一版的形态，现在页面换了。
+  //   **它红得对**：它守的东西确实不存在了。夹具跟着换，判据改成守新形态：
+  //     ① 有四张数卡（事件/会话/消息/带文档/带听记 里的几个）；
+  //     ② 每张事件卡片（`<details class="evt">`）里**四块齐全**（会话/上下文/文档/听记）；
+  //     ③ 会话行带 `data-conv`（点得动、走会话详情，转待办/日程/笔记还在那条路上）；
+  //     ④ 文档**本地与线上分开**（规范 7.2：两边没有共同 id，不假装配对）。
+  chk('SH-18', '★★ 消息页已是**事件卡片**（四块齐全 · 会话行可点 · 文档本地/线上分列）', (function () {
     const h = renderPage('messages', { snap: snap });
-    const hasCards = h.indexOf('待处理') >= 0 && h.indexOf('已转待办') >= 0 && h.indexOf('已转笔记') >= 0;
-    const cols = ['日期', '时间', '来源', '发信人', '最新一条消息内容'].every(function (c) { return h.indexOf('<span>' + c + '</span>') >= 0; });
+    const hasCards = h.indexOf('事件') >= 0 && h.indexOf('带文档') >= 0 && h.indexOf('带听记') >= 0;
+    const isEventCard = h.indexOf('<details class="evt"') >= 0;
+    const fourBlocks = ['相关会话（', '相关上下文', '相关文档（', '相关听记（'].every(function (k) { return h.indexOf(k) >= 0; });
     const rowIsConv = h.indexOf('data-conv="1"') >= 0;
-    const hasCountPrefix = /（\d+ 条）/.test(h);
-    return hasCards && cols && rowIsConv && hasCountPrefix;
+    const docSplit = h.indexOf('本地') >= 0 && h.indexOf('链接') >= 0;
+    return hasCards && isEventCard && fourBlocks && rowIsConv && docSplit;
   })());
   chk('SH-19', '待办页显示"距离截止时间"', renderPage('todos', { snap: snap }).indexOf('已逾期 3 天') >= 0);
   chk('SH-20', 'HTML 转义生效（注入尖括号不破页面）', (function () { const h = renderPage('notes', { snap: { notes: { counts: { total: 1, thisMonth: 1, tags: 0 }, list: [{ date: '2026-10-05', topic: '<script>x</script>', tags: [] }] } } }); return h.indexOf('&lt;script&gt;') >= 0 && h.indexOf('<script>x</script>') < 0; })());
@@ -891,13 +1079,16 @@ export function selfTest() {
 
   // ★ 列表项必须带 data-id（P1-6）：详情浮层按它取单条。
   //   旧做法按行序推断，页签一变就错位 ⇒ 这两条守着"id 真的写进 DOM 了"。
-  // ★★ 2026-10-14 改：消息页的行 id 现在是**会话 id**（`YYYY-MM-DD__cid:…`），
-  //   而且多一个 `data-conv="1"`（客户端据此走会话详情）。这条跟着改 ——
-  //   它守的是"**id 真的写进 DOM 了**、点得动"，与 id 具体长什么样无关。
+  // ★★ 2026-10-21 改：消息页换成事件页之后，会话行搬到了**卡片里的** `.evt-convs`。
+  //   为什么不能沿用原来的列表：客户端主监听只取**第一个** `.jl-list`，多张卡片会只有第一张能点
+  //   ⇒ 卡片里的会话列表改用专用类名 `.evt-convs`，由 client.mjs 另绑一条（逐个容器）。
+  //   这条守的是"**id 与 data-conv 真的写进 DOM 了**、点得动"，与它们外面裹着什么容器无关。
   const msgHtml = renderPage('messages', { snap: snap, api: '/workdesktop/api/v1' });
-  chk('SH-27', '★★ 会话列表行带 data-id + data-conv（点得动、且走会话详情）',
-    /<li data-id="[^"]+" data-state="[^"]*" data-conv="1"/.test(msgHtml) || /data-conv="1"/.test(msgHtml),
+  chk('SH-27', '★★ 事件卡片里的会话行带 data-id + data-conv（点得动、且走会话详情）',
+    /<li data-conv="1" data-id="[^"]+"/.test(msgHtml),
     (msgHtml.match(/<li[^>]*data-conv[^>]*>/) || ['无'])[0].slice(0, 120));
+  chk('SH-27b', '★ 事件页的会话列表**不叫** `.jl-list`（避开通用的主监听，由专用代码逐个绑）',
+    msgHtml.indexOf('class="evt-convs"') >= 0 && !/class="[^"]*jl-list[^"]*"[^>]*>\s*<li data-conv/.test(msgHtml), '');
   const ovHtml = renderPage('overview', { snap: snap, api: '/workdesktop/api/v1' });
   chk('SH-28', '★ 总览三类提醒带 data-id + data-go（可跳对应页面并开详情，需求 3.3.2）', /data-go="schedule"/.test(ovHtml) && /data-go="todo"/.test(ovHtml) && /data-go="message"/.test(ovHtml), (ovHtml.match(/<li[^>]*>/g) || []).slice(0, 3).join(' | '));
   chk('SH-29', '★ 负向对照：没有 id 的行不写 data-id（不编假 id）', (function () {

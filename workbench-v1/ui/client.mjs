@@ -580,6 +580,27 @@ export function clientScript(apiBase) {
   L.push('    });');
   L.push('  }');
   L.push('');
+  // ★★ 2026-10-21 加：**事件卡片里的会话行**（消息页升级成事件页之后）。
+  //
+  //   为什么不能复用上面那段主监听：它取的是 `main.querySelector(".jl-list")` —— **只取第一个**。
+  //   而事件页有多张卡片、每张卡片里各有一个会话列表 ⇒ 只有第一张卡片的行能点。
+  //   实测这个项目在"监听没绑上"这件事上栽过：点了毫无反应、连报错都没有，只能靠控制台那行诊断。
+  //   ⇒ 事件页的会话列表用**专用类名** `.evt-convs`（不是 `.jl-list`，刻意避开主监听），
+  //     在这里逐个容器绑 —— 卡片有几张就绑几个。
+  L.push('  var evtLists = document.querySelectorAll(".evt-cards .evt-convs");');
+  L.push('  for (var ei = 0; ei < evtLists.length; ei++) {');
+  L.push('    (function (ul) {');
+  L.push('      ul.addEventListener("click", function (ev) {');
+  L.push('        var li = ev.target.closest ? ev.target.closest("li[data-conv]") : null;');
+  L.push('        if (!li) return;');
+  L.push('        var id = li.getAttribute("data-id");');
+  L.push('        if (!id) { alert("这一行没有带 id（服务端未写入 data-id）"); return; }');
+  L.push('        openConversation(id);');
+  L.push('      });');
+  L.push('    })(evtLists[ei]);');
+  L.push('  }');
+  L.push('  if (evtLists.length) console.log("[工作台] 事件卡片会话监听已绑 · 卡片数=" + evtLists.length);');
+  L.push('');
   // ★ 总览的三类提醒：点一条 ⇒ 跳到对应页面并把那一条的详情打开（需求 3.3.2 原话：
   //   "点击可跳转到对应的页面（待办/笔记/日程/信息）并打开详情页"）。
   //   同一页面内点 ⇒ 直接开浮层；跨页面 ⇒ **真的换地址**，由目标页的脚本接手。

@@ -163,6 +163,11 @@ await run('P4e', 'P4 真机点击检查', async () => (await import(base + 'ui/i
 await run('P4f', 'P4 状态栏探针', async () => (await import(base + 'ui/probes.mjs')).selfTest());
 await run('P7a', 'P7 驾驶舱数据', async () => (await import(base + 'api/cockpit.mjs')).selfTest());
 await run('P7b', 'P7 驾驶舱页面', async () => (await import(base + 'ui/cockpit-page.mjs')).selfTest());
+// ★★ 2026-10-21 加：**事件聚合**（消息页升级成事件页的机器部分）。
+//   规范：`Research/Output/个人工作台/02-规范与标准/SPEC_事件聚合规范.md`
+//   为什么单独立一组：它管的是"什么算同一件事"，是这一轮里唯一**新造出来的语义判断**，
+//   而语义判断最容易在改动中被悄悄带偏（听记从"挂一件"漂成"挂二十件"就是实测踩过的）。
+await run('P8a', 'P8 事件聚合（会话→事件 · 听记指派 · 文档分列）', async () => (await import(base + 'processor/events.mjs')).selfTest());
 // ★ 2026-10-14 加：**驾驶舱每日生成**（用户第 8 节：「驾驶舱每天幂等执行…所有内容不断积累，无上限」）。
 //   单开一组的理由：这条要求的失效方式**特别安静** —— 不幂等不会报错，
 //   只会每天白烧五次模型调用，**没人会发现**。
