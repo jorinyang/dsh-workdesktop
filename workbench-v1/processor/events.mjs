@@ -579,6 +579,71 @@ export async function clusterDay({ day = null, now = Date.now(), modelFn = null,
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// 本地文档：召回（规范 7.2 的第二条路）
+//
+// 为什么放在"聚类之后"：本地文档挂在**事件**上，而事件 id 由分件结果决定
+//   ⇒ 必须先有 assignments，再往 `docsByEvent[eventId]` 里填。顺序反了会挂在上一轮的 id 上，
+//     表现是"文档挂在已经不存在的事件上"—— 页面上什么都不显示，而且不报错。
+//
+// 为什么不在页面渲染时现打召回：渲染要快（纪律四）。这里跑完写缓存，页面只读缓存。
+// ══════════════════════════════════════════════════════════════════════════════
+
+/** 从事件拼一句召回用的查询（控制长度：召回桥对超长句子没好处，只会稀释语义） */
+export function buildEventQuery(ev, { maxLen = 220 } = {}) {
+  const parts = [];
+  for (const c of ev?.conversations ?? []) {
+    if (c.sender) parts.push(String(c.sender));
+    if (c.lastSummary) parts.push(String(c.lastSummary));
+    for (const s of c.samples ?? []) if (s.text) parts.push(String(s.text));
+  }
+  if (ev?.title) parts.push(String(ev.title));
+  return parts.join(' ').replace(/\s+/g, ' ').trim().slice(0, maxLen);
+}
+
+/**
+ * 给某天的事件填本地文档（召回），写进缓存。
+ *
+ * @param {{day?:string, now?:number, recallFn?:Function|null, k?:number, maxEvents?:number, save?:boolean, events?:object[]}} o
+ * @returns {Promise<{ok:boolean, day:string, events:number, withDocs:number, why:string|null}>}
+ */
+export async function attachDocs({ day = null, now = Date.now(), recallFn = null, k = 3, maxEvents = 40, save = true, events: eventsIn = null } = {}) {
+  const targetDay = day || dayOf(now);
+  const built = eventsIn ?? buildEvents({ day: targetDay, now }).events;
+  const recall = recallFn ?? (async (q, opt) => (await import('./recall.mjs')).recall(q, opt));
+
+  const docsByEvent = {};
+  let withDocs = 0;
+  const errors = [];
+  for (const ev of (built ?? []).slice(0, maxEvents)) {
+    const q = buildEventQuery(ev);
+    if (!q) continue;
+    let r;
+    try { r = await recall(q, { k }) } catch (e) { r = { ok: false, why: String(e?.message ?? e) } }
+    if (!r || r.ok !== true) { errors.push(String(r?.why ?? '召回失败')); continue }
+    // 只留路径与相似度；**同一路径只留一次**（一条材料命中两次没有意义）
+    const seen = new Set();
+    const hits = [];
+    for (const h of r.hits ?? []) {
+      const p = String(h?.path ?? '');
+      if (!p || seen.has(p)) continue;
+      seen.add(p);
+      hits.push({ path: p, similarity: Number.isFinite(h?.similarity) ? Number(h.similarity) : null, heading: h?.heading ?? null });
+    }
+    if (!hits.length) continue;
+    docsByEvent[ev.id] = hits;
+    withDocs += 1;
+  }
+
+  // ★ 写回缓存要**保留已有的 assignments / contextByEvent** —— 冲掉它们，聚类结果就没了，
+  //   页面上会退回一层（而这条错很安静：文档挂上去了，分件却不见了）。
+  const prev = loadDay(targetDay) ?? {};
+  const doc = { ...prev, day: targetDay, docsByEvent, docsAt: now, docsWhy: errors.length ? errors[0].slice(0, 160) : null };
+  if (save) saveDay(targetDay, doc);
+
+  return { ok: errors.length === 0, day: targetDay, events: (built ?? []).length, withDocs, why: errors.length ? errors[0].slice(0, 160) : null };
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // 自检
 // ══════════════════════════════════════════════════════════════════════════════
 export async function selfTest() {
@@ -739,6 +804,21 @@ export async function selfTest() {
       usesRetry && !bareCall, `带重试=${usesRetry} · 裸调=${bareCall}`);
   }
 
+  // EVT-L 本地文档（召回）：填进缓存、页面读得到；召回失败**不编**
+  {
+    const FX = [{ id: 'evt_x', day: '2026-10-21', title: '某件事', conversations: [{ sender: '甲', lastSummary: '聊报价', samples: [{ text: '报个价' }] }] }];
+    chk('EVT-L1', '★ 召回查询从事件拼出来（发信人 + 摘要 + 样例 + 标题）',
+      /甲/.test(buildEventQuery(FX[0])) && /报个价/.test(buildEventQuery(FX[0])) && /某件事/.test(buildEventQuery(FX[0])),
+      buildEventQuery(FX[0]).slice(0, 80));
+    const stub = async () => ({ ok: true, hits: [{ path: 'Work/甲/方案.md', similarity: 0.71 }, { path: 'Work/甲/方案.md', similarity: 0.7 }, { path: 'Work/乙/报价.xlsx', similarity: 0.66 }] });
+    const r1 = await attachDocs({ day: '2026-10-21', events: FX, recallFn: stub, save: false });
+    chk('EVT-L2', '★ 召回命中填进 docsByEvent；同一路径去重（3 条命中去成 2 条）',
+      r1.ok === true && r1.withDocs === 1, `withDocs=${r1.withDocs}`);
+    const bad = await attachDocs({ day: '2026-10-21', events: FX, recallFn: async () => ({ ok: false, why: '检索桥不可用' }), save: false });
+    chk('EVT-L3', '★★ 负向：召回失败 ⇒ 不写任何文档（不编"相关资料"），并把原因带出来',
+      bad.withDocs === 0 && /检索桥不可用/.test(String(bad.why)), String(bad.why).slice(0, 60));
+  }
+
   const pass = out.filter((x) => x.ok).length;
   return { pass, fail: out.length - pass, details: out };
 }
@@ -756,11 +836,14 @@ if (__isMain) {
   const day = argv.find((a) => /^\d{4}-\d{2}-\d{2}$/.test(a)) ?? dayOf(Date.now());
   // ★ 2026-10-21 加：`--enrich` = 跑第二层（每小时那一轮就调这个）
   if (argv.includes('--enrich')) {
-    const r = await clusterDay({ day, save: true });
-    console.log(r.ok
-      ? `  聚类成功：${day} · ${r.events} 件（模型分出 ${r.clusters} 组）`
-      : `  聚类未成：${day} · ${r.why}`);
-    process.exit(r.ok ? 0 : 1);
+    // ★ 2026-10-21：一轮 = **先聚类、再填本地文档**（顺序不能反，见 `attachDocs` 的注释）
+    const c = await clusterDay({ day, save: true });
+    console.log(c.ok
+      ? `  聚类成功：${day} · ${c.events} 件（模型分出 ${c.clusters} 组）`
+      : `  聚类未成：${day} · ${c.why}`);
+    const d = await attachDocs({ day, save: true });
+    console.log(`  本地文档：${d.withDocs} / ${d.events} 件挂上${d.why ? `（部分召回失败：${d.why}）` : ''}`);
+    process.exit(c.ok ? 0 : 1);
   }
   const r = buildEvents({ day, withCache: !argv.includes('--no-cache') });
   console.log(`\n# ${day} · ${r.counts.events} 件 · 会话 ${r.counts.convs} · 消息 ${r.counts.messages} · 带文档 ${r.counts.withDocs} · 带听记 ${r.counts.withMinutes}`);
