@@ -59,9 +59,18 @@ export async function renderAll({ api = '/workdesktop/api/v1' } = {}) {
   let eventsSnap = null;
   try {
     const ev = await import('../processor/events.mjs');
-    const day = null;                       // null = 今天
-    const r = ev.buildEvents({ day });
-    eventsSnap = { events: r.events, counts: r.counts, day: r.day, why: r.why, clustered: r.clustered, days: ev.recentDays({ limit: 14 }) };
+    // ★★ 2026-10-21 改：**把最近几天一起渲染进静态页**，端上按天显隐。
+    //   为什么：页面是服务端渲染好的静态文件，`?day=` 不会让它重渲染（点了没反应）。
+    //   代价：页面变大、渲染变慢。所以**限 5 天**，且每天只取前 40 件（一般一天不到 30 件）。
+    const DAYS = 5;
+    const recent = ev.recentDays({ limit: DAYS });
+    const days = recent.map((d) => {
+      const r = ev.buildEvents({ day: d, limit: 40 });
+      return { day: r.day, events: r.events, counts: r.counts, why: r.why, clustered: r.clustered };
+    });
+    // 今天的数字卡要用它；`days[0]` 不一定就是今天（今天可能一条会话都没有），所以单独取
+    const today = ev.buildEvents({ day: null, limit: 40 });
+    eventsSnap = { events: today.events, counts: today.counts, day: today.day, why: today.why, clustered: today.clustered, days };
   } catch (e) {
     console.log(`注意：事件聚合读不到（事件页将为空）：${String(e && e.message).slice(0, 120)}`);
   }

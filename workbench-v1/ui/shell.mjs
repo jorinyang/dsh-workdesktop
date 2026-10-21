@@ -819,97 +819,108 @@ export function pageNotes(snap) {
 export function pageEvents(snap) {
   const s = (snap && snap.events) || null;
   const data = s || { events: [], counts: {}, day: '', why: '页面没有拿到事件数据（静态渲染时要由 preview.mjs 喂快照）', clustered: false };
-  const c = data.counts ?? {};
+  // ★★ 2026-10-21 加：**多天一起渲染，端上按天显隐**。
+  //   为什么不能靠 `?day=`：面板里这条页面是**服务端渲染好的静态文件**，查询串不会让它重渲染 ——
+  //   那排链接点了毫无反应（这个项目在"点了没反应"上栽过好几次）。
+  //   ⇒ 把最近几天都渲染进来（每张卡片带 `data-day`），客户端按 `?day=`/默认最新一天显隐。
+  //   快照形状：`snap.days = [{ day, events, counts, why, clustered }]`，按日期**从新到旧**。
+  const days = Array.isArray(snap && snap.days) ? snap.days : null;
+  const dayList = days && days.length ? days : [{ day: data.day, events: data.events ?? [], counts: data.counts ?? {}, why: data.why, clustered: data.clustered }];
+  const activeDay = (snap && snap.query && snap.query.day) || dayList[0].day;
+
+  // 顶部数字：**当前这一天**的（不是所有天加总，加总没有意义）
+  const cur = dayList.find((d) => d.day === activeDay) ?? dayList[0];
+  const c = cur.counts ?? {};
   const cards = statCards([
     ['事件', c.events ?? 0], ['会话', c.convs ?? 0], ['消息', c.messages ?? 0],
     ['带文档', c.withDocs ?? 0], ['带听记', c.withMinutes ?? 0],
   ]);
 
-  // 日期切换：**故意不做**（2026-10-21 实测后撤掉）。
-  //
-  //   原来这里有一排 `<a href="?day=YYYY-MM-DD">`。而面板里这条页面是**服务端渲染好的静态文件**
-  //   （`/workdesktop/api/yishu/messages` 直接读 `Other/data/workbench-v1/messages.html`）——
-  //   **查询串不会让它重渲染** ⇒ 那些链接点了毫无反应。
-  //   这正是这个项目反复栽的那类问题（列表点击没绑上、Tab 点了没反应），不留死控件。
-  //
-  //   要历史日期有两条路（都留给下一轮，不在这里硬塞）：
-  //     ① 接口已支持：`GET /pages/events?day=YYYY-MM-DD`（实测通过，见 `EVT-R5`）；
-  //     ② 页面上做客户端切换：把多天的卡片一起渲染进静态页、按 `data-day` 显隐。
-  //   现在如实说一句"这里只有今天"，比一个点不动的日期条诚实。
-  const dayBar = data.day
-    ? '<div class="evt-bar"><span class="evt-bar-l">日期</span><b aria-current="page">' + esc(data.day) + '</b>'
-      + '<span class="evt-bar-l">（历史日期走接口 /pages/events?day=，页面上还没做切换）</span></div>'
+  // 日期条：每天都可点，当前日加粗；点击由客户端切换（不重新加载）
+  const dayBar = dayList.length > 1
+    ? '<div class="evt-bar"><span class="evt-bar-l">日期</span>'
+      + dayList.map((d) => (d.day === activeDay
+        ? '<b aria-current="page" data-day-link="' + esc(d.day) + '">' + esc(String(d.day).slice(5)) + '</b>'
+        : '<a href="?day=' + esc(d.day) + '" data-day-link="' + esc(d.day) + '">' + esc(String(d.day).slice(5)) + '</a>')).join(' ')
+      + '</div>'
     : '';
 
-  // 聚类状态如实说（规范 8.2）：没跑就说没跑，不装作已经聚好了
-  const note = data.why
-    ? '<div class="evt-note">' + esc(String(data.why)) + '</div>'
-    : '';
-
-  const cardsHtml = (data.events ?? []).map((ev) => {
-    // ── ① 相关会话 ──
-    const convs = (ev.conversations ?? []).map((cv) => {
-      const samples = (cv.samples ?? []).map((x) => '<div class="ec-s"><span class="ec-t">'
-        + esc(x.time) + '</span><span class="ec-who">' + esc(x.sender) + '：</span>' + esc(x.text) + '</div>').join('');
-      return '<li data-conv="1" data-id="' + esc(cv.id) + '" title="点开这条会话的完整内容（转待办 / 转日程 / 转笔记 都在里面）">'
-        + '<div class="ec-head"><span class="when">' + esc(cv.time) + '</span>'
-        + '<span class="who">' + esc(cv.channel) + ' · ' + esc(cv.sender) + '</span>'
-        + '<span class="ec-n">' + esc(String(cv.count ?? 0)) + ' 条</span></div>'
-        + samples
-        + '</li>';
-    }).join('');
-
-    // ── ② 相关上下文 ──
-    const ctx = (ev.context ?? []).length
-      ? ev.context.map((x) => '<div class="evt-ctx">'
-        + (x.at ? '<span class="evt-ctx-at">' + esc(String(x.at).slice(0, 16).replace('T', ' ')) + '</span> ' : '')
-        + esc(x.text) + '</div>').join('')
-      : '<div class="evt-empty">这条事件还没有上下文总结（会话级的每 15 分钟跑一轮，只算有变化的）</div>';
-
-    // ── ③ 相关文档（本地 / 线上分开） ──
-    const local = (ev.docs?.local ?? []);
-    const online = (ev.docs?.online ?? []);
-    const doc = (local.length || online.length)
-      ? '<ul class="evt-doc">'
-        + local.map((d) => '<li><span class="tag">本地</span><span>'
-          + esc(typeof d === 'string' ? d : String(d.path ?? '')) + '</span></li>').join('')
-        + online.map((u) => '<li><span class="tag">链接</span><a href="' + esc(u) + '" target="_blank" rel="noopener">'
-          + esc(u.length > 120 ? u.slice(0, 118) + '…' : u) + '</a></li>').join('')
-        + '</ul>'
-      : '<div class="evt-empty">这条事件里没有出现文档链接</div>';
-
-    // ── ④ 相关听记 ──
-    const mins = (ev.minutes ?? []);
-    const minHtml = mins.length
-      ? '<ul class="evt-min">' + mins.map((m) => '<li><span class="tag">听记</span>'
-        + (m.url
-          ? '<a href="' + esc(m.url) + '" target="_blank" rel="noopener">' + esc(m.topic) + '</a>'
-          : '<span>' + esc(m.topic) + '（没有跳转地址）</span>')
-        + '<span class="evt-ctx-at">' + esc([m.time, m.duration].filter(Boolean).join(' · ')) + '</span></li>').join('') + '</ul>'
-      : '<div class="evt-empty">这条事件附近没有听记</div>';
-
-    return '<details class="evt" data-event="' + esc(ev.id) + '">'
-      + '<summary><span class="evt-time">' + esc(ev.timeRange || '') + '</span>'
-      + '<span class="evt-title">' + esc(ev.title || '（无标题）') + '</span>'
-      + '<span class="evt-badges">'
-      + '<span>会话 <b>' + esc(String(ev.counts?.convs ?? 0)) + '</b></span>'
-      + '<span>文档 <b>' + esc(String(ev.counts?.docs ?? 0)) + '</b></span>'
-      + '<span>听记 <b>' + esc(String(ev.counts?.minutes ?? 0)) + '</b></span>'
-      + '</span></summary>'
-      + '<div class="evt-body">'
-      + '<section class="evt-sec"><h3>相关会话（' + esc(String((ev.conversations ?? []).length)) + '）</h3><ul class="evt-convs">' + convs + '</ul></section>'
-      + '<section class="evt-sec"><h3>相关上下文</h3>' + ctx + '</section>'
-      + '<section class="evt-sec"><h3>相关文档（本地 ' + esc(String(local.length)) + ' · 链接 ' + esc(String(online.length)) + '）</h3>' + doc + '</section>'
-      + '<section class="evt-sec"><h3>相关听记（' + esc(String(mins.length)) + '）</h3>' + minHtml + '</section>'
-      + '</div></details>';
+  const cardsHtml = dayList.map((d) => {
+    const note = d.why ? '<div class="evt-note">' + esc(String(d.why)) + '</div>' : '';
+    const body = (d.events ?? []).length
+      ? (d.events ?? []).map((ev) => renderEventCard(ev)).join('')
+      : '<div class="evt-note">' + esc(String(d.why || '这一天没有事件')) + '</div>';
+   return '<div class="evt-day" data-day="' + esc(d.day) + '"' + (d.day === activeDay ? '' : ' hidden') + '>'
+      + note + body + '</div>';
   }).join('');
 
-  const body = (data.events ?? []).length
-    ? '<div class="evt-cards">' + cardsHtml + '</div>'
-    : '<div class="evt-note">' + esc(String(data.why || '这一天没有事件')) + '</div>';
-
-  return '<div class="stats">' + cards + '</div>' + inlineForm('messages') + dayBar + note + body;
+  return '<div class="stats">' + cards + '</div>' + inlineForm('messages') + dayBar
+    + '<div class="evt-cards">' + cardsHtml + '</div>';
 }
+
+/** 单张事件卡片（从 pageEvents 里拆出来：多天渲染时每天都要走一遍，逻辑只留一处） */
+function renderEventCard(ev) {
+  // ── ① 相关会话 ──
+  const convs = (ev.conversations ?? []).map((cv) => {
+    const samples = (cv.samples ?? []).map((x) => '<div class="ec-s"><span class="ec-t">'
+      + esc(x.time) + '</span><span class="ec-who">' + esc(x.sender) + '：</span>' + esc(x.text) + '</div>').join('');
+    return '<li data-conv="1" data-id="' + esc(cv.id) + '" title="点开这条会话的完整内容（转待办 / 转日程 / 转笔记 都在里面）">'
+      + '<div class="ec-head"><span class="when">' + esc(cv.time) + '</span>'
+      + '<span class="who">' + esc(cv.channel) + ' · ' + esc(cv.sender) + '</span>'
+      + '<span class="ec-n">' + esc(String(cv.count ?? 0)) + ' 条</span></div>'
+      + samples
+      + '</li>';
+  }).join('');
+
+  // ── ② 相关上下文 ──
+  const ctx = (ev.context ?? []).length
+    ? ev.context.map((x) => '<div class="evt-ctx">'
+      + (x.at ? '<span class="evt-ctx-at">' + esc(String(x.at).slice(0, 16).replace('T', ' ')) + '</span> ' : '')
+      + esc(x.text) + '</div>').join('')
+    : '<div class="evt-empty">这条事件还没有上下文总结（聚类时会给；没跑聚类就只有会话级的）</div>';
+
+  // ── ③ 相关文档（本地 / 线上分开）──
+  const local = (ev.docs?.local ?? []);
+  const online = (ev.docs?.online ?? []);
+  const doc = (local.length || online.length)
+    ? '<ul class="evt-doc">'
+      + local.map((d) => '<li><span class="tag">本地</span><span>'
+        + esc(typeof d === 'string' ? d : String(d.path ?? ''))
+        + (d && typeof d === 'object' && Number.isFinite(d.similarity) ? ' <span class="evt-ctx-at">(' + d.similarity.toFixed(2) + ')</span>' : '')
+        + '</span></li>').join('')
+      + online.map((u) => '<li><span class="tag">链接</span><a href="' + esc(u) + '" target="_blank" rel="noopener">'
+        + esc(u.length > 120 ? u.slice(0, 118) + '…' : u) + '</a></li>').join('')
+      + '</ul>'
+    : '<div class="evt-empty">这条事件里没有出现文档链接，召回也没命中材料</div>';
+
+  // ── ④ 相关听记 ──
+  const mins = (ev.minutes ?? []);
+  const minHtml = mins.length
+    ? '<ul class="evt-min">' + mins.map((m) => '<li><span class="tag">听记</span>'
+      + (m.url
+        ? '<a href="' + esc(m.url) + '" target="_blank" rel="noopener">' + esc(m.topic) + '</a>'
+        : '<span>' + esc(m.topic) + '（没有跳转地址）</span>')
+      + '<span class="evt-ctx-at">' + esc([m.time, m.duration].filter(Boolean).join(' · ')) + '</span></li>').join('') + '</ul>'
+    : '<div class="evt-empty">这条事件附近没有听记</div>';
+
+  return '<details class="evt" data-event="' + esc(ev.id) + '">'
+    + '<summary><span class="evt-time">' + esc(ev.timeRange || '') + '</span>'
+    + '<span class="evt-title">' + esc(ev.title || '（无标题）') + '</span>'
+    + '<span class="evt-badges">'
+    + '<span>会话 <b>' + esc(String(ev.counts?.convs ?? 0)) + '</b></span>'
+    + '<span>文档 <b>' + esc(String(ev.counts?.docs ?? 0)) + '</b></span>'
+    + '<span>听记 <b>' + esc(String(ev.counts?.minutes ?? 0)) + '</b></span>'
+    + '</span></summary>'
+    + '<div class="evt-body">'
+    + '<section class="evt-sec"><h3>相关会话（' + esc(String((ev.conversations ?? []).length)) + '）</h3><ul class="evt-convs">' + convs + '</ul></section>'
+    + '<section class="evt-sec"><h3>相关上下文</h3>' + ctx + '</section>'
+    + '<section class="evt-sec"><h3>相关文档（本地 ' + esc(String(local.length)) + ' · 链接 ' + esc(String(online.length)) + '）</h3>' + doc + '</section>'
+    + '<section class="evt-sec"><h3>相关听记（' + esc(String(mins.length)) + '）</h3>' + minHtml + '</section>'
+    + '</div></details>';
+}
+
+// 旧的单天渲染体已删（2026-10-21）：多天渲染之后，卡片渲染统一走 `renderEventCard()`（见上），
+// 顶部数字取**当前显示那一天**的；日期条由客户端切换，见 `ui/client.mjs` 的 `data-day-link` 那段。
 
 // ★★ 2026-10-21：`messages` 这个 key **保持不变**（文件名、导航链接、面板路由都还指着
 //   `messages.html` / `/pages/messages`），只把**渲染器**换成事件页 —— 这样万一事件页出问题，
@@ -1054,6 +1065,25 @@ export function selfTest() {
     const rowIsConv = h.indexOf('data-conv="1"') >= 0;
     const docSplit = h.indexOf('本地') >= 0 && h.indexOf('链接') >= 0;
     return hasCards && isEventCard && fourBlocks && rowIsConv && docSplit;
+  })());
+  // ★★ 2026-10-21 加：**多天渲染 + 端上按天显隐**（日期切换的真实机制）。
+  //   为什么不用链接跳 `?day=`：页面是服务端渲染好的静态文件，查询串不会让它重渲染
+  //   ⇒ 那排链接点了毫无反应。所以：几天一起渲染进来，每天一个 `.evt-day[data-day]`，
+  //   客户端只做显隐。这条守的就是"多天真的都渲染了、且非当前天默认是隐藏的"。
+  chk('SH-18b', '★★ 事件页多天一起渲染（每天一个 data-day 面板 · 非当前天默认 hidden · 有日期条）', (function () {
+    const two = Object.assign({}, snap, {
+      days: [
+        { day: '2026-10-21', events: snap.events.events, counts: snap.events.counts, why: null, clustered: true },
+        { day: '2026-10-20', events: snap.events.events, counts: snap.events.counts, why: null, clustered: false },
+      ],
+    });
+    const h = renderPage('messages', { snap: two });
+    const panels = (h.match(/class="evt-day" data-day=/g) ?? []).length;
+    const hidden = (h.match(/class="evt-day" data-day="[^"]+" hidden/g) ?? []).length;
+    const bar = h.includes('data-day-link="2026-10-20"');
+    // 只给一天时**不该出日期条**（出了就是个没用的控件）
+    const one = renderPage('messages', { snap: Object.assign({}, snap, { days: [{ day: '2026-10-21', events: snap.events.events, counts: snap.events.counts }] }) });
+    return panels === 2 && hidden === 1 && bar && !one.includes('data-day-link');
   })());
   chk('SH-19', '待办页显示"距离截止时间"', renderPage('todos', { snap: snap }).indexOf('已逾期 3 天') >= 0);
   chk('SH-20', 'HTML 转义生效（注入尖括号不破页面）', (function () { const h = renderPage('notes', { snap: { notes: { counts: { total: 1, thisMonth: 1, tags: 0 }, list: [{ date: '2026-10-05', topic: '<script>x</script>', tags: [] }] } } }); return h.indexOf('&lt;script&gt;') >= 0 && h.indexOf('<script>x</script>') < 0; })());

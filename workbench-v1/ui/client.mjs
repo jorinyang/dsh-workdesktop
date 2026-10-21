@@ -601,6 +601,40 @@ export function clientScript(apiBase) {
   L.push('  }');
   L.push('  if (evtLists.length) console.log("[工作台] 事件卡片会话监听已绑 · 卡片数=" + evtLists.length);');
   L.push('');
+  // ★★ 2026-10-21 加：**事件页的日期切换**（多天一起渲染进静态页，端上按天显隐）。
+  //
+  //   为什么不做成链接跳转：面板里这条页面是**服务端渲染好的静态文件**，
+  //   `?day=YYYY-MM-DD` 不会让它重渲染 ⇒ 链接点了毫无反应（这个项目栽过好几次）。
+  //   ⇒ 渲染层把最近 5 天都写进页面（每天一个 `.evt-day[data-day]`），这里只做显隐。
+  //
+  //   ⚠️ 切换时**要把不可见天的会话监听也保住**：`.evt-convs` 的绑定在下面按容器一次性绑好，
+  //     隐藏只是加 `hidden` 属性、**不移除 DOM** ⇒ 绑定不会丢。
+  L.push('  var dayLinks = document.querySelectorAll("[data-day-link]");');
+  L.push('  var dayPanels = document.querySelectorAll(".evt-day[data-day]");');
+  L.push('  function showDay(d) {');
+  L.push('    for (var i = 0; i < dayPanels.length; i++) {');
+  L.push('      var on = dayPanels[i].getAttribute("data-day") === d;');
+  L.push('      if (on) dayPanels[i].removeAttribute("hidden"); else dayPanels[i].setAttribute("hidden", "");');
+  L.push('    }');
+  L.push('    for (var j = 0; j < dayLinks.length; j++) {');
+  L.push('      var same = dayLinks[j].getAttribute("data-day-link") === d;');
+  L.push('      if (same) dayLinks[j].setAttribute("aria-current", "page"); else dayLinks[j].removeAttribute("aria-current");');
+  L.push('    }');
+  L.push('  }');
+  L.push('  for (var dl = 0; dl < dayLinks.length; dl++) {');
+  L.push('    dayLinks[dl].addEventListener("click", function (ev) {');
+  L.push('      var d = this.getAttribute("data-day-link");');
+  L.push('      if (!d) return;');
+  L.push('      ev.preventDefault();          // 地址不动（地址一改反而会被静态路由吃掉）');
+  L.push('      showDay(d);');
+  L.push('    });');
+  L.push('  }');
+  L.push('  if (dayPanels.length) {');
+  L.push('    var qd = (location.search.match(/[?&]day=(\\d{4}-\\d{2}-\\d{2})/) || [])[1];');
+  L.push('    showDay(qd || dayPanels[0].getAttribute("data-day"));   // 默认显示**最新的一天**');
+  L.push('    console.log("[工作台] 事件日期切换已绑 · 天数=" + dayPanels.length);');
+  L.push('  }');
+  L.push('');
   // ★ 总览的三类提醒：点一条 ⇒ 跳到对应页面并把那一条的详情打开（需求 3.3.2 原话：
   //   "点击可跳转到对应的页面（待办/笔记/日程/信息）并打开详情页"）。
   //   同一页面内点 ⇒ 直接开浮层；跨页面 ⇒ **真的换地址**，由目标页的脚本接手。
