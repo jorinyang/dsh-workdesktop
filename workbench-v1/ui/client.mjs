@@ -116,6 +116,72 @@ export function clientScript(apiBase) {
   L.push('    }).catch(function (e) { alert("取会话异常：" + (e && e.message)); });');
   L.push('  }');
   L.push('');
+  // ══════════════════════════════════════════════════════════════════════════════
+  // ★★ 2026-10-23 加：**事件浮层**。
+  //
+  //   用户原话：「今日总览-长期未回复的消息，其中的内容应该是长期未处置未闭环的需要被关注的事件，
+  //     时间由事件最早的内容决定，**点击可穿透到事件中包含的内容**。」
+  //
+  //   为什么不复用 openConversation：那个是"某天某个会话的一批消息"；
+  //   事件是**几件会话合成的一件事**，它下面可能挂着好几条会话、还有文档与听记。
+  //   套用会话浮层会把"一件事"拆回"一条会话"，正是这次要改掉的东西。
+  //
+  //   为什么数据走 `/event?id=` 而不是 `/detail/<类型>/<id>`：事件不是库里的一类记录，
+  //   它是 `processor/events.mjs` 算出来的；`/detail` 那条路没有它的形状。
+  // ══════════════════════════════════════════════════════════════════════════════
+  L.push('  function openEvent(id) {');
+  L.push('    fetch(API + "/event?id=" + encodeURIComponent(id)).then(function (r) { return r.json(); }).then(function (ev) {');
+  L.push('      if (!ev || ev.error) { alert("取事件失败：" + ((ev && ev.error) || "未知")); return; }');
+  L.push('      var blocks = [];');
+  // ── 事件包含的会话：每条带几行原文，点一下进整条会话（那里能转待办/日程/笔记）──
+  L.push('      var convs = ev.conversations || [];');
+  L.push('      var w1 = el("div", "ov-block");');
+  L.push('      w1.appendChild(el("div", "ov-block-h", "这件事包含的会话（" + convs.length + " 条 · 点一条进它的完整内容）"));');
+  L.push('      convs.forEach(function (c) {');
+  L.push('        var row = el("div", "ov-evt-conv");');
+  L.push('        var head = el("div", "ov-evt-head");');
+  L.push('        head.appendChild(el("span", "ov-conv-hm", c.time || ""));');
+  L.push('        head.appendChild(el("span", "ov-evt-who", (c.channel || "") + " · " + (c.sender || "") + " · " + (c.count || 0) + " 条"));');
+  L.push('        row.appendChild(head);');
+  L.push('        (c.samples || []).forEach(function (s) {');
+  L.push('          row.appendChild(el("div", "ov-evt-line", (s.time || "") + " " + (s.sender ? s.sender + "：" : "") + String(s.text || "").slice(0, 120)));');
+  L.push('        });');
+  L.push('        row.addEventListener("click", function () { openConversation(c.id); });');
+  L.push('        w1.appendChild(row);');
+  L.push('      });');
+  L.push('      if (!convs.length) w1.appendChild(el("div", "ov-ctx-note", "这条事件下面没有会话"));');
+  L.push('      blocks.push(w1);');
+  // ── 上下文 / 文档 / 听记：事件层已经算好了，直接摆出来 ──
+  L.push('      var ctx = ev.context || [];');
+  L.push('      if (ctx.length) {');
+  L.push('        var w2 = el("div", "ov-block");');
+  L.push('        w2.appendChild(el("div", "ov-block-h", "这件事在讲什么"));');
+  L.push('        ctx.forEach(function (x) { w2.appendChild(el("div", "ov-ctx-text", String(x.text || ""))); });');
+  L.push('        blocks.push(w2);');
+  L.push('      }');
+  L.push('      var dl = (ev.docs && ev.docs.local) || []; var dn = (ev.docs && ev.docs.online) || [];');
+  L.push('      if (dl.length || dn.length) {');
+  L.push('        var w3 = el("div", "ov-block");');
+  L.push('        w3.appendChild(el("div", "ov-block-h", "相关文档（本地 " + dl.length + " · 链接 " + dn.length + "）"));');
+  L.push('        dl.forEach(function (d) { w3.appendChild(el("div", "ov-evt-line", "［本地］" + String(d.path || d))); });');
+  L.push('        dn.forEach(function (u) { w3.appendChild(el("div", "ov-evt-line", "［链接］" + String(u))); });');
+  L.push('        blocks.push(w3);');
+  L.push('      }');
+  L.push('      var mn = ev.minutes || [];');
+  L.push('      if (mn.length) {');
+  L.push('        var w4 = el("div", "ov-block");');
+  L.push('        w4.appendChild(el("div", "ov-block-h", "相关听记（" + mn.length + "）"));');
+  L.push('        mn.forEach(function (m) { w4.appendChild(el("div", "ov-evt-line", "［听记］" + String(m.topic || "") + " · " + [m.time, m.duration].filter(Boolean).join(" · "))); });');
+  L.push('        blocks.push(w4);');
+  L.push('      }');
+  L.push('      overlay((ev.day || "") + " · " + (ev.title || "事件"), [');
+  L.push('        ["最早一条", ev.timeRange || ""],');
+  L.push('        ["会话 / 消息", String((ev.counts && ev.counts.convs) || convs.length) + " 条 / " + String((ev.counts && ev.counts.messages) || 0) + " 条"],');
+  L.push('        ["未处置", "这件事还没有被处置（进了这个清单就是在等我）"],');
+  L.push('      ], [], function () {}, ev, blocks);');
+  L.push('    }).catch(function (e) { alert("取事件异常：" + (e && e.message)); });');
+  L.push('  }');
+  L.push('');
   // 会话级动作：把**勾选的那些原文**（不勾＝整会话）+ 相关上下文交给服务端聚合提取。
   L.push('  function onConversationOp(cv, name, ids) {');
   L.push('    ids = ids || [];');
@@ -661,6 +727,9 @@ export function clientScript(apiBase) {
   L.push('      if (!li) return;');
   L.push('      var id = li.getAttribute("data-id"); var kind = li.getAttribute("data-go");');
   L.push('      if (!id || !kind) return;');
+  // ★★ 2026-10-23 加：**事件**走事件浮层（总览第三块改成一件事一件事之后）。
+  //   不能落到下面那条 `openDetail(kind, id)` —— `/detail/event/evt_…` 没有这个类型，会 404。
+  L.push('      if (kind === "event") { openEvent(id); return; }');
   L.push('      var dest = PAGE_OF[kind];');
   // ★★ 2026-10-13 改（用户裁定，原话）：
   //   「今日总览当中的重要日程行程下面的清单，点击日程之后，应该是直接打开日程的详情浮窗其中。
@@ -893,6 +962,10 @@ export function clientScript(apiBase) {
   L.push('    var form = document.querySelector(".inline-form[data-if-page]");');
   L.push('    if (!form) return;');
   L.push('    var pageType = form.getAttribute("data-if-page");');
+  // ★★ 2026-10-23 加：**提交到哪由表单自己说**（`data-if-post`）。
+  //   原来一律 `API + "/" + pageType`。事件页的页面 key 仍是 `messages`，
+  //   但它的表单建的是**事件**、要打 `/events` —— 按 pageType 打会多出一条消息，而且像成功了。
+  L.push('    var postTo = form.getAttribute("data-if-post") || pageType;');
   L.push('    var btn = form.querySelector("[data-if-submit]");');
   L.push('    var msg = form.querySelector("[data-if-msg]");');
   L.push('    if (!btn) return;');
@@ -911,8 +984,8 @@ export function clientScript(apiBase) {
   //   用户看到的是"校验未通过"而不是"哪一项没填"。
   //   ⇒ 端上先自己判一遍：**逐项点名**，并把焦点移到缺的那一项上（照着填就行）。
   //   ⚠️ 端上校验只是**提前告知**，服务端那道**照旧保留**（端上绕过不难，不能只靠它）。
-  L.push('      var REQ = { messages: ["raw"], todos: ["topic"], schedules: ["topic", "start", "end"], notes: ["topic", "content_md"] };');
-  L.push('      var need = REQ[pageType] || [];');
+  L.push('      var REQ = { messages: ["raw"], todos: ["topic"], schedules: ["topic", "start", "end"], notes: ["topic", "content_md"], events: ["topic"] };');
+  L.push('      var need = REQ[postTo] || [];');
   L.push('      var missing = [];');
   L.push('      for (var mi = 0; mi < need.length; mi++) {');
   L.push('        var mk = need[mi];');
@@ -944,8 +1017,10 @@ export function clientScript(apiBase) {
   L.push('      if (pageType === "notes") { payload.date = new Date().toISOString().slice(0, 10); if (!payload.topic) payload.topic = String(payload.content_md || "").slice(0, 24) || "未命名笔记"; }');
   // 日程：参与人从"顿号分隔的一行字"拆成数组；类型原样传（契约的 optional 里有 type）
   L.push('      if (pageType === "schedules") { if (payload.participants) payload.participants = String(payload.participants).split(/[、,，]/).map(function (x) { return x.trim() }).filter(Boolean); else payload.participants = []; }');
+  // ★ 2026-10-23 加：手建事件只补一个来源标记（契约里 `source` 是可选的字符串，`manual` 与其它三类一致）
+  L.push('      if (postTo === "events") { payload.source = "manual"; }');
   L.push('      btn.disabled = true; say("提交中…", false);');
-  L.push('      fetch(API + "/" + pageType, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ payload: payload }) })');
+  L.push('      fetch(API + "/" + postTo, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ payload: payload }) })');
   L.push('        .then(function (r) { return r.json().then(function (b) { return { code: r.status, body: b }; }) })');
   L.push('        .then(function (x) {');
   L.push('          if (x.code >= 400) { say("失败：" + JSON.stringify(x.body.errors || x.body.error || x.body).slice(0, 180), true); btn.disabled = false; return }');

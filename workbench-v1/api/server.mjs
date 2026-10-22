@@ -165,7 +165,10 @@ export function createEvent(type, payload, { origin = null, at = null } = {}) {
   return { ok: true, code: 200, id: made.event._id, action: r.action, event: made.event };
 }
 
-const EVENT_FOR = { messages: 'message', notes: 'note', todos: 'todo', schedules: 'schedule' };
+const EVENT_FOR = { messages: 'message', notes: 'note', todos: 'todo', schedules: 'schedule',
+  // ★★ 2026-10-23 加：`POST /events` = **手建一个事件**（用户原话：「事件中的新增一条消息改为新增一个事件」）。
+  //   走的是同一条通用创建路径（校验 → 落运行态 → 取上下文），随后**多一步合并**，见下面 `POST` 那段。
+  events: 'event' };
 
 /**
  * **这条事件还需不需要取相关上下文**（用户 2026-10-14 要的"流入时取一次、之后不重复取"）。
@@ -331,6 +334,65 @@ export function handler(req, res) {
     //     获取与当天会话信息相关的上下文，并列举在此处。」
     //   ⚠️ 放在 `detail/:type/:id` **之前**：会话 id 与那条正则不匹配（含 `:` `/` `+`），
     //     但先判更稳妥 —— 免得以后放宽路径字符集时被它抢走。
+    // ★★ 2026-10-23 加：**事件详情**（`GET /event?id=evt_...`）。
+    //   为什么要它：总览那条「长期未处置的事件」点一下要能**穿透到事件里包含的内容**
+    //   （用户原话），而事件不是会话、也不是单条消息，前面两条路都套不上。
+    //   数据全部来自 `processor/events.mjs#eventById()` —— 与事件页同源，不另算一套。
+    //   ⚠️ 这里不调模型、不做召回：只读已有缓存，保证点开就能出。
+    if (p === `${API_PREFIX}/event`) {
+      const eid = String(u.searchParams.get('id') ?? '').trim();
+      if (eid === '') return json(res, 400, { error: '缺少 id（事件标识，形如 evt_2026-10-12_...）' });
+      const ev = eventsApi.eventById(eid);
+      if (ev) {
+        return json(res, 200, {
+          ok: true,
+          id: ev.id, day: ev.day, title: ev.title,
+          firstAt: ev.startAt, lastAt: ev.endAt, timeRange: ev.timeRange,
+          // 相关会话：每条带上它的几条原文样例（点开还能进整条会话）
+          conversations: (ev.conversations ?? []).map((c) => ({
+            id: c.id, time: c.time, channel: c.channel, sender: c.sender,
+            count: c.count, lastSummary: c.lastSummary, state: c.state,
+            samples: c.samples ?? [],
+          })),
+          context: ev.context ?? [],
+          docs: ev.docs ?? { local: [], online: [] },
+          minutes: ev.minutes ?? [],
+          counts: ev.counts ?? {},
+        });
+      }
+      // ★★ 2026-10-23 加：**手建的事件**也要能按 id 取。
+      //   第一版只查了"算出来的事件" ⇒ **刚建的事件自己打不开**（实测 404，冒烟里 EV-8 就是这条）。
+      //   两条来源分开查，但对外是同一个接口 —— 页面不需要知道一条事件是算出来的还是我建的。
+      const me = (() => { try { return store.getById('event', eid) } catch { return null } })();
+      if (me) {
+        const p2 = me.payload ?? {};
+        const m = p2.merged ?? {};
+        const mconvs = Array.isArray(m.convs) ? m.convs : [];
+        const hm = (ms) => { const d = new Date(ms); const q = (n) => String(n).padStart(2, '0'); return `${q(d.getHours())}:${q(d.getMinutes())}` };
+        return json(res, 200, {
+          ok: true, id: me._id, manual: true,
+          day: String(new Date(me._at).toISOString()).slice(0, 10),
+          title: String(p2.topic ?? '（未命名事件）'),
+          firstAt: me._at, lastAt: me._at, timeRange: hm(me._at),
+          conversations: mconvs.map((c) => ({
+            id: String(c.id ?? ''), time: c.lastAt ? hm(c.lastAt) : '',
+            channel: '', sender: String(c.sender ?? ''), count: c.count ?? 0,
+            lastSummary: String(c.sample ?? ''), state: 'pending',
+            samples: [{ time: c.lastAt ? hm(c.lastAt) : '', sender: String(c.sender ?? ''), text: String(c.sample ?? '') }],
+          })),
+          context: p2.mergeWhy ? [{ at: null, text: `合并没捞到内容：${p2.mergeWhy}` }] : [],
+          docs: { local: (m.docs ?? []).map((d) => ({ path: d.path, similarity: d.similarity })), online: [] },
+          minutes: [],
+          counts: {
+            convs: mconvs.length, messages: mconvs.reduce((n, c) => n + (c.count ?? 0), 0),
+            docs: (m.docs ?? []).length, minutes: 0,
+            todos: (m.todos ?? []).length, schedules: (m.schedules ?? []).length, notes: (m.notes ?? []).length,
+          },
+        });
+      }
+      return json(res, 404, { error: '没有这个事件（算出来的事件在聚类缓存重算后 id 会变；手建的事件不会被重算）', id: eid });
+    }
+
     if (p === `${API_PREFIX}/conversation`) {
       if (!isRegistered('GET', `${API_PREFIX}/conversation`)) return json(res, 404, { error: '会话详情路径未登记（先去 write-routes.json 登记）' });
       const cid = String(u.searchParams.get('id') ?? '').trim();
@@ -455,7 +517,9 @@ export function handler(req, res) {
       //   第二层（每小时聚类）若该天缓存里有结果就一并生效，没有就如实标 `clustered:false`。
       if (key === 'events') {
         const day = u.searchParams.get('day') || null;
-        return json(res, 200, eventsApi.buildEvents({ day }));
+        const r = eventsApi.buildEvents({ day });
+        // ★ 2026-10-23：手建的事件也一并给（页面少一次请求；两类事件在同一处出现）
+        return json(res, 200, { ...r, manual: eventsApi.manualEventsForDay({ day: r.day }) });
       }
       const fn = pages[key === 'overview' ? 'overview' : key];
       if (typeof fn !== 'function') return json(res, 404, { error: `没有这个页面数据：${key}`, available: ['overview', 'messages', 'events', 'todos', 'schedules', 'notes'] });
@@ -917,6 +981,38 @@ export function handler(req, res) {
       //   做一次相关上下文的获取和分析」）。原来只有 message 会取，另外三类直接 return。
       //   召回失败**不影响落库**，只如实记进 `context.recallError`（分清"查不到"与"桥断了"）。
       return (async () => {
+        // ★★ 2026-10-23 加：**手建事件的合并那一步**（用户原话：「创建一个事件，然后分析引擎从
+        //   会话/知识库/RAG/待办/日程/笔记中获取与事件相关的内容，合并为一个事件」）。
+        //
+        //   为什么放在"落库之后"而不是"落库之前"：事件先存在，合并是**它的内容**；
+        //   合并失败也不能把事件弄丢（宁可有一条"还没合并"的事件，也不能点了没反应）。
+        //   合并结果写回这条记录（`payload.merged`），页面直接读，不再现算。
+        if (type === 'event') {
+          const evt = r.event ?? store.getById('event', r.id);
+          const p = evt?.payload ?? {};
+          let merged = null; let mergedWhy = null;
+          try {
+            const { mergeFor } = await import('../processor/event-merge.mjs');
+            merged = await mergeFor({ topic: String(p.topic ?? ''), detail: String(p.detail ?? '') });
+            mergedWhy = merged.why ?? null;
+          } catch (e) {
+            mergedWhy = `合并异常：${String(e?.message ?? e).slice(0, 120)}`;
+          }
+          if (merged) {
+            store.upsert({ ...evt, payload: { ...p, merged, mergedAt: merged.at ?? Date.now(), mergeWhy: mergedWhy } });
+          }
+          return json(res, 200, {
+            ok: true, id: r.id, action: r.action,
+            merged: merged ? {
+              convs: merged.convs?.length ?? 0, docs: merged.docs?.length ?? 0,
+              todos: merged.todos?.length ?? 0, schedules: merged.schedules?.length ?? 0, notes: merged.notes?.length ?? 0,
+            } : null,
+            mergeWhy: mergedWhy,
+            note: mergedWhy
+              ? `事件已建立；合并这一步没捞到内容（${mergedWhy}）`
+              : `事件已建立，并合并了相关会话/文档/待办/日程/笔记`,
+          });
+        }
         const r2 = await recallIntoEvent(type, r.id, r.event ?? store.getById(type, r.id));
         const ctx = { recalled: r2.recalled ?? [], recallError: r2.recallError ?? null };
         if (type !== 'message') {

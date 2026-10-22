@@ -32,6 +32,8 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { v1Out } from '../paths.mjs';
 import * as store from '../store.mjs';
 import { conversations, dayOf } from './conversations.mjs';
+// ★ 2026-10-23 加：总览那条「长期未处置的事件」要用提醒闸过滤 —— 与消息页同一条口径（2026-10-14 用户裁定）
+import { noticeable } from './notice-gate.mjs';
 
 // ── 路径 ────────────────────────────────────────────────────────────────────────
 export function eventsDir() { return path.join(v1Out(), 'events'); }
@@ -641,6 +643,161 @@ export async function attachDocs({ day = null, now = Date.now(), recallFn = null
   if (save) saveDay(targetDay, doc);
 
   return { ok: errors.length === 0, day: targetDay, events: (built ?? []).length, withDocs, why: errors.length ? errors[0].slice(0, 160) : null };
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 总览用：**长期没处置、也没闭环、还等着我**的事件（2026-10-23 用户要求）
+//
+// 用户原话：「今日总览-长期未回复的消息，其中的内容应该是长期未处置未闭环的需要被关注的事件，
+//   时间由事件最早的内容决定，点击可穿透到事件中包含的内容。」
+//
+// 「未处置 / 未闭环」今天**只能按能判的那部分判**。这点必须写在代码里，免得后来的人以为它算得很全：
+//   实测（2026-10-23 摸的真实数据）：380 条消息**全部是 pending**；
+//   `linkedTodoId` / `linkedScheduleId` / `linkedNoteId` 三个字段**一条都没有**；
+//   待办那边虽然有 14 条"已完成"，但消息上没有任何链接指向它们。
+//   ⇒ 「转了待办、待办做完了 ⇒ 闭环」这条路**今天断着**，判不了。
+//
+// 所以口径这样定，只用站得住的信号：
+//   一、**未处置**：该事件下每条会话都还是 `pending`（没有一条被转成待办/日程/笔记，也没有回复过）。
+//   二、**已处置即不再提醒**：只要有一条被处置过，说明已经有人管了，这件事就不再是"没人理"。
+//       这比"等它的待办做完"粗一档，但比拿不存在的链接去猜要诚实。
+//       哪天链接字段真的写上了，再把「待办是否完成」这一档加进来。
+//   三、**还要过提醒闸**（`noticeable`）：群里别人的闲聊照旧入库、照旧可查，但不占这个清单
+//       —— 这条口径是 2026-10-14 用户裁定的。
+//   四、**时间取事件最早那条内容**（用户点名要求），不是最后一条。
+// ══════════════════════════════════════════════════════════════════════════════
+
+/** 「已处置」的四种状态（与 `messageState()` 的取值一致） */
+export const DISPOSED_STATES = Object.freeze(['to-todo', 'to-schedule', 'to-note', 'replied']);
+
+/**
+ * 取「长期没处置、没闭环、还等着我」的事件。
+ *
+ * @param {{now?:number, lookbackDays?:number, minAgeDays?:number, limit?:number, gate?:boolean, days?:string[]}} o
+ * @returns {{list:object[], scanned:{days:number, events:number}, why:string|null}}
+ */
+export function attentionEvents({ now = Date.now(), lookbackDays = 14, minAgeDays = 3, limit = 10, gate = true, days = null } = {}) {
+  const DAY = 24 * 3600 * 1000;
+  const dayList = days ?? recentDays({ limit: lookbackDays, now });
+  const msgs = store.list({ type: 'message' }) ?? [];
+  const msgsById = new Map(msgs.map((e) => [e._id, e]));
+  let scannedEvents = 0;
+  const candidates = [];
+
+  for (const day of dayList) {
+    // 会话 → 最后一条消息：提醒闸要按"最后一条是不是在等我"来判。
+    // ⚠️ `buildEvents()` 产出的会话**不带 ids**（那是内部字段、不进页面快照），
+    //   所以这里自己取一次会话列表，不能指望事件对象里有。
+    const cv = conversations({ tab: 'all', day, limit: 1000, now });
+    const lastIdByConv = new Map();
+    for (const c of cv.list ?? []) {
+      const ids = c.ids ?? [];
+      if (ids.length) lastIdByConv.set(c.id, ids[ids.length - 1]);
+    }
+    const r = buildEvents({ day, now, limit: 500 });
+    for (const ev of r.events) {
+      scannedEvents += 1;
+      const firstAt = ev.startAt ?? 0;
+      if (!firstAt) continue;
+      const ageMs = now - firstAt;
+      if (ageMs < minAgeDays * DAY) continue;                        // 太新：够不上"长期"
+      // 一、未处置：每条会话都还得是 pending
+      const states = (ev.conversations ?? []).map((c) => String(c.state ?? 'pending'));
+      if (states.some((s) => DISPOSED_STATES.includes(s))) continue;   // 有人管过了 ⇒ 不再提醒
+      // 三、提醒闸：看每条会话的最后一条消息
+      if (gate) {
+        const lastMsgs = (ev.conversations ?? [])
+          .map((c) => msgsById.get(lastIdByConv.get(c.id) ?? ''))
+          .filter(Boolean);
+        // 一条都取不到 ⇒ 不因此把它判掉（宁可多显示一条，也不能让事情消失）
+        if (lastMsgs.length && noticeable(lastMsgs).length === 0) continue;
+      }
+      candidates.push({
+        id: ev.id,
+        day: ev.day,
+        title: ev.title,
+        firstAt,                                                     // ← 时间取最早那条内容
+        lastAt: ev.endAt ?? firstAt,
+        ageDays: Math.floor(ageMs / DAY),
+        convs: ev.counts?.convs ?? (ev.conversations ?? []).length,
+        messages: ev.counts?.messages ?? 0,
+        timeRange: ev.timeRange,
+        // 会话来源（谁在等我）：壳层显示一行，别让人只看到一个编号
+        senders: [...new Set((ev.conversations ?? [])
+          .map((c) => `${c.channel ?? ''} · ${c.sender ?? ''}`.replace(/^ · /, '').trim())
+          .filter(Boolean))],
+        because: `最早一条在 ${ev.day}，已 ${Math.floor(ageMs / DAY)} 天没人处置`,
+      });
+    }
+  }
+
+  candidates.sort((a, b) => a.firstAt - b.firstAt);                  // 最老的排前面
+  return {
+    list: candidates.slice(0, limit),
+    total: candidates.length,                                        // 候选总数（壳层显示"共 N 件，只列最早 M 件"）
+    scanned: { days: dayList.length, events: scannedEvents },
+    why: candidates.length ? null : `最近 ${lookbackDays} 天里没有「超过 ${minAgeDays} 天还没人处置」的事件`,
+  };
+}
+
+/**
+ * 取某一天**我亲手建的事件**（`store` 里 `type: 'event'` 那一类）。
+ *
+ * 为什么与"算出来的事件"分开取：两种事件的来源不同 ——
+ *   算出来的来自会话聚合（`buildEvents`），手建的来自我打字（`POST /events`）。
+ * 分开取、在页面上一并显示，比硬塞进同一条流水线要清楚。
+ *
+ * @param {{day?:string|null, now?:number, limit?:number}} o
+ */
+export function manualEventsForDay({ day = null, now = Date.now(), limit = 50 } = {}) {
+  const targetDay = day || dayOf(now);
+  let rows = [];
+  try { rows = store.list({ type: 'event' }) ?? [] } catch { rows = [] }
+  return rows
+    .filter((e) => dayOf(e._at) === targetDay)
+    .sort((a, b) => b._at - a._at)
+    .slice(0, limit)
+    .map((e) => {
+      const p = e.payload ?? {};
+      const m = p.merged ?? {};
+      const convs = Array.isArray(m.convs) ? m.convs : [];
+      return {
+        id: e._id,
+        day: targetDay,
+        title: String(p.topic ?? '（未命名事件）'),
+        detail: String(p.detail ?? ''),
+        manual: true,                                  // 壳层据此标「手建」
+        startAt: e._at,
+        endAt: e._at,
+        timeRange: (() => { const d = new Date(e._at); const q = (n) => String(n).padStart(2, '0'); return `${q(d.getHours())}:${q(d.getMinutes())}` })(),
+        conversations: convs.map((c) => ({
+          id: String(c.id ?? ''), time: c.lastAt ? new Date(c.lastAt).toTimeString().slice(0, 5) : '',
+          channel: '', sender: String(c.sender ?? ''), count: c.count ?? 0,
+          lastSummary: String(c.sample ?? ''), state: 'pending',
+          samples: [{ time: c.lastAt ? new Date(c.lastAt).toTimeString().slice(0, 5) : '', sender: String(c.sender ?? ''), text: String(c.sample ?? '') }],
+        })),
+        context: p.mergeWhy ? [{ at: null, text: `合并没捞到内容：${p.mergeWhy}` }] : [],
+        docs: { local: (m.docs ?? []).map((d) => ({ path: d.path, similarity: d.similarity })), online: [] },
+        minutes: [],
+        // 待办/日程/笔记也摆出来（用户点名要这五个来源都参与合并）
+        mergedOther: {
+          todos: (m.todos ?? []).map((x) => x.topic),
+          schedules: (m.schedules ?? []).map((x) => x.topic),
+          notes: (m.notes ?? []).map((x) => x.topic),
+        },
+        counts: {
+          convs: convs.length,
+          messages: convs.reduce((n, c) => n + (c.count ?? 0), 0),
+          docs: (m.docs ?? []).length,
+          minutes: 0,
+          todos: (m.todos ?? []).length,
+          schedules: (m.schedules ?? []).length,
+          notes: (m.notes ?? []).length,
+        },
+        clustered: 'manual',
+        why: p.mergeWhy ?? null,
+      };
+    });
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

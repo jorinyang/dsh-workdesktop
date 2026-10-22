@@ -51,9 +51,12 @@ export function stripImageMark(s) {
 }
 // ★ 2026-10-13 加：**来源标注**的唯一产地（用户第 9/10/11 条都要"来源"字段）——
 //   待办/日程/笔记三页共用同一个 `sourceOf`，不各写一份判法。
-import { sourceOf } from './source.mjs';
-// ★ 2026-10-14 加：**提醒闸**（该不该提醒我，与"该不该收"是两件事 —— 见 notice-gate.mjs 顶部那段）
+import { sourceOf } from './source.mjs';// ★ 2026-10-14 加：**提醒闸**（该不该提醒我，与"该不该收"是两件事 —— 见 notice-gate.mjs 顶部那段）
 import { noticeable } from '../processor/notice-gate.mjs';
+// ★ 2026-10-23 加：总览那条提醒改成"事件"形态 —— 判定与时间口径都在 `processor/events.mjs` 里，
+//   这一层只转形状。**为什么不在本文件里算**：同一套"什么算没处置"的消息页也要用，
+//   两处各写一份必然漂（本项目为"两份名单"栽过好几次）。
+import { attentionEvents } from '../processor/events.mjs';
 
 const DAY = 86400000;
 export const dayStart = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
@@ -357,18 +360,27 @@ export function overview({ now = Date.now(), staleReplyDays = 3 } = {}) {
     if (!x.due) return false;
     return daysFromToday(Date.parse(x.due), now) <= 1;
   }).map((x) => ({ kind: 'todo', id: x.id, title: x.topic, at: x.due, note: x.dueLabel }));
-  // 提醒三：长期未回复的消息（待处理且超过 N 天）
-  // ★★ 2026-10-14 加提醒闸（用户裁定）：
-  //   「28 个白名单的群的其他人发言信息还是收集（方便我查询谁在什么时候讲了什么话），
-  //     但是**在非@我的信息则不用提醒**。」
-  //   ⇒ 收与提醒是两件事：那些消息**照旧进库、照旧能查**，只是**不占这条提醒**。
-  //     不过滤的话，几个热闹的群里几百条闲聊会把"谁在等我回"挤没 —— 那正是这条提醒存在的意义。
-  //   ⚠️ 过滤只作用在**提醒清单**上，不动事件本身（`noticeable()` 是就地过滤，见其自检 NG-9）。
-  const stale = noticeable(
-    rows.filter((e) => messageState(e) === 'pending' && now - e._at >= staleReplyDays * DAY),
-  )
-    .sort((a, b) => a._at - b._at).slice(0, 10)
-    .map((e) => ({ kind: 'message', id: e._id, title: e.payload.summary ?? String(e.payload.raw).slice(0, 40), at: e._at, note: `${senderLine(e)} · 已 ${Math.floor((now - e._at) / DAY)} 天未回复` }));
+  // 提醒三：**长期未处置、未闭环、还等着我的事件**（2026-10-23 用户要求改口径）
+  //
+  // 用户原话：「今日总览-长期未回复的消息，其中的内容应该是**长期未处置未闭环的需要被关注的事件**，
+  //   时间由**事件最早的内容**决定，点击可穿透到事件中包含的内容。」
+  //
+  // ⇒ 从"逐条消息"换成"一件件事"，判定与时间口径全在 `processor/events.mjs#attentionEvents()` 里，
+  //   这里只做形状转换。为什么不在这一层算：同一套"什么算没处置"的判据消息页也要用，
+  //   两处各写一份必然漂（本项目已经为"两份名单"栽过）。
+  //
+  // ⚠️ 字段名仍叫 `stale`：壳层按这个名字取，改名要同时动壳层与它的自检；语义已在下面注释清楚。
+  const att = attentionEvents({ now, minAgeDays: staleReplyDays });
+  const stale = att.list.map((x) => ({
+    kind: 'event',                          // ★ 不再是 message
+    id: x.id,
+    title: x.title,
+    at: x.firstAt,                          // ★ 时间 = 事件里**最早那条内容**
+    note: `已 ${x.ageDays} 天未处置 · 会话 ${x.convs} 条 · ${x.senders.slice(0, 2).join(' / ')}`,
+    ageDays: x.ageDays,
+    convs: x.convs,
+    messages: x.messages,
+  }));
 
   return {
     stats: {
@@ -378,7 +390,12 @@ export function overview({ now = Date.now(), staleReplyDays = 3 } = {}) {
       notes7d: n.list.filter((x) => Date.parse(x.date ?? 0) >= dayStart(now) - 7 * DAY).length,
       notesTotal: n.counts.total,
     },
-    reminders: { upcoming, urgent, stale },
+    reminders: {
+      upcoming, urgent, stale,
+      // 候选总数：清单只列最早的 N 件，得让人知道还有多少没列出来（不然会以为就这些）
+      staleTotal: att.total,
+      staleWhy: att.why,
+    },
   };
 }
 
@@ -482,8 +499,35 @@ export async function selfTest() {
       finally { if (prev === undefined) delete process.env.WB_V1_OUT; else process.env.WB_V1_OUT = prev; try { fs.rmSync(t2, { recursive: true, force: true }); } catch { /* noop */ } }
     })());
     chk('PG-24', '★ 热力图是**纯规则**：不调模型（无网络/无 spawn 依赖，只有统计）', HM.busiestHour === null || typeof HM.busiestHour.hour === 'number', JSON.stringify(HM.busiestHour));
-    chk('PG-12', '★ 提醒三：长期未回复消息（>3天、待处理）', O.reminders.stale.length === 1 && /未回复/.test(O.reminders.stale[0].note), JSON.stringify(O.reminders.stale));
-    chk('PG-13', '★ 负向对照：已处理的消息不进"未回复"清单', !O.reminders.stale.some((x) => /已回复|转成/.test(x.title)));
+    // ★★ 2026-10-23 改（用户原话）：「今日总览-长期未回复的消息，其中的内容应该是**长期未处置未闭环的
+    //   需要被关注的事件**，时间由**事件最早的内容**决定，点击可穿透到事件中包含的内容。」
+    //   ⇒ 这条从"逐条消息"改守**事件形态**：
+    //     ① `kind` 是 `event`（壳层据此走事件浮层，不是逐条详情）；
+    //     ② 时间 = **事件最早那条**（夹具里 m1 是 2026-10-01，四条的会话里最早也是那天）；
+    //     ③ 文案说"未处置"，不是"未回复"（改了判定，说法也得跟着改，否则界面在骗人）。
+    chk('PG-12', '★ 提醒三是**事件**形态（kind=event · 时间取最早那条 · 文案说未处置）',
+      O.reminders.stale.length === 1
+      && O.reminders.stale[0].kind === 'event'
+      && /未处置/.test(O.reminders.stale[0].note)
+      && Number.isFinite(O.reminders.stale[0].at)
+      && typeof O.reminders.staleTotal === 'number',
+      JSON.stringify(O.reminders.stale));
+    // ★★ 2026-10-23 改负向：这条原来查"标题里没有已回复/转成"——那是按**消息**写的，事件标题里本来就不会出现这种词，
+    //   等于什么都没验。改成**真做一次负向**：造一个**每条消息都处置过**的会话，确认它不进清单。
+    chk('PG-13', '★★ 负向对照：整个会话都处置过 ⇒ 不进退件清单（"有人管了"就不再提醒）', (function () {
+      const before = overview({ now: NOW }).reminders.stale.map((x) => x.id);
+      const e = makeEvent({
+        type: 'message',
+        payload: { channel: 'dingtalk', sender: '李四', raw: '全部处置过的一条', summary: '全部处置过的一条', source: 'im', modality: 'text', isDirect: true, conversationId: 'cidPGtestDisposed' },
+        origin: { channel: 'dingtalk', sender: '李四', messageId: 'm9' }, _at: D('2026-10-01'),
+      }).event;
+      e.ops = [{ op: 'to-todo' }];
+      store.upsert(e);
+      const after = overview({ now: NOW }).reminders.stale;
+      const hit = after.find((x) => /cidPGtestDisposed/.test(String(x.id)));
+      // 既确认它没进清单，也确认清单本身没被这次插入搞空（否则"没进来"可能只是因为什么都没进来）
+      return !hit && after.length >= 1 && before.length >= 1;
+    })());
     chk('PG-14', 'dueLabel 边界（明天/昨天）', dueLabel(D('2026-10-13'), NOW) === '明天' && dueLabel(D('2026-10-11'), NOW) === '昨天', `${dueLabel(D('2026-10-13'), NOW)} / ${dueLabel(D('2026-10-11'), NOW)}`);
   } finally {
     if (prev === undefined) delete process.env.WB_V1_OUT; else process.env.WB_V1_OUT = prev;

@@ -66,7 +66,8 @@ export async function renderAll({ api = '/workdesktop/api/v1' } = {}) {
     const recent = ev.recentDays({ limit: DAYS });
     const days = recent.map((d) => {
       const r = ev.buildEvents({ day: d, limit: 40 });
-      return { day: r.day, events: r.events, counts: r.counts, why: r.why, clustered: r.clustered };
+      // ★ 2026-10-23：当天**我亲手建的事件**也一起渲染（与算出来的事件并列，排在前面）
+      return { day: r.day, events: r.events, manual: ev.manualEventsForDay({ day: d }), counts: r.counts, why: r.why, clustered: r.clustered };
     });
     // 今天的数字卡要用它；`days[0]` 不一定就是今天（今天可能一条会话都没有），所以单独取
     const today = ev.buildEvents({ day: null, limit: 40 });

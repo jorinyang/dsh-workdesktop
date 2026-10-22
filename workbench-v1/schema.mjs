@@ -22,11 +22,18 @@
 export const SCHEMA_VERSION = 'workbench-v1/1';
 
 /** 四类内容（Q1：就是这四类，没有第五种实体） */
-export const TYPES = Object.freeze(['message', 'note', 'schedule', 'todo']);
+export const TYPES = Object.freeze(['message', 'note', 'schedule', 'todo',
+  // ★★ 2026-10-23 加（用户原话）：「事件中的新增一条消息改为**新增一个事件**，生效机制是创建一个事件，
+  //   然后分析引擎从会话/知识库/RAG/待办/日程/笔记中获取与事件相关的内容，合并为一个事件。」
+  //   ⇒ 「事件」从此不只是**算出来的**（`processor/events.mjs` 由会话聚合），还有**我亲手建的**。
+  //   两者在页面上都叫事件，但来源不同：`origin.channel === 'manual'` 且 payload.source = 'manual' 的是手建的。
+  'event']);
 
 /** 中文标签（前端导航/统计按这个显示；唯一来源，别处不许再写一份） */
 export const TYPE_LABELS = Object.freeze({
   message: '消息', note: '笔记', schedule: '日程', todo: '待办',
+  // ★ 2026-10-23：手建的事件（与"由会话聚合算出来的事件"同名，但它是库里的一类记录）
+  event: '事件',
 });
 
 /** 事件生命周期（Q1）：分析引擎创建 → 前端交互 → 处理引擎验证 → 归档 */
@@ -119,6 +126,25 @@ export const PAYLOAD_SPEC = Object.freeze({
       executor: (v) => v === undefined || typeof v === 'string' || 'executor 必须是字符串',
       // Q11：创建时由模型生成"机器可查的关闭条件清单"
       closeConditions: (v) => v === undefined || (Array.isArray(v) && v.every((c) => c && typeof c === 'object' && isNonEmptyStr(c.kind))) || 'closeConditions 必须是 {kind,…} 数组',
+    },
+  },
+
+  // ★★ 2026-10-23 加：**手建的事件**。
+  //   `merged` 是分析引擎从五个来源捞回来并合并的结果：
+  //     { convIds: [], docs: [], todos: [], schedules: [], notes: [], at, why }
+  //   为什么把它整个存下来：页面要能显示"这件事由哪些会话/文档/待办组成"，
+  //   而重算一遍要打召回、开销不小；存下来页面只读。
+  //   ⚠️ `mergeWhy` 单独一格：什么都没捞到时要说清原因，不能留空让读者猜。
+  event: {
+    required: ['topic'],
+    optional: ['detail', 'source', 'merged', 'mergedAt', 'mergeWhy'],
+    check: {
+      topic: (v) => isNonEmptyStr(v) || 'topic（事件主题）必须是非空字符串',
+      detail: (v) => v === undefined || typeof v === 'string' || 'detail 必须是字符串',
+      source: (v) => v === undefined || typeof v === 'string' || 'source 必须是字符串',
+      merged: (v) => v === undefined || v === null || (typeof v === 'object' && !Array.isArray(v)) || 'merged 必须是对象',
+      mergedAt: (v) => v === undefined || v === null || typeof v === 'number' || 'mergedAt 必须是毫秒数',
+      mergeWhy: (v) => v === undefined || v === null || typeof v === 'string' || 'mergeWhy 必须是字符串',
     },
   },
 });
@@ -246,6 +272,8 @@ const VALID_SAMPLES = {
   note: { topic: '工作台 v1.0 三大部分', date: '2026-10-12', content_md: '# 采集器\n- 多通道获取信息' },
   schedule: { topic: '示例客户戊验收会', start: '2026-10-13T15:00', end: '2026-10-13T16:00', place: '线上', participants: ['张伟', '王芳'] },
   todo: { topic: '补交 Q3 报表', detail: '把三季度渠道数据补齐并发出', due: '2026-10-15', publisher: '张伟', executor: '月夜' },
+  // ★ 2026-10-23 加：手建事件的合法样本（`selfTest` 会遍历 TYPES，缺一条就红）
+  event: { topic: '客户验收安排', detail: '把验收时间与参与人定下来', source: 'manual', mergedAt: 0 },
 };
 
 export function selfTest() {

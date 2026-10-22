@@ -353,6 +353,16 @@ export function inlineForm(pageKey) {
       hint: '等同于在钉钉里给自己发一条文本 —— 发信人与来源自动记为我（月夜）/ 工作台',
       rows: [[['raw', '内容', 'text', true]]],
     },
+    // ★★ 2026-10-23 加（用户原话）：「事件中的新增一条消息改为**新增一个事件**，生效机制是创建一个事件，
+    //   然后分析引擎从会话/知识库/RAG/待办/日程/笔记中获取与事件相关的内容，合并为一个事件。」
+    //   ⇒ 事件页的表单换成这一份。`postTo: 'events'` 是关键：页面 key 仍是 `messages`，
+    //     但提交必须打 `/events`（打到 `/messages` 就变成"又记了一条消息"，而且看起来像成功）。
+    events: {
+      title: '新增一个事件', btn: '建立这个事件',
+      hint: '只填事件主题即可。建立后分析引擎会从会话、知识库、待办、日程、笔记里找出与它相关的内容，合并成这一件事',
+      postTo: 'events',
+      rows: [[['topic', '事件主题', 'text', true]], [['detail', '补充说明（可留空）', 'text', false]]],
+    },
     todos: {
       title: '新增一条待办', btn: '建为待办',
       rows: [[
@@ -404,7 +414,13 @@ export function inlineForm(pageKey) {
     }
     rowsHtml += '<div class="if-grid">' + cells + '</div>';
   }
-  return '<section class="inline-form" data-if-page="' + esc(pageKey) + '">'
+  // ★★ 2026-10-23 加：`data-if-post` = **这个表单提交到哪**。
+  //   为什么需要：事件页用的页面 key 还是 `messages`（文件名与面板路由不动），
+  //   但表单现在要建的是**事件**、提交到 `/events`。
+  //   ⇒ 表单自己声明去处，客户端照它打，而不是"按页面 key 猜" ——
+  //     猜错的表现是提交到 /messages：库里多出一条消息，而且看起来像成功了。
+  return '<section class="inline-form" data-if-page="' + esc(pageKey) + '"'
+    + (SPEC.postTo ? ' data-if-post="' + esc(SPEC.postTo) + '"' : '') + '>'
     + '<div class="if-head"><h2>' + esc(SPEC.title) + '</h2>'
     + '<button class="btn if-submit" data-if-submit="1">' + esc(SPEC.btn) + '</button>'
     + '<span class="cap if-msg" data-if-msg="1"></span></div>'
@@ -567,11 +583,37 @@ export function pageOverview(snap) {
   const rem = function (r) { return { id: r.id, go: r.kind, col1: r.at ? fmtTime(Date.parse(r.at)) : '', col2: r.title, col3: r.note }; };
   const up = o.reminders.upcoming.map(rem);
   const ur = o.reminders.urgent.map(rem);
-  const stl = o.reminders.stale.map(rem);
+  // ★★ 2026-10-23 改（用户原话）：「今日总览-长期未回复的消息，其中的内容应该是**长期未处置未闭环的
+  //   需要被关注的事件**，时间由**事件最早的内容**决定，点击可穿透到事件中包含的内容。」
+  //
+  //   ⇒ 第三块从"逐条消息"换成"一件件事"。三处跟着变：
+  //     ① 标题改「长期未处置的事件」；
+  //     ② 时间那一列**带日期**（`fmtTime` 只出时分）—— 这些事都在好几天前，只显示 10:12 会让人以为今天；
+  //     ③ 点了走**事件浮层**（`data-go="event"`），不是跳页面。
+  // ⚠️ 2026-10-23 踩到的真错：`Date.parse()` **只吃字符串**，喂它一个数字（毫秒）会返回 NaN，
+  //   于是时间列渲染成空 `<span class="when"></span>` —— 页面不报错、也不提示，只是那一格没了。
+  //   事件的 `at` 正好是数字（`firstAt`），所以这里必须先判类型。
+  const toMs = (v) => (typeof v === 'number' ? v : (v ? Date.parse(v) : 0));
+  const stl = (o.reminders.stale ?? []).map(function (r) {
+    const at = toMs(r.at);
+    const dd = new Date(at); const p2 = (n) => String(n).padStart(2, '0');
+    return {
+      id: r.id,
+      go: r.kind || 'event',
+      col1: at ? `${dd.getFullYear()}-${p2(dd.getMonth() + 1)}-${p2(dd.getDate())} ${p2(dd.getHours())}:${p2(dd.getMinutes())}` : '',
+      col2: r.title,
+      col3: r.note,
+    };
+  });
+  // 候选总数比清单多时要说一句 —— 否则会以为"就这些没处置"
+  const total = Number(o.reminders.staleTotal ?? stl.length);
+  const staleHead = total > stl.length
+    ? `长期未处置的事件（共 ${total} 件，先列最早的 ${stl.length} 件）`
+    : '长期未处置的事件';
   return '<div class="stats">' + cards + '</div>'
     + listBlock('重要日程 / 行程', up)
     + listBlock('逾期 / 临期任务', ur, 'overdue')
-    + listBlock('长期未回复的信息', stl);
+    + listBlock(staleHead, stl);
 }
 
 const TAB_LABEL = { all: '全部', pending: '待处理', 'to-todo': '已转待办', 'to-schedule': '已转日程', 'to-note': '已转笔记', replied: '已回复' };
@@ -847,14 +889,19 @@ export function pageEvents(snap) {
 
   const cardsHtml = dayList.map((d) => {
     const note = d.why ? '<div class="evt-note">' + esc(String(d.why)) + '</div>' : '';
-    const body = (d.events ?? []).length
-      ? (d.events ?? []).map((ev) => renderEventCard(ev)).join('')
+    // ★★ 2026-10-23：**手建的事件排在当天最前面**（是我刚建的，应该先看到）。
+    const manual = (d.manual ?? []).map((ev) => renderEventCard(ev)).join('');
+    const body = (d.events ?? []).length || (d.manual ?? []).length
+      ? manual + (d.events ?? []).map((ev) => renderEventCard(ev)).join('')
       : '<div class="evt-note">' + esc(String(d.why || '这一天没有事件')) + '</div>';
    return '<div class="evt-day" data-day="' + esc(d.day) + '"' + (d.day === activeDay ? '' : ' hidden') + '>'
       + note + body + '</div>';
   }).join('');
 
-  return '<div class="stats">' + cards + '</div>' + inlineForm('messages') + dayBar
+  // ★★ 2026-10-23 改：表单从「新增一条消息」换成「**新增一个事件**」
+  //   （用户原话：「事件中的新增一条消息改为新增一个事件」）。
+  //   表单的 `postTo: 'events'` 会渲染成 `data-if-post="events"`，客户端照它提交。
+  return '<div class="stats">' + cards + '</div>' + inlineForm('events') + dayBar
     + '<div class="evt-cards">' + cardsHtml + '</div>';
 }
 
@@ -903,9 +950,22 @@ function renderEventCard(ev) {
       + '<span class="evt-ctx-at">' + esc([m.time, m.duration].filter(Boolean).join(' · ')) + '</span></li>').join('') + '</ul>'
     : '<div class="evt-empty">这条事件附近没有听记</div>';
 
+  // ── ⑤ 合并进来的待办 / 日程 / 笔记（只有**我手建的事件**才有这一块）──
+  //   用户点名要这五个来源都参与合并（会话/知识库/待办/日程/笔记），所以捞到的就得摆出来，
+  //   捞不到也要说清楚（`mergeWhy` 已经在 context 那块写了原因）。
+  const mo = ev.mergedOther ?? null;
+  const otherN = mo ? (mo.todos?.length ?? 0) + (mo.schedules?.length ?? 0) + (mo.notes?.length ?? 0) : 0;
+  const otherHtml = otherN
+    ? '<section class="evt-sec"><h3>合并进来的待办 / 日程 / 笔记（' + esc(String(otherN)) + '）</h3><ul class="evt-min">'
+      + (mo.todos ?? []).map((t) => '<li><span class="tag">待办</span><span>' + esc(t) + '</span></li>').join('')
+      + (mo.schedules ?? []).map((t) => '<li><span class="tag">日程</span><span>' + esc(t) + '</span></li>').join('')
+      + (mo.notes ?? []).map((t) => '<li><span class="tag">笔记</span><span>' + esc(t) + '</span></li>').join('')
+      + '</ul></section>'
+    : '';
+
   return '<details class="evt" data-event="' + esc(ev.id) + '">'
     + '<summary><span class="evt-time">' + esc(ev.timeRange || '') + '</span>'
-    + '<span class="evt-title">' + esc(ev.title || '（无标题）') + '</span>'
+    + '<span class="evt-title">' + (ev.manual ? '<span class="tag">手建</span> ' : '') + esc(ev.title || '（无标题）') + '</span>'
     + '<span class="evt-badges">'
     + '<span>会话 <b>' + esc(String(ev.counts?.convs ?? 0)) + '</b></span>'
     + '<span>文档 <b>' + esc(String(ev.counts?.docs ?? 0)) + '</b></span>'
@@ -916,6 +976,7 @@ function renderEventCard(ev) {
     + '<section class="evt-sec"><h3>相关上下文</h3>' + ctx + '</section>'
     + '<section class="evt-sec"><h3>相关文档（本地 ' + esc(String(local.length)) + ' · 链接 ' + esc(String(online.length)) + '）</h3>' + doc + '</section>'
     + '<section class="evt-sec"><h3>相关听记（' + esc(String(mins.length)) + '）</h3>' + minHtml + '</section>'
+    + otherHtml
     + '</div></details>';
 }
 
@@ -1047,7 +1108,7 @@ export function selfTest() {
   chk('SH-14', '★ 字重最大 600（规范上限）', !/font-weight:\s*(700|800|900|bold)/.test(css));
   chk('SH-15', '★ 负向对照：样式块内无字面色值（除 token 定义处）', !/#[0-9a-fA-F]{6}/.test(cssNoTokens), (cssNoTokens.match(/#[0-9a-fA-F]{6}/) || ['无'])[0]);
 
-  chk('SH-16', '总览渲染出四个数字与三类提醒', home.indexOf('待完成待办') >= 0 && home.indexOf('重要日程') >= 0 && home.indexOf('逾期 / 临期任务') >= 0 && home.indexOf('长期未回复的信息') >= 0);
+  chk('SH-16', '总览渲染出四个数字与三类提醒（第三类是**事件**，不是逐条消息）', home.indexOf('待完成待办') >= 0 && home.indexOf('重要日程') >= 0 && home.indexOf('逾期 / 临期任务') >= 0 && home.indexOf('长期未处置的事件') >= 0);
   chk('SH-17', '总览把逾期项标红（.overdue）', home.indexOf('class="overdue"') >= 0);
   // ★★ 2026-10-21 改（用户原话：「**消息页面我想升级为事件页面**，事件卡片内聚合相关会话
   //   （以及会话内容）/ 相关上下文 / 相关文档 / 相关听记」）。
@@ -1098,10 +1159,17 @@ export function selfTest() {
   //   ⇒ 按钮整个去掉了，四个页面改成**页内平铺表单**（`inlineForm`）。
   //     这条检查于是红了 —— **它红得对**：它守的是旧行为（那个按钮）。
   //   ⇒ 改成守新行为：**四个数据页都有平铺表单、按钮一个都不许有**（两个入口并存会让人不知道点哪个）。
-  chk('SH-24', '★ 四个数据页都有**页内平铺**新增表单，且旧的「新增一条」按钮**一个都不留**（用户 2026-10-13 裁定）',
-    ['messages', 'todos', 'schedules', 'notes'].every((k) => {
-      const h = renderPage(k, { snap: snap, api: 'http://x' });
-      return h.indexOf('class="inline-form"') >= 0 && h.indexOf('data-if-page="' + k + '"') >= 0 && h.indexOf('id="btn-add"') < 0;
+  // ★★ 2026-10-23 改（用户原话：「事件中的新增一条消息改为**新增一个事件**」）：
+  //   事件页（页面 key 仍是 `messages`）的表单现在建的是**事件**，所以它渲染的是
+  //   `data-if-page="events"`、且带 `data-if-post="events"`。这条判据跟着改成逐页给期望值 ——
+  //   不能用"表单的 page 一定等于页面 key"去套，那正是这次改掉的那条假设。
+  chk('SH-24', '★ 四个数据页都有**页内平铺**新增表单（事件页建的是事件），且旧的「新增一条」按钮**一个都不留**',
+    [['messages', 'events'], ['todos', 'todos'], ['schedules', 'schedules'], ['notes', 'notes']].every(([page, formKey]) => {
+      const h = renderPage(page, { snap: snap, api: 'http://x' });
+      const hasForm = h.indexOf('class="inline-form"') >= 0 && h.indexOf('data-if-page="' + formKey + '"') >= 0;
+      // 事件页的表单必须声明提交去处，否则会打到 /messages（变成"又记了一条消息"，看着像成功）
+      const postOk = formKey !== 'events' || h.indexOf('data-if-post="events"') >= 0;
+      return hasForm && postOk && h.indexOf('id="btn-add"') < 0;
     })
     && ['overview'].every((k) => renderPage(k, { snap: snap, api: 'http://x' }).indexOf('id="btn-add"') < 0));
   chk('SH-25', '★ 不给 api ⇒ 不注入脚本（静态可读，不致残）', home.indexOf('<script>') < 0 && home.indexOf('id="btn-add"') < 0);
